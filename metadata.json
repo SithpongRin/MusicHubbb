@@ -1,0 +1,7 @@
+{
+  "name": "MusicHub",
+  "description": "Personal Android offline music player and legal audio downloader with Media3 playback, Room database, and GitHub Releases auto-updater.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
