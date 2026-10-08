@@ -1188,6 +1188,7 @@ fun MusicHubApp() {
     var songsList by remember { mutableStateOf(restoreAndSyncLibrary(context)) }
     var playlists by remember { mutableStateOf(loadSavedPlaylists(context)) }
     var viewingPlaylist by remember { mutableStateOf<PlaylistItem?>(null) }
+    var viewingArtist by remember { mutableStateOf<Pair<String, List<SongItem>>?>(null) }
     var playlistForAddSong by remember { mutableStateOf<SongItem?>(null) }
     var showCreatePlaylistModal by remember { mutableStateOf(false) }
 
@@ -2051,6 +2052,7 @@ fun MusicHubApp() {
                         playlists = playlists,
                         onPlaylistClick = { playlist -> viewingPlaylist = playlist },
                         onCreatePlaylistClick = { showCreatePlaylistModal = true },
+                        onArtistClick = { artistName, aSongs -> viewingArtist = Pair(artistName, aSongs) },
                         onSongClick = { song ->
                             activePlaylistId = null
                             currentSong = song
@@ -2113,6 +2115,7 @@ fun MusicHubApp() {
                         isPlaying = isPlaying,
                         selectedCategory = selectedCategory,
                         onCategorySelect = { selectedCategory = it },
+                        onArtistClick = { artistName, aSongs -> viewingArtist = Pair(artistName, aSongs) },
                         onSongClick = { song ->
                             activePlaylistId = null
                             currentSong = song
@@ -2437,6 +2440,49 @@ fun MusicHubApp() {
                     savePlaylists(context, updatedPlaylists)
                 },
                 onDismiss = { viewingPlaylist = null }
+            )
+        }
+
+        // Artist Detail Dialog
+        if (viewingArtist != null) {
+            val (aName, _) = viewingArtist!!
+            val aSongs = songsList.filter { it.artist.trim().equals(aName.trim(), ignoreCase = true) }
+            ArtistDetailDialog(
+                isKhmer = isKhmer,
+                artistName = aName,
+                artistSongs = aSongs,
+                currentSong = currentSong,
+                isPlaying = isPlaying,
+                onSongClick = { song ->
+                    activePlaylistId = null
+                    currentSong = song
+                    isPlaying = true
+                },
+                onPlayAll = {
+                    activePlaylistId = null
+                    if (aSongs.isNotEmpty()) {
+                        currentSong = aSongs.first()
+                        isPlaying = true
+                    }
+                },
+                onShufflePlay = {
+                    activePlaylistId = null
+                    if (aSongs.isNotEmpty()) {
+                        currentSong = aSongs.shuffled().first()
+                        isPlaying = true
+                    }
+                },
+                onFavoriteToggle = { song ->
+                    songsList = songsList.map {
+                        if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
+                    }
+                    saveSongs(context, songsList)
+                },
+                onEditSong = { song -> editingSong = song },
+                onDeleteSong = { song -> deleteSong(song) },
+                onAddToPlaylist = { song -> playlistForAddSong = song },
+                onShareSong = { song -> shareSongFile(context, song) },
+                onDismiss = { viewingArtist = null }
             )
         }
         }
@@ -3552,6 +3598,190 @@ fun PlaylistDetailDialog(
     }
 }
 
+// Artist Detail Dialog
+@Composable
+fun ArtistDetailDialog(
+    isKhmer: Boolean,
+    artistName: String,
+    artistSongs: List<SongItem>,
+    currentSong: SongItem?,
+    isPlaying: Boolean,
+    onSongClick: (SongItem) -> Unit,
+    onPlayAll: () -> Unit,
+    onShufflePlay: () -> Unit,
+    onFavoriteToggle: (SongItem) -> Unit,
+    onEditSong: (SongItem) -> Unit,
+    onDeleteSong: (SongItem) -> Unit,
+    onAddToPlaylist: (SongItem) -> Unit,
+    onShareSong: (SongItem) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val isDark = LocalDarkMode.current
+    val artistCover = remember(artistSongs) {
+        artistSongs.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = if (isDark) Color(0xFF14161D) else Color(0xFFF5F6F9)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp)
+            ) {
+                // Header Bar with Back Button
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(if (isDark) Color(0xFF1E222D) else Color.White, CircleShape)
+                    ) {
+                        Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D))
+                    }
+                    Text(
+                        text = if (isKhmer) "ព័ត៌មានសិល្បករ" else "Artist Detail",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                    )
+                    Box(modifier = Modifier.size(40.dp))
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Artist Header Hero Card
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(22.dp)),
+                    color = if (isDark) Color(0xFF1E222D) else Color.White,
+                    shadowElevation = 2.dp
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Circular Artist Avatar
+                        Box(
+                            modifier = Modifier
+                                .size(76.dp)
+                                .clip(CircleShape)
+                                .background(if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (artistCover.isNotBlank()) {
+                                SmartArtworkImage(
+                                    artworkUrl = artistCover,
+                                    contentDescription = artistName,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Person,
+                                    contentDescription = null,
+                                    tint = if (isDark) Color(0xFF818CF8) else Color(0xFF14161D),
+                                    modifier = Modifier.size(36.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(16.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = artistName,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp,
+                                color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = if (isKhmer) "${artistSongs.size} បទចម្រៀង" else "${artistSongs.size} tracks available",
+                                fontSize = 12.sp,
+                                color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Play All & Shuffle Buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = onPlayAll,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp),
+                        shape = RoundedCornerShape(22.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D))
+                    ) {
+                        Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = if (isKhmer) "ចាក់ទាំងអស់" else "Play", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+
+                    Button(
+                        onClick = onShufflePlay,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp),
+                        shape = RoundedCornerShape(22.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = if (isDark) Color(0xFF282F3E) else Color(0xFFE2E8F0))
+                    ) {
+                        Icon(imageVector = Icons.Default.Shuffle, contentDescription = null, tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D), modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = if (isKhmer) "ច្របល់" else "Shuffle", color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Songs List
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    itemsIndexed(artistSongs) { index, song ->
+                        NumberedTrackRowItem(
+                            index = index + 1,
+                            isKhmer = isKhmer,
+                            song = song,
+                            isCurrent = currentSong?.id == song.id,
+                            isPlaying = isPlaying && currentSong?.id == song.id,
+                            onClick = { onSongClick(song) },
+                            onFavoriteToggle = { onFavoriteToggle(song) },
+                            onEditSong = { onEditSong(song) },
+                            onDeleteSong = { onDeleteSong(song) },
+                            onAddToPlaylist = { onAddToPlaylist(song) },
+                            onShareSong = { onShareSong(song) }
+                        )
+                    }
+                    item { Spacer(modifier = Modifier.height(20.dp)) }
+                }
+            }
+        }
+    }
+}
+
 // Home Screen
 @Composable
 fun HomeScreen(
@@ -3562,6 +3792,7 @@ fun HomeScreen(
     playlists: List<PlaylistItem> = emptyList(),
     onPlaylistClick: (PlaylistItem) -> Unit = {},
     onCreatePlaylistClick: () -> Unit = {},
+    onArtistClick: (String, List<SongItem>) -> Unit = { _, _ -> },
     onSongClick: (SongItem) -> Unit,
     onPlayAll: () -> Unit,
     onShufflePlay: () -> Unit,
@@ -3896,6 +4127,116 @@ fun HomeScreen(
             }
         }
 
+        // Artists & Channels Horizontal Carousel Section
+        val artistGroups = remember(songs) {
+            songs.filter { it.artist.isNotBlank() && it.artist != "MusicHub" && it.artist != "<unknown>" }
+                .groupBy { it.artist.trim() }
+                .toList()
+                .sortedByDescending { it.second.size }
+        }
+
+        if (artistGroups.isNotEmpty()) {
+            item {
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isKhmer) "សិល្បករ & Channels" else "Artists & Channels",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = if (isKhmer) "${artistGroups.size} នាក់" else "${artistGroups.size} artists",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        contentPadding = PaddingValues(bottom = 6.dp)
+                    ) {
+                        items(artistGroups) { (artistName, aSongs) ->
+                            val artistCover = aSongs.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
+
+                            Surface(
+                                modifier = Modifier
+                                    .width(104.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .clickable { onArtistClick(artistName, aSongs) },
+                                color = MaterialTheme.colorScheme.surface,
+                                shadowElevation = 1.dp
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(10.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    // Circular Artist Avatar
+                                    Box(
+                                        modifier = Modifier
+                                            .size(72.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                Brush.linearGradient(
+                                                    listOf(Color(0xFF232733), Color(0xFF14161D))
+                                                )
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (artistCover.isNotBlank()) {
+                                            SmartArtworkImage(
+                                                artworkUrl = artistCover,
+                                                contentDescription = artistName,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Default.Person,
+                                                contentDescription = null,
+                                                tint = Color.White.copy(alpha = 0.8f),
+                                                modifier = Modifier.size(32.dp)
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    Text(
+                                        text = artistName,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        textAlign = TextAlign.Center
+                                    )
+
+                                    Spacer(modifier = Modifier.height(2.dp))
+
+                                    Text(
+                                        text = if (isKhmer) "${aSongs.size} បទ" else "${aSongs.size} songs",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Empty state
         if (songs.isEmpty()) {
             item {
@@ -4196,6 +4537,7 @@ fun LibraryScreen(
     isPlaying: Boolean,
     selectedCategory: String,
     onCategorySelect: (String) -> Unit,
+    onArtistClick: (String, List<SongItem>) -> Unit = { _, _ -> },
     onSongClick: (SongItem) -> Unit,
     onImportClick: () -> Unit,
     onCreatePlaylistClick: () -> Unit,
@@ -4209,10 +4551,18 @@ fun LibraryScreen(
     onShareSong: (SongItem) -> Unit = {},
     onRescanLibrary: () -> Unit = {}
 ) {
-    val categories = if (isKhmer) listOf("ចម្រៀងទាំងអស់", "បញ្ជីចម្រៀង", "ចូលចិត្ត", "បានទាញយក")
-                     else listOf("All", "Playlists", "Favorites", "Downloaded")
+    val categories = if (isKhmer) listOf("ចម្រៀងទាំងអស់", "សិល្បករ", "បញ្ជីចម្រៀង", "ចូលចិត្ត", "បានទាញយក")
+                     else listOf("All", "Artists", "Playlists", "Favorites", "Downloaded")
 
     val isPlaylistsTab = selectedCategory.contains("បញ្ជីចម្រៀង") || selectedCategory == "Playlists"
+    val isArtistsTab = selectedCategory.contains("សិល្បករ") || selectedCategory == "Artists"
+
+    val artistGroups = remember(songs) {
+        songs.filter { it.artist.isNotBlank() && it.artist != "MusicHub" && it.artist != "<unknown>" }
+            .groupBy { it.artist.trim() }
+            .toList()
+            .sortedByDescending { it.second.size }
+    }
 
     val displayedSongs = remember(songs, selectedCategory, isKhmer) {
         when {
@@ -4248,10 +4598,10 @@ fun LibraryScreen(
                         maxLines = 1
                     )
                     Text(
-                        text = if (isPlaylistsTab) {
-                            if (isKhmer) "${playlists.size} បញ្ជីចម្រៀង" else "${playlists.size} playlists available"
-                        } else {
-                            if (isKhmer) "${displayedSongs.size} បទក្នុងឧបករណ៍" else "${displayedSongs.size} tracks available"
+                        text = when {
+                            isArtistsTab -> if (isKhmer) "${artistGroups.size} សិល្បករ" else "${artistGroups.size} artists available"
+                            isPlaylistsTab -> if (isKhmer) "${playlists.size} បញ្ជីចម្រៀង" else "${playlists.size} playlists available"
+                            else -> if (isKhmer) "${displayedSongs.size} បទក្នុងឧបករណ៍" else "${displayedSongs.size} tracks available"
                         },
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -4365,7 +4715,111 @@ fun LibraryScreen(
             }
         }
 
-        if (isPlaylistsTab) {
+        if (isArtistsTab) {
+            // Artists List
+            if (artistGroups.isEmpty()) {
+                item {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(22.dp)),
+                        color = MaterialTheme.colorScheme.surface
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(imageVector = Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(44.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = if (isKhmer) "មិនទាន់មានសិល្បករទេ" else "No Artists Found",
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (isKhmer) "ទាញយក ឬនាំចូលចម្រៀងដើម្បីចាត់ចែងតាមសិល្បករស្វ័យប្រវត្តិ" else "Import or download songs to automatically group them by artist",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+            } else {
+                items(artistGroups) { (artistName, aSongs) ->
+                    val artistCover = aSongs.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .clickable { onArtistClick(artistName, aSongs) },
+                        color = MaterialTheme.colorScheme.surface
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Circular Artist Avatar
+                            Box(
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (artistCover.isNotBlank()) {
+                                    SmartArtworkImage(
+                                        artworkUrl = artistCover,
+                                        contentDescription = artistName,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.Person,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(14.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = artistName,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = if (isKhmer) "${aSongs.size} បទចម្រៀង" else "${aSongs.size} tracks",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            Icon(
+                                imageVector = Icons.Default.ChevronRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        } else if (isPlaylistsTab) {
             // Playlists List
             if (playlists.isEmpty()) {
                 item {

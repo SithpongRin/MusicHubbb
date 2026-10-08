@@ -298,6 +298,12 @@ The app requests only required permissions:
 - Added master studio artwork search via iTunes Search API (`searchHdCoverArt`) for lossless 1000x1000px cover resolution.
 - Updated `versionCode = 24` and `versionName = "1.0.24"` in `app/build.gradle.kts`.
 
+### Version 1.0.28
+- Home Screen "Artists & Channels" Carousel: Introduced a dedicated horizontal row showcasing artists and channels with circular avatars, track counts, and interactive detail view.
+- Library "Artists" Tab: Added "សិល្បករ" / "Artists" filter chip in the Library tab. Automatically groups songs by artist/channel, displaying total track count and artist avatar.
+- Interactive Artist Detail Modal (`ArtistDetailDialog`): Users can view all songs by a specific artist, with 1-tap "Play All" and "Shuffle" controls directly targeted at that artist's discography.
+- Bumped `versionCode = 28` and `versionName = "1.0.28"` in `app/build.gradle.kts`.
+
 ### Version 1.0.27
 - Strict App Memory and Physical Storage Synchronization: Ensured the library displays only real physical files present on the device. Replaced loose MediaStore scanning (`RELATIVE_PATH LIKE '%MusicHub%'`) which previously generated phantom duplicate entries with differing URI schemes for the same physical file.
 - Single Source of Truth Guarantee (1 Physical File = 1 Library Item): Implemented canonical file path normalization (`seenFilePaths`) in `restoreAndSyncLibrary`. A single file on disk can never appear as duplicate entries in the library.
