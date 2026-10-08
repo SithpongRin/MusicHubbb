@@ -241,11 +241,80 @@ private fun saveSongs(context: Context, list: List<SongItem>) {
 
     // Persist to public Music/MusicHub so it survives uninstalls
     try {
-        val publicDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "MusicHub")
-        if (!publicDir.exists()) publicDir.mkdirs()
+        val publicDir = MusicHubStorage.getBaseDir()
         val manifestFile = File(publicDir, "musichub_library.json")
         manifestFile.writeText(jsonStr)
     } catch (e: Exception) {}
+}
+
+object MusicHubStorage {
+    fun getBaseDir(): File {
+        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "MusicHub")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    fun getSongsDir(): File {
+        val dir = File(getBaseDir(), "Songs")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    fun getCoversDir(): File {
+        val dir = File(getBaseDir(), "Covers")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+}
+
+fun resolvePlayableUriInternal(context: Context, song: SongItem, publicDir: File): String {
+    // 1. Check existing URI
+    if (song.uriString.isNotBlank()) {
+        try {
+            val u = Uri.parse(song.uriString)
+            if (song.uriString.startsWith("content://")) {
+                context.contentResolver.openFileDescriptor(u, "r")?.use { pfd ->
+                    if (pfd.statSize > 1024) return song.uriString
+                }
+            } else if (song.uriString.startsWith("file://")) {
+                val f = File(u.path ?: "")
+                if (f.exists() && f.length() > 1024) return song.uriString
+            }
+        } catch (e: Exception) {}
+    }
+
+    // 2. Look in Music/MusicHub/Songs and Music/MusicHub root
+    val songsDir = MusicHubStorage.getSongsDir()
+    val cleanArtist = song.artist.trim().replace(Regex("[/\\\\:*?\"<>|]"), " ").trim()
+    val cleanTitle = song.title.trim().replace(Regex("[/\\\\:*?\"<>|]"), " ").trim()
+    val searchDirs = listOf(songsDir, publicDir)
+
+    for (dir in searchDirs) {
+        if (!dir.exists()) continue
+        val candidates = listOf(
+            File(dir, "$cleanArtist - $cleanTitle.${song.format.lowercase()}"),
+            File(dir, "$cleanArtist - $cleanTitle.mp3"),
+            File(dir, "$cleanArtist - $cleanTitle.m4a"),
+            File(dir, "$cleanArtist - $cleanTitle.mp4")
+        )
+        for (f in candidates) {
+            if (f.exists() && f.length() > 1024) {
+                return Uri.fromFile(f).toString()
+            }
+        }
+
+        val allFiles = dir.listFiles() ?: emptyArray()
+        for (f in allFiles) {
+            if (f.isFile && f.length() > 1024) {
+                val fname = f.nameWithoutExtension.lowercase()
+                if (fname.contains(cleanTitle.lowercase()) || (cleanArtist.isNotBlank() && fname.contains(cleanArtist.lowercase()))) {
+                    return Uri.fromFile(f).toString()
+                }
+            }
+        }
+    }
+
+    return song.uriString
 }
 
 fun restoreAndSyncLibrary(context: Context): List<SongItem> {
@@ -254,7 +323,9 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
 
     fun makeKey(artist: String, title: String) = "${artist.trim().lowercase()} - ${title.trim().lowercase()}"
 
-    val publicDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "MusicHub")
+    val publicDir = MusicHubStorage.getBaseDir()
+    val songsSubDir = MusicHubStorage.getSongsDir()
+    val coversSubDir = MusicHubStorage.getCoversDir()
 
     // 1. SharedPreferences
     val prefSongs = loadSavedSongs(context)
@@ -262,13 +333,15 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
         val key = makeKey(s.artist, s.title)
         if (seenKeys.add(key)) {
             var art = s.artworkUrl
-            if (publicDir.exists()) {
-                val companionArt = File(publicDir, "${s.artist} - ${s.title}.jpg")
-                if (companionArt.exists()) {
-                    art = Uri.fromFile(companionArt).toString()
-                }
+            val companionArt = File(coversSubDir, "${s.artist} - ${s.title}.jpg")
+            val rootArt = File(publicDir, "${s.artist} - ${s.title}.jpg")
+            if (companionArt.exists()) {
+                art = Uri.fromFile(companionArt).toString()
+            } else if (rootArt.exists()) {
+                art = Uri.fromFile(rootArt).toString()
             }
-            resultList.add(s.copy(artworkUrl = art))
+            val validUri = resolvePlayableUriInternal(context, s, publicDir)
+            resultList.add(s.copy(artworkUrl = art, uriString = validUri))
         }
     }
 
@@ -281,18 +354,14 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
                 for (s in manifestSongs) {
                     val key = makeKey(s.artist, s.title)
                     if (key !in seenKeys) {
-                        val fileObj = if (s.uriString.startsWith("file://")) File(Uri.parse(s.uriString).path ?: "") else null
-                        val publicFile = File(publicDir, "${s.artist} - ${s.title}.${s.format.lowercase()}")
-                        val validUri = when {
-                            fileObj != null && fileObj.exists() -> s.uriString
-                            publicFile.exists() -> Uri.fromFile(publicFile).toString()
-                            else -> s.uriString
-                        }
-
+                        val validUri = resolvePlayableUriInternal(context, s, publicDir)
                         var art = s.artworkUrl
-                        val companionArt = File(publicDir, "${s.artist} - ${s.title}.jpg")
+                        val companionArt = File(coversSubDir, "${s.artist} - ${s.title}.jpg")
+                        val rootArt = File(publicDir, "${s.artist} - ${s.title}.jpg")
                         if (companionArt.exists()) {
                             art = Uri.fromFile(companionArt).toString()
+                        } else if (rootArt.exists()) {
+                            art = Uri.fromFile(rootArt).toString()
                         }
 
                         seenKeys.add(key)
@@ -303,9 +372,11 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
         }
     } catch (e: Exception) {}
 
-    // 3. Scan public Music/MusicHub directly
-    if (publicDir.exists() && publicDir.isDirectory) {
-        val audioFiles = publicDir.listFiles { f ->
+    // 3. Scan physical audio files in Music/MusicHub/Songs and Music/MusicHub
+    val scanDirs = listOf(songsSubDir, publicDir)
+    for (dir in scanDirs) {
+        if (!dir.exists() || !dir.isDirectory) continue
+        val audioFiles = dir.listFiles { f ->
             val name = f.name.lowercase()
             name.endsWith(".mp3") || name.endsWith(".m4a") || name.endsWith(".mp4") ||
             name.endsWith(".wav") || name.endsWith(".flac") || name.endsWith(".ogg")
@@ -321,8 +392,13 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
 
             if (key in seenKeys) continue
 
-            val companionArt = File(publicDir, "$baseName.jpg")
-            var artUri = if (companionArt.exists()) Uri.fromFile(companionArt).toString() else ""
+            val coverCandidate = File(coversSubDir, "$baseName.jpg")
+            val rootCoverCandidate = File(publicDir, "$baseName.jpg")
+            var artUri = when {
+                coverCandidate.exists() -> Uri.fromFile(coverCandidate).toString()
+                rootCoverCandidate.exists() -> Uri.fromFile(rootCoverCandidate).toString()
+                else -> ""
+            }
 
             var durStr = "3:30"
             var durSec = 210
@@ -365,73 +441,27 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
         }
     }
 
-    // 4. Scan MediaStore on Android 10+
-    try {
-        val projection = arrayOf(
-            MediaStore.Audio.Media._ID,
-            MediaStore.Audio.Media.TITLE,
-            MediaStore.Audio.Media.ARTIST,
-            MediaStore.Audio.Media.DURATION,
-            MediaStore.Audio.Media.DISPLAY_NAME
-        )
-        val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            "${MediaStore.Audio.Media.RELATIVE_PATH} LIKE ?"
-        } else {
-            "${MediaStore.Audio.Media.DATA} LIKE ?"
+    // Clean and de-duplicate: Keep highest quality metadata (prefer known artist & real artwork)
+    val cleanedList = mutableListOf<SongItem>()
+    val processedTitles = mutableSetOf<String>()
+
+    val sorted = resultList.sortedWith(
+        compareByDescending<SongItem> { it.artworkUrl.isNotBlank() }
+            .thenByDescending { it.artist != "<unknown>" && it.artist != "MusicHub" }
+    )
+
+    for (s in sorted) {
+        val normTitle = s.title.lowercase()
+            .replace(Regex("[^a-z0-9\\u1780-\\u17ff]"), "")
+            .take(12)
+        val normKey = if (normTitle.isNotBlank()) normTitle else s.title.lowercase().trim()
+        if (processedTitles.add(normKey)) {
+            cleanedList.add(s)
         }
-        val selectionArgs = arrayOf(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) "Music/MusicHub%" else "%/MusicHub/%")
+    }
 
-        context.contentResolver.query(
-            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-            projection,
-            selection,
-            selectionArgs,
-            null
-        )?.use { cursor ->
-            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
-            val titleCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
-            val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
-            val durCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
-            val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
-
-            while (cursor.moveToNext()) {
-                val mediaId = cursor.getLong(idCol)
-                val mediaUri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, mediaId).toString()
-                val mTitle = cursor.getString(titleCol) ?: "Track"
-                val mArtist = cursor.getString(artistCol) ?: "MusicHub"
-                val key = makeKey(mArtist, mTitle)
-                if (key in seenKeys) continue
-
-                val durMs = cursor.getLong(durCol)
-                val durSec = if (durMs > 0) (durMs / 1000).toInt() else 210
-                val durStr = "%d:%02d".format(durSec / 60, durSec % 60)
-                val displayName = cursor.getString(nameCol) ?: ""
-                val baseName = displayName.substringBeforeLast(".")
-
-                val companionArt = File(publicDir, "$baseName.jpg")
-                val artUri = if (companionArt.exists()) Uri.fromFile(companionArt).toString() else ""
-
-                seenKeys.add(key)
-                resultList.add(
-                    SongItem(
-                        id = UUID.randomUUID().toString(),
-                        title = mTitle,
-                        artist = mArtist,
-                        album = "MusicHub",
-                        duration = durStr,
-                        durationSec = durSec,
-                        artworkUrl = artUri,
-                        uriString = mediaUri,
-                        format = if (displayName.endsWith(".mp4", true)) "MP4" else "MP3",
-                        isFavorite = false
-                    )
-                )
-            }
-        }
-    } catch (e: Exception) {}
-
-    saveSongs(context, resultList)
-    return resultList
+    saveSongs(context, cleanedList)
+    return cleanedList
 }
 
 suspend fun fetchMediaMetadata(url: String): Triple<String, String, String> = withContext(Dispatchers.IO) {
@@ -881,8 +911,9 @@ suspend fun downloadAudioToStorage(
     val baseName = "$cleanArtist - $cleanTitle".take(100)
     val fileName = "$baseName.$ext"
 
-    val publicDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "MusicHub")
-    if (!publicDir.exists()) publicDir.mkdirs()
+    val publicDir = MusicHubStorage.getBaseDir()
+    val songsDir = MusicHubStorage.getSongsDir()
+    val coversDir = MusicHubStorage.getCoversDir()
 
     var savedArtworkUriString = ""
     if (artworkUrl.isNotBlank() && (artworkUrl.startsWith("http://") || artworkUrl.startsWith("https://"))) {
@@ -892,9 +923,13 @@ suspend fun downloadAudioToStorage(
             if (artResp.isSuccessful) {
                 val artBytes = artResp.body?.bytes()
                 if (artBytes != null && artBytes.isNotEmpty()) {
-                    val companionArtFile = File(publicDir, "$baseName.jpg")
-                    companionArtFile.writeBytes(artBytes)
-                    savedArtworkUriString = Uri.fromFile(companionArtFile).toString()
+                    val coverFile = File(coversDir, "$baseName.jpg")
+                    coverFile.writeBytes(artBytes)
+                    try {
+                        val rootCoverFile = File(publicDir, "$baseName.jpg")
+                        rootCoverFile.writeBytes(artBytes)
+                    } catch (e: Exception) {}
+                    savedArtworkUriString = Uri.fromFile(coverFile).toString()
 
                     try {
                         val internalArtDir = File(context.filesDir, "artwork").apply { mkdirs() }
@@ -906,9 +941,44 @@ suspend fun downloadAudioToStorage(
         } catch (e: Exception) {}
     }
 
-    var savedUriString = ""
     var targetFile: File? = null
+    var savedUriString = ""
 
+    // 1. Save directly into dedicated Songs/ folder
+    try {
+        val destFile = File(songsDir, fileName)
+        tempFile.copyTo(destFile, overwrite = true)
+        targetFile = destFile
+        savedUriString = Uri.fromFile(destFile).toString()
+
+        try {
+            val rootDestFile = File(publicDir, fileName)
+            tempFile.copyTo(rootDestFile, overwrite = true)
+        } catch (e: Exception) {}
+
+        MediaScannerConnection.scanFile(
+            context,
+            arrayOf(destFile.absolutePath),
+            arrayOf(if (ext == "mp4") "audio/mp4" else "audio/mpeg"),
+            null
+        )
+    } catch (e: Exception) {
+        try {
+            val extMusicDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir
+            val destFile = File(extMusicDir, fileName)
+            tempFile.copyTo(destFile, overwrite = true)
+            targetFile = destFile
+            savedUriString = Uri.fromFile(destFile).toString()
+        } catch (e2: Exception) {
+            val musicDir = File(context.filesDir, "music").apply { mkdirs() }
+            val destFile = File(musicDir, fileName)
+            tempFile.copyTo(destFile, overwrite = true)
+            targetFile = destFile
+            savedUriString = Uri.fromFile(destFile).toString()
+        }
+    }
+
+    // 2. Also register into MediaStore if Android 10+
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         try {
             val resolver = context.contentResolver
@@ -918,51 +988,18 @@ suspend fun downloadAudioToStorage(
                 put(MediaStore.Audio.Media.ARTIST, cleanArtist)
                 put(MediaStore.Audio.Media.ALBUM, "MusicHub")
                 put(MediaStore.Audio.Media.MIME_TYPE, if (ext == "mp4") "audio/mp4" else "audio/mpeg")
-                put(MediaStore.Audio.Media.RELATIVE_PATH, "Music/MusicHub")
-                put(MediaStore.Audio.Media.IS_PENDING, 1)
+                put(MediaStore.Audio.Media.RELATIVE_PATH, "Music/MusicHub/Songs")
+                put(MediaStore.Audio.Media.IS_PENDING, 0)
             }
             val mediaUri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, contentValues)
-            if (mediaUri != null) {
+            if (mediaUri != null && targetFile != null) {
                 resolver.openOutputStream(mediaUri)?.use { outStream ->
-                    tempFile.inputStream().use { inStream ->
+                    targetFile.inputStream().use { inStream ->
                         inStream.copyTo(outStream)
                     }
                 }
-                contentValues.clear()
-                contentValues.put(MediaStore.Audio.Media.IS_PENDING, 0)
-                resolver.update(mediaUri, contentValues, null, null)
-                savedUriString = mediaUri.toString()
             }
         } catch (e: Exception) {}
-    }
-
-    if (savedUriString.isBlank()) {
-        try {
-            val destFile = File(publicDir, fileName)
-            tempFile.copyTo(destFile, overwrite = true)
-            targetFile = destFile
-            savedUriString = Uri.fromFile(destFile).toString()
-            MediaScannerConnection.scanFile(
-                context,
-                arrayOf(destFile.absolutePath),
-                arrayOf(if (ext == "mp4") "audio/mp4" else "audio/mpeg"),
-                null
-            )
-        } catch (e: Exception) {
-            try {
-                val extMusicDir = context.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: context.filesDir
-                val destFile = File(extMusicDir, fileName)
-                tempFile.copyTo(destFile, overwrite = true)
-                targetFile = destFile
-                savedUriString = Uri.fromFile(destFile).toString()
-            } catch (e2: Exception) {
-                val musicDir = File(context.filesDir, "music").apply { mkdirs() }
-                val destFile = File(musicDir, fileName)
-                tempFile.copyTo(destFile, overwrite = true)
-                targetFile = destFile
-                savedUriString = Uri.fromFile(destFile).toString()
-            }
-        }
     }
 
     try { tempFile.delete() } catch (e: Exception) {}
@@ -1206,7 +1243,12 @@ fun MusicHubApp() {
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                Toast.makeText(context, if (isKhmer) "បញ្ហាក្នុងការចាក់: ${error.message}" else "Playback error: ${error.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    context,
+                    if (isKhmer) "ឯកសារចម្រៀងនេះមិនទាន់មាន ឬខូច។ សូមទាញយកបទនេះឡើងវិញ!"
+                    else "Track file is missing or corrupted. Please re-download this track!",
+                    Toast.LENGTH_LONG
+                ).show()
                 isPlaying = false
             }
         }
@@ -1228,19 +1270,27 @@ fun MusicHubApp() {
         }
     }
 
-    // Load track into ExoPlayer on selection
+    // Load track into ExoPlayer on selection with auto-resolving URI
     LaunchedEffect(currentSong?.id) {
         val song = currentSong ?: return@LaunchedEffect
         if (song.uriString.isNotBlank()) {
+            val publicDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "MusicHub")
+            val resolvedUriStr = resolvePlayableUriInternal(context, song, publicDir)
+            if (resolvedUriStr != song.uriString) {
+                val updated = song.copy(uriString = resolvedUriStr)
+                currentSong = updated
+                songsList = songsList.map { if (it.id == song.id) updated else it }
+                saveSongs(context, songsList)
+            }
             try {
-                val mediaItem = MediaItem.fromUri(Uri.parse(song.uriString))
+                val mediaItem = MediaItem.fromUri(Uri.parse(resolvedUriStr))
                 exoPlayer.stop()
                 exoPlayer.setMediaItem(mediaItem)
                 exoPlayer.prepare()
                 exoPlayer.play()
                 isPlaying = true
             } catch (e: Exception) {
-                Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, if (isKhmer) "មិនអាចចាក់បទនេះបានទេ" else "Cannot play track: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -3438,7 +3488,7 @@ fun SettingsScreen(
                             color = Color(0xFF14161D)
                         )
                         Text(
-                            text = "Version: v1.0.14",
+                            text = "Version: v1.0.15",
                             fontSize = 13.sp,
                             color = Color(0xFF8A909E)
                         )
@@ -3503,6 +3553,15 @@ fun NowPlayingDialog(
         label = "artScale"
     )
 
+    var discRotation by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(isPlaying) {
+        while (isPlaying) {
+            withFrameMillis {
+                discRotation = (discRotation + 0.35f) % 360f
+            }
+        }
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -3545,27 +3604,82 @@ fun NowPlayingDialog(
                     }
                 }
 
-                // Center Squircle Artwork (Scaled to eliminate black letterbox bars!)
+                // Rotating Vinyl Record Disc with realistic grooves and center spindle hole
                 Box(
                     modifier = Modifier
-                        .size(290.dp)
+                        .size(285.dp)
                         .scale(artScale)
-                        .shadow(18.dp, RoundedCornerShape(32.dp))
-                        .clip(RoundedCornerShape(32.dp))
-                        .background(Color(0xFF1E212D)),
+                        .shadow(24.dp, CircleShape)
+                        .clip(CircleShape)
+                        .background(Color(0xFF101217))
+                        .graphicsLayer { rotationZ = discRotation },
                     contentAlignment = Alignment.Center
                 ) {
-                    if (song.artworkUrl.isNotBlank()) {
-                        AsyncImage(
-                            model = song.artworkUrl,
-                            contentDescription = song.title,
-                            contentScale = ContentScale.Crop,
+                    // Outer Vinyl Grooves (concentric realistic rings)
+                    Box(
+                        modifier = Modifier
+                            .size(272.dp)
+                            .border(1.dp, Color(0x1FFFFFFF), CircleShape)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(248.dp)
+                            .border(1.dp, Color(0x14FFFFFF), CircleShape)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(224.dp)
+                            .border(1.dp, Color(0x18FFFFFF), CircleShape)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(200.dp)
+                            .border(1.dp, Color(0x12FFFFFF), CircleShape)
+                    )
+
+                    // Center Vinyl Label / Album Artwork Sticker
+                    Box(
+                        modifier = Modifier
+                            .size(155.dp)
+                            .clip(CircleShape)
+                            .border(3.dp, Color(0xFF222632), CircleShape)
+                            .background(Color(0xFF1E212D)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (song.artworkUrl.isNotBlank()) {
+                            AsyncImage(
+                                model = song.artworkUrl,
+                                contentDescription = song.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .scale(1.2f)
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.MusicNote,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(52.dp)
+                            )
+                        }
+
+                        // Center Vinyl Spindle Hole & Metallic Silver Ring
+                        Box(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .scale(1.2f)
-                        )
-                    } else {
-                        Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = Color.White, modifier = Modifier.size(64.dp))
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF101217))
+                                .border(2.dp, Color(0xFFCBD5E1), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF0F172A))
+                            )
+                        }
                     }
                 }
 
@@ -4017,9 +4131,9 @@ fun AppUpdateDialog(
         delay(400)
         try {
             val currentVer = try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.14"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.15"
             } catch (e: Exception) {
-                "1.0.14"
+                "1.0.15"
             }
             val info = checker.checkLatestRelease(currentVer)
             updateInfo = info

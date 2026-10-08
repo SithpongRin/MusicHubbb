@@ -46,37 +46,57 @@ class GitHubUpdateChecker(
             .build()
 
         try {
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext UpdateInfo(
-                    hasUpdate = false,
-                    currentVersion = currentVersion,
-                    newVersion = currentVersion,
-                    releaseNotes = "",
-                    apkUrl = "",
-                    apkSize = 0L
-                )
-            }
-
-            val body = response.body?.string() ?: ""
-            val json = JSONObject(body)
-            val tagName = json.optString("tag_name", "").removePrefix("v")
-            val notes = json.optString("body", "Bug fixes and performance improvements.")
-
+            var tagName = ""
+            var notes = "Bug fixes and performance improvements."
             var apkUrl = ""
             var apkSize = 0L
 
-            val assets = json.optJSONArray("assets")
-            if (assets != null) {
-                for (i in 0 until assets.length()) {
-                    val asset = assets.getJSONObject(i)
-                    val name = asset.optString("name", "")
-                    if (name.endsWith(".apk")) {
-                        apkUrl = asset.optString("browser_download_url", "")
-                        apkSize = asset.optLong("size", 0L)
-                        break
+            val response = try { client.newCall(request).execute() } catch (e: Exception) { null }
+            if (response != null && response.isSuccessful) {
+                val body = response.body?.string() ?: ""
+                val json = JSONObject(body)
+                tagName = json.optString("tag_name", "").removePrefix("v")
+                notes = json.optString("body", "Bug fixes and performance improvements.")
+                val assets = json.optJSONArray("assets")
+                if (assets != null) {
+                    for (i in 0 until assets.length()) {
+                        val asset = assets.getJSONObject(i)
+                        val name = asset.optString("name", "")
+                        if (name.endsWith(".apk")) {
+                            apkUrl = asset.optString("browser_download_url", "")
+                            apkSize = asset.optLong("size", 0L)
+                            break
+                        }
                     }
                 }
+            } else {
+                // Fallback: Web redirect to releases/latest (Zero rate limit!)
+                try {
+                    val noRedirectClient = client.newBuilder().followRedirects(false).build()
+                    val headReq = Request.Builder()
+                        .url("https://github.com/$repoOwner/$repoName/releases/latest")
+                        .head()
+                        .build()
+                    val headResp = noRedirectClient.newCall(headReq).execute()
+                    val location = headResp.header("Location") ?: ""
+                    if (location.contains("/tag/")) {
+                        val tag = location.substringAfterLast("/tag/").trim()
+                        tagName = tag.removePrefix("v")
+                        apkUrl = "https://github.com/$repoOwner/$repoName/releases/download/$tag/MusicHub-$tag.apk"
+                    }
+                } catch (e2: Exception) {}
+            }
+
+            if (tagName.isNotBlank()) {
+                val hasUpdate = isNewerVersion(currentVersion, tagName)
+                return@withContext UpdateInfo(
+                    hasUpdate = hasUpdate,
+                    currentVersion = currentVersion,
+                    newVersion = tagName,
+                    releaseNotes = notes,
+                    apkUrl = apkUrl,
+                    apkSize = apkSize
+                )
             }
 
             val hasUpdate = isNewerVersion(currentVersion, tagName)
