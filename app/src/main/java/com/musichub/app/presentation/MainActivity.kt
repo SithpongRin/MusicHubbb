@@ -67,6 +67,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.musichub.app.update.ApkInstaller
 import com.musichub.app.update.GitHubUpdateChecker
 import com.musichub.app.update.UpdateInfo
@@ -484,7 +485,7 @@ suspend fun fetchMediaMetadata(url: String): Triple<String, String, String> = wi
 
     val ytId = LocalMediaExtractor.extractYouTubeId(u)
     if (ytId != null) {
-        thumbnail = "https://i.ytimg.com/vi/$ytId/mqdefault.jpg"
+        thumbnail = LocalMediaExtractor.resolveBestYouTubeThumbnail(ytId, client)
         try {
             val meta = LocalMediaExtractor.fetchMetadata(ytId, client)
             if (meta != null) {
@@ -617,7 +618,7 @@ suspend fun downloadAudioToStorage(
                 if (resolvedArtist.isBlank() || resolvedArtist == "MusicHub" || resolvedArtist == "Web Source") {
                     resolvedArtist = ytMeta.artist
                 }
-                if (resolvedArtworkUrl.isBlank()) {
+                if (resolvedArtworkUrl.isBlank() || resolvedArtworkUrl.contains("mqdefault") || resolvedArtworkUrl.contains("hqdefault")) {
                     resolvedArtworkUrl = ytMeta.thumbnailUrl
                 }
             }
@@ -2066,6 +2067,51 @@ fun MusicHubApp() {
             )
         }
     }
+}
+
+// Smart High-Resolution Artwork Image with dynamic YouTube resolution upgrade & fallback
+@Composable
+fun SmartArtworkImage(
+    artworkUrl: String,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop
+) {
+    val initialUrl = remember(artworkUrl) {
+        if (artworkUrl.contains("i.ytimg.com/vi/")) {
+            artworkUrl
+                .replace("/mqdefault.jpg", "/maxresdefault.jpg")
+                .replace("/hqdefault.jpg", "/maxresdefault.jpg")
+                .replace("/sddefault.jpg", "/maxresdefault.jpg")
+                .replace("/default.jpg", "/maxresdefault.jpg")
+        } else {
+            artworkUrl
+        }
+    }
+
+    var currentUrl by remember(artworkUrl) { mutableStateOf(initialUrl) }
+
+    AsyncImage(
+        model = ImageRequest.Builder(LocalContext.current)
+            .data(currentUrl)
+            .crossfade(true)
+            .allowHardware(true)
+            .build(),
+        contentDescription = contentDescription,
+        contentScale = contentScale,
+        onError = {
+            if (currentUrl.contains("/maxresdefault.jpg")) {
+                currentUrl = currentUrl.replace("/maxresdefault.jpg", "/hq720.jpg")
+            } else if (currentUrl.contains("/hq720.jpg")) {
+                currentUrl = currentUrl.replace("/hq720.jpg", "/sddefault.jpg")
+            } else if (currentUrl.contains("/sddefault.jpg")) {
+                currentUrl = currentUrl.replace("/sddefault.jpg", "/hqdefault.jpg")
+            } else if (currentUrl.contains("/hqdefault.jpg")) {
+                currentUrl = artworkUrl
+            }
+        },
+        modifier = modifier
+    )
 }
 
 // Animated Equalizer Bars for Playing Tracks
@@ -4095,9 +4141,9 @@ fun SettingsScreen(
     val context = LocalContext.current
     val currentAppVersion = remember {
         try {
-            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.23"
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.24"
         } catch (e: Exception) {
-            "1.0.23"
+            "1.0.24"
         }
     }
 
@@ -4208,73 +4254,80 @@ fun SettingsScreen(
                 color = Color.White
             ) {
                 Column(modifier = Modifier.padding(18.dp)) {
+                    // Full-width Header Row (Never truncates text)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(Color(0xFFECEEF2), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (appVolume <= 0.08f) Icons.Default.VolumeMute else if (appVolume < 0.5f) Icons.Default.VolumeDown else Icons.Default.VolumeUp,
+                                contentDescription = "Volume",
+                                tint = Color(0xFF14161D),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (isKhmer) "កម្រិតសំឡេង App / កាស" else "In-App / Headphone Volume",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = Color(0xFF14161D)
+                            )
+                            Text(
+                                text = if (isKhmer) "កែសម្រួលកុំអោយលឺខ្លាំងពេកពេលដាក់កាស" else "Prevent loud audio when using headphones",
+                                fontSize = 12.sp,
+                                color = Color(0xFF8A909E)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Dedicated Controls & Percentage Row
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier.weight(1f),
-                            verticalAlignment = Alignment.CenterVertically
+                        Surface(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { onVolumeChange(0.60f) },
+                            color = Color(0xFFECEEF2)
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .background(Color(0xFFECEEF2), CircleShape),
-                                contentAlignment = Alignment.Center
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Icon(
-                                    imageVector = if (appVolume <= 0.08f) Icons.Default.VolumeMute else if (appVolume < 0.5f) Icons.Default.VolumeDown else Icons.Default.VolumeUp,
-                                    contentDescription = "Volume",
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = null,
                                     tint = Color(0xFF14161D),
-                                    modifier = Modifier.size(20.dp)
+                                    modifier = Modifier.size(13.dp)
                                 )
-                            }
-                            Spacer(modifier = Modifier.width(14.dp))
-                            Column(modifier = Modifier.weight(1f)) {
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = if (isKhmer) "កម្រិតសំឡេង App / កាស" else "In-App / Headphone Volume",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp,
-                                    color = Color(0xFF14161D),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = if (isKhmer) "កែសម្រួលកុំអោយលឺខ្លាំងពេកពេលដាក់កាស" else "Prevent loud audio when using headphones",
+                                    text = if (isKhmer) "លំនាំដើម (60%)" else "Default (60%)",
                                     fontSize = 12.sp,
-                                    color = Color(0xFF8A909E),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.width(10.dp))
-
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Surface(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .clickable { onVolumeChange(0.60f) },
-                                color = Color(0xFFECEEF2)
-                            ) {
-                                Text(
-                                    text = if (isKhmer) "លំនាំដើម" else "Default",
-                                    fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF14161D),
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    color = Color(0xFF14161D)
                                 )
                             }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "${(appVolume * 100).toInt()}%",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF14161D)
-                            )
                         }
+
+                        Text(
+                            text = "${(appVolume * 100).toInt()}%",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color(0xFF14161D)
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -4448,13 +4501,13 @@ fun NowPlayingDialog(
                 ) {
                     // Full-bleed Album Artwork (fills the entire circular disc)
                     if (song.artworkUrl.isNotBlank()) {
-                        AsyncImage(
-                            model = song.artworkUrl,
+                        SmartArtworkImage(
+                            artworkUrl = song.artworkUrl,
                             contentDescription = song.title,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .scale(1.40f)
+                                .scale(1.05f)
                         )
                     } else {
                         Box(
@@ -5020,9 +5073,9 @@ fun AppUpdateDialog(
         delay(400)
         try {
             val currentVer = try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.23"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.24"
             } catch (e: Exception) {
-                "1.0.23"
+                "1.0.24"
             }
             val info = checker.checkLatestRelease(currentVer)
             updateInfo = info

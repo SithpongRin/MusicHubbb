@@ -284,7 +284,15 @@ The app requests only required permissions:
 
 # Release History & Changelog
 
-### Version 1.0.23 (Current)
+### Version 1.0.24 (Current)
+- Redesigned In-App / Headphone Volume card layout in Settings: Separated title/subtitle into full-width header and moved "Default (60%)" button and percentage text into a dedicated control row above the slider, completely eliminating text truncation/cut-off in English ("In-App / Headp...") and Khmer.
+- High-Definition Album Artwork Architecture: Upgraded YouTube thumbnail extractor to dynamically query and resolve crystal-clear 1280x720 HD (`maxresdefault.jpg`) instead of low-resolution 320x180 (`mqdefault.jpg`), yielding 16x higher image fidelity.
+- Added `SmartArtworkImage` composable with automatic resolution escalation to `maxresdefault.jpg` and cascading fallback across `hq720.jpg`, `sddefault.jpg`, and `hqdefault.jpg`.
+- Optimized vinyl record picture disc scaling: reduced `scale(1.40f)` to `scale(1.05f)` to eliminate pixel stretching, prevent over-cropping of artists' faces, and maximize image sharpness.
+- Added master studio artwork search via iTunes Search API (`searchHdCoverArt`) for lossless 1000x1000px cover resolution.
+- Updated `versionCode = 24` and `versionName = "1.0.24"` in `app/build.gradle.kts`.
+
+### Version 1.0.23
 - Fixed volume card layout in Settings: Added `Modifier.weight(1f)` with ellipsis truncation to ensure volume percentage text ("60%") is never clipped or pushed off screen when using English UI language.
 - Added 1-Tap "Default" / "លំនាំដើម" quick-reset button on the volume card in Settings to instantly reset audio gain to safe 60% headphone level.
 - Integrated hardware/software DSP Equalizer (`android.media.audiofx.Equalizer`) attached directly to ExoPlayer's `audioSessionId` with multi-band frequency modulation for presets (Bass Boost, Vocal Boost, Electronic, Rock, Acoustic, Flat).

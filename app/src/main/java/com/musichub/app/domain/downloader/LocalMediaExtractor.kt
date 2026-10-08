@@ -20,6 +20,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.regex.Pattern
+import java.net.URLEncoder
 import kotlin.coroutines.resume
 
 data class YouTubeMetadata(
@@ -84,7 +85,7 @@ object LocalMediaExtractor {
                 val json = JSONObject(bodyStr)
                 val rawTitle = json.optString("title", "").trim()
                 val author = json.optString("author_name", "YouTube").trim()
-                val thumb = "https://i.ytimg.com/vi/$videoId/mqdefault.jpg"
+                val thumb = resolveBestYouTubeThumbnail(videoId, client)
 
                 if (rawTitle.isNotBlank()) {
                     return@withContext YouTubeMetadata(
@@ -95,6 +96,66 @@ object LocalMediaExtractor {
                 }
             }
         } catch (e: Exception) {}
+        null
+    }
+
+    /**
+     * Resolves the highest resolution thumbnail available for a YouTube video.
+     * Tries 1280x720 HD (maxresdefault.jpg), 720p (hq720.jpg), SD (sddefault.jpg), HQ (hqdefault.jpg), then MQ.
+     */
+    suspend fun resolveBestYouTubeThumbnail(videoId: String, client: OkHttpClient): String = withContext(Dispatchers.IO) {
+        val candidates = listOf(
+            "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg",
+            "https://i.ytimg.com/vi/$videoId/hq720.jpg",
+            "https://i.ytimg.com/vi/$videoId/sddefault.jpg",
+            "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+        )
+        for (candidate in candidates) {
+            try {
+                val req = Request.Builder()
+                    .url(candidate)
+                    .head()
+                    .header("User-Agent", USER_AGENT)
+                    .build()
+                val resp = client.newCall(req).execute()
+                if (resp.isSuccessful) {
+                    return@withContext candidate
+                }
+            } catch (_: Exception) {}
+        }
+        "https://i.ytimg.com/vi/$videoId/mqdefault.jpg"
+    }
+
+    /**
+     * Searches iTunes Search API for master studio album artwork (up to 1000x1000px).
+     */
+    suspend fun searchHdCoverArt(query: String, client: OkHttpClient): String? = withContext(Dispatchers.IO) {
+        try {
+            val cleanQuery = query.replace(Regex("[\\[\\](){}|_]"), " ")
+                .replace("Official Music Video", "", ignoreCase = true)
+                .replace("Official Video", "", ignoreCase = true)
+                .replace("Music Video", "", ignoreCase = true)
+                .replace("MV", "", ignoreCase = true)
+                .replace("VEVO", "", ignoreCase = true)
+                .replace("\\s+".toRegex(), " ")
+                .trim()
+            if (cleanQuery.isBlank()) return@withContext null
+
+            val itunesUrl = "https://itunes.apple.com/search?term=${URLEncoder.encode(cleanQuery, "UTF-8")}&entity=song&limit=1"
+            val req = Request.Builder().url(itunesUrl).header("User-Agent", USER_AGENT).build()
+            val resp = client.newCall(req).execute()
+            if (resp.isSuccessful) {
+                val json = JSONObject(resp.body?.string() ?: "")
+                val results = json.optJSONArray("results")
+                if (results != null && results.length() > 0) {
+                    val first = results.getJSONObject(0)
+                    val art100 = first.optString("artworkUrl100", "")
+                    if (art100.isNotBlank()) {
+                        return@withContext art100.replace("100x100bb.jpg", "1000x1000bb.jpg")
+                    }
+                }
+            }
+        } catch (_: Exception) {}
         null
     }
 
