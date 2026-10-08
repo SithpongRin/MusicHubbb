@@ -30,6 +30,7 @@ class GitHubUpdateChecker(
         val request = Request.Builder()
             .url(url)
             .addHeader("Accept", "application/vnd.github.v3+json")
+            .addHeader("User-Agent", "MusicHub-Android-App")
             .build()
 
         try {
@@ -99,6 +100,45 @@ class GitHubUpdateChecker(
             if (candVal < currVal) return false
         }
         return false
+    }
+
+    suspend fun downloadApk(
+        context: Context,
+        apkUrl: String,
+        onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long) -> Unit
+    ): File? = withContext(Dispatchers.IO) {
+        val destFile = File(context.cacheDir, "MusicHub-update.apk")
+        if (destFile.exists()) destFile.delete()
+
+        val req = Request.Builder()
+            .url(apkUrl)
+            .addHeader("User-Agent", "MusicHub-Android-Updater")
+            .build()
+        try {
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) return@withContext null
+            val body = resp.body ?: return@withContext null
+            val total = body.contentLength()
+            val input = body.byteStream()
+            val output = FileOutputStream(destFile)
+            val buffer = ByteArray(16384)
+            var downloaded = 0L
+            var read: Int
+            while (input.read(buffer).also { read = it } != -1) {
+                output.write(buffer, 0, read)
+                downloaded += read
+                val p = if (total > 0) ((downloaded * 100) / total).toInt().coerceIn(0, 100) else 0
+                withContext(Dispatchers.Main) {
+                    onProgress(p, downloaded, total)
+                }
+            }
+            output.flush()
+            output.close()
+            input.close()
+            destFile
+        } catch (e: Exception) {
+            null
+        }
     }
 }
 
