@@ -613,11 +613,19 @@ suspend fun downloadAudioToStorage(
             }
         } catch (e: Exception) {}
 
-        onProgress(25, if (isKhmer) "កំពុងដំណើរការ On-Device Audio Engine..." else "Extracting on-device stream...")
+        onProgress(25, if (isKhmer) "កំពុងទាញយក Audio ពី YouTube..." else "Extracting audio from YouTube...")
         try {
-            val localStream = LocalMediaExtractor.extractStreamUrl(context, ytId)
-            if (localStream != null && localStream.streamUrl.isNotBlank()) {
-                candidateUrls.add(localStream.streamUrl)
+            val directStreams = LocalMediaExtractor.extractStreamDirect(ytId, client)
+            for (st in directStreams) {
+                if (st.streamUrl.isNotBlank() && !candidateUrls.contains(st.streamUrl)) {
+                    candidateUrls.add(st.streamUrl)
+                }
+            }
+            if (candidateUrls.isEmpty()) {
+                val localStream = LocalMediaExtractor.extractStreamUrl(context, ytId, client)
+                if (localStream != null && localStream.streamUrl.isNotBlank() && !candidateUrls.contains(localStream.streamUrl)) {
+                    candidateUrls.add(localStream.streamUrl)
+                }
             }
         } catch (e: Exception) {}
     }
@@ -681,7 +689,7 @@ suspend fun downloadAudioToStorage(
                     val headReq = Request.Builder()
                         .url(targetUrl)
                         .head()
-                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                        .header("User-Agent", LocalMediaExtractor.ANDROID_YT_USER_AGENT)
                         .build()
                     val headResp = client.newCall(headReq).execute()
                     val len = headResp.body?.contentLength() ?: -1L
@@ -701,7 +709,7 @@ suspend fun downloadAudioToStorage(
                         val currentEnd = minOf(currentStart + chunkSize - 1, totalLength - 1)
                         val rangeReq = Request.Builder()
                             .url(targetUrl)
-                            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                            .header("User-Agent", LocalMediaExtractor.ANDROID_YT_USER_AGENT)
                             .header("Range", "bytes=$currentStart-$currentEnd")
                             .build()
                         val rangeResp = client.newCall(rangeReq).execute()
@@ -753,9 +761,7 @@ suspend fun downloadAudioToStorage(
 
             val req = Request.Builder()
                 .url(targetUrl)
-                .header("User-Agent", LocalMediaExtractor.USER_AGENT)
-                .header("Referer", "https://www.youtube.com/")
-                .header("Origin", "https://www.youtube.com")
+                .header("User-Agent", if (targetUrl.contains("googlevideo.com")) LocalMediaExtractor.ANDROID_YT_USER_AGENT else LocalMediaExtractor.USER_AGENT)
                 .build()
             val resp = client.newCall(req).execute()
             if (resp.isSuccessful) {
@@ -768,10 +774,6 @@ suspend fun downloadAudioToStorage(
                     }
 
                     val totalBytes = body.contentLength()
-                    if (totalBytes == 0L) {
-                        body.close()
-                        continue
-                    }
                     val inputStream = body.byteStream()
                     val outputStream = FileOutputStream(tempFile)
                     val buffer = ByteArray(32768)
