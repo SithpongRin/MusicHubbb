@@ -1085,6 +1085,111 @@ fun MusicHubApp() {
         }
     }
 
+    // Auto-Enhance Active Playing Song Cover Art to 1000x1000 Studio HD
+    LaunchedEffect(currentSong?.id) {
+        val s = currentSong ?: return@LaunchedEffect
+        withContext(Dispatchers.IO) {
+            val coversDir = MusicHubStorage.getCoversDir()
+            val publicDir = MusicHubStorage.getBaseDir()
+            val companionArt = File(coversDir, "${s.artist} - ${s.title}.jpg")
+            val rootArt = File(publicDir, "${s.artist} - ${s.title}.jpg")
+            val isLowRes = (!companionArt.exists() || companionArt.length() < 40000L) &&
+                           (!rootArt.exists() || rootArt.length() < 40000L)
+
+            if (isLowRes) {
+                try {
+                    val client = OkHttpClient()
+                    var hdUrl = LocalMediaExtractor.searchHdCoverArt("${s.artist} ${s.title}", client)
+                    if (hdUrl.isNullOrBlank() && s.artworkUrl.contains("i.ytimg.com/vi/")) {
+                        val ytId = s.artworkUrl.substringAfter("i.ytimg.com/vi/").substringBefore("/")
+                        if (ytId.isNotBlank()) {
+                            hdUrl = LocalMediaExtractor.resolveBestYouTubeThumbnail(ytId, client)
+                        }
+                    }
+
+                    val targetHdUrl = hdUrl
+                    if (!targetHdUrl.isNullOrBlank()) {
+                        val artReq = Request.Builder().url(targetHdUrl).header("User-Agent", LocalMediaExtractor.USER_AGENT).build()
+                        val artResp = client.newCall(artReq).execute()
+                        if (artResp.isSuccessful) {
+                            val artBytes = artResp.body?.bytes()
+                            if (artBytes != null && artBytes.size > 25000) {
+                                companionArt.writeBytes(artBytes)
+                                try { rootArt.writeBytes(artBytes) } catch (_: Exception) {}
+                                val newArtUri = Uri.fromFile(companionArt).toString()
+                                withContext(Dispatchers.Main) {
+                                    currentSong = s.copy(artworkUrl = newArtUri)
+                                    songsList = songsList.map { if (it.id == s.id) it.copy(artworkUrl = newArtUri) else it }
+                                    saveSongs(context, songsList)
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    // Background HD Cover Upgrader for Entire Library
+    LaunchedEffect(songsList.size) {
+        if (songsList.isNotEmpty()) {
+            withContext(Dispatchers.IO) {
+                val coversDir = MusicHubStorage.getCoversDir()
+                val publicDir = MusicHubStorage.getBaseDir()
+                val client = OkHttpClient()
+                var listModified = false
+                val updatedList = songsList.toMutableList()
+
+                for (i in updatedList.indices) {
+                    val s = updatedList[i]
+                    val companionArt = File(coversDir, "${s.artist} - ${s.title}.jpg")
+                    val rootArt = File(publicDir, "${s.artist} - ${s.title}.jpg")
+
+                    val isLowRes = (!companionArt.exists() || companionArt.length() < 40000L) &&
+                                   (!rootArt.exists() || rootArt.length() < 40000L)
+
+                    if (isLowRes) {
+                        try {
+                            var hdUrl = LocalMediaExtractor.searchHdCoverArt("${s.artist} ${s.title}", client)
+                            if (hdUrl.isNullOrBlank() && s.artworkUrl.contains("i.ytimg.com/vi/")) {
+                                val ytId = s.artworkUrl.substringAfter("i.ytimg.com/vi/").substringBefore("/")
+                                if (ytId.isNotBlank()) {
+                                    hdUrl = LocalMediaExtractor.resolveBestYouTubeThumbnail(ytId, client)
+                                }
+                            }
+
+                            val targetLibraryHdUrl = hdUrl
+                            if (!targetLibraryHdUrl.isNullOrBlank()) {
+                                val artReq = Request.Builder().url(targetLibraryHdUrl).header("User-Agent", LocalMediaExtractor.USER_AGENT).build()
+                                val artResp = client.newCall(artReq).execute()
+                                if (artResp.isSuccessful) {
+                                    val artBytes = artResp.body?.bytes()
+                                    if (artBytes != null && artBytes.size > 25000) {
+                                        companionArt.writeBytes(artBytes)
+                                        try { rootArt.writeBytes(artBytes) } catch (_: Exception) {}
+                                        val newArtUri = Uri.fromFile(companionArt).toString()
+                                        updatedList[i] = s.copy(artworkUrl = newArtUri)
+                                        listModified = true
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
+                }
+
+                if (listModified) {
+                    withContext(Dispatchers.Main) {
+                        songsList = updatedList
+                        if (currentSong != null) {
+                            updatedList.find { it.id == currentSong?.id }?.let { currentSong = it }
+                        }
+                        saveSongs(context, updatedList)
+                    }
+                }
+            }
+        }
+    }
+
     var appVolume by remember {
         mutableStateOf(
             context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
@@ -1543,13 +1648,11 @@ fun MusicHubApp() {
                                         contentAlignment = Alignment.Center
                                     ) {
                                         if (song.artworkUrl.isNotBlank()) {
-                                            AsyncImage(
-                                                model = song.artworkUrl,
+                                            SmartArtworkImage(
+                                                artworkUrl = song.artworkUrl,
                                                 contentDescription = song.title,
                                                 contentScale = ContentScale.Crop,
-                                                modifier = Modifier
-                                                    .fillMaxSize()
-                                                    .scale(1.40f)
+                                                modifier = Modifier.fillMaxSize()
                                             )
                                         } else {
                                             Icon(
@@ -2986,13 +3089,11 @@ fun PlaylistDetailDialog(
                                         contentAlignment = Alignment.Center
                                     ) {
                                         if (song.artworkUrl.isNotBlank()) {
-                                            AsyncImage(
-                                                model = song.artworkUrl,
+                                            SmartArtworkImage(
+                                                artworkUrl = song.artworkUrl,
                                                 contentDescription = song.title,
                                                 contentScale = ContentScale.Crop,
-                                                modifier = Modifier
-                                                    .fillMaxSize()
-                                                    .scale(1.40f)
+                                                modifier = Modifier.fillMaxSize()
                                             )
                                         } else {
                                             Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = Color(0xFF64748B), modifier = Modifier.size(20.dp))
@@ -3305,13 +3406,11 @@ fun HomeScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             if (currentSong != null && currentSong.artworkUrl.isNotBlank()) {
-                                AsyncImage(
-                                    model = currentSong.artworkUrl,
+                                SmartArtworkImage(
+                                    artworkUrl = currentSong.artworkUrl,
                                     contentDescription = currentSong.title,
                                     contentScale = ContentScale.Crop,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .scale(1.40f)
+                                    modifier = Modifier.fillMaxSize()
                                 )
                             } else {
                                 Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = Color.White, modifier = Modifier.size(38.dp))
@@ -3458,13 +3557,11 @@ fun HomeScreen(
                                         contentAlignment = Alignment.Center
                                     ) {
                                         if (!firstArtwork.isNullOrBlank()) {
-                                            AsyncImage(
-                                                model = firstArtwork,
+                                            SmartArtworkImage(
+                                                artworkUrl = firstArtwork,
                                                 contentDescription = playlist.title,
                                                 contentScale = ContentScale.Crop,
-                                                modifier = Modifier
-                                                    .fillMaxSize()
-                                                    .scale(1.40f)
+                                                modifier = Modifier.fillMaxSize()
                                             )
                                         } else {
                                             Icon(
@@ -3640,13 +3737,11 @@ fun NumberedTrackRowItem(
                 contentAlignment = Alignment.Center
             ) {
                 if (song.artworkUrl.isNotBlank()) {
-                    AsyncImage(
-                        model = song.artworkUrl,
+                    SmartArtworkImage(
+                        artworkUrl = song.artworkUrl,
                         contentDescription = song.title,
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .scale(1.40f)
+                        modifier = Modifier.fillMaxSize()
                     )
                 } else {
                     Icon(
@@ -4049,13 +4144,11 @@ fun LibraryScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 if (firstSong != null && firstSong.artworkUrl.isNotBlank()) {
-                                    AsyncImage(
-                                        model = firstSong.artworkUrl,
+                                    SmartArtworkImage(
+                                        artworkUrl = firstSong.artworkUrl,
                                         contentDescription = playlist.title,
                                         contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .scale(1.40f)
+                                        modifier = Modifier.fillMaxSize()
                                     )
                                 } else {
                                     Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = Color.White, modifier = Modifier.size(24.dp))
@@ -4141,9 +4234,9 @@ fun SettingsScreen(
     val context = LocalContext.current
     val currentAppVersion = remember {
         try {
-            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.24"
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.25"
         } catch (e: Exception) {
-            "1.0.24"
+            "1.0.25"
         }
     }
 
@@ -4942,13 +5035,11 @@ fun MediaLinkDownloadDialog(
                                 .clip(RoundedCornerShape(14.dp)),
                             color = Color(0xFFECEEF2)
                         ) {
-                            AsyncImage(
-                                model = extractedThumbnail,
+                            SmartArtworkImage(
+                                artworkUrl = extractedThumbnail,
                                 contentDescription = "Thumbnail Preview",
                                 contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .scale(1.15f)
+                                modifier = Modifier.fillMaxSize()
                             )
                         }
                     }
@@ -5073,9 +5164,9 @@ fun AppUpdateDialog(
         delay(400)
         try {
             val currentVer = try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.24"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.25"
             } catch (e: Exception) {
-                "1.0.24"
+                "1.0.25"
             }
             val info = checker.checkLatestRelease(currentVer)
             updateInfo = info

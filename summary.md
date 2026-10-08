@@ -284,7 +284,13 @@ The app requests only required permissions:
 
 # Release History & Changelog
 
-### Version 1.0.24 (Current)
+### Version 1.0.25 (Current)
+- Universal HD Artwork Architecture across all screens: Replaced all legacy `AsyncImage` instances with `SmartArtworkImage` across Home Hero card, Playlists cards, Numbered track row items, Playlist detail dialog, and Floating Mini-Player.
+- Removed artificial `scale(1.40f)` over-zooming across all track and playlist cards, eliminating pixel stretching and image distortion.
+- Added Automatic Background HD Cover Enhancer: Queries iTunes Search API and YouTube HD endpoints to automatically upgrade any existing low-resolution (<40KB) cover art on device to 1000x1000 master studio artwork upon app launch and playback.
+- Updated `versionCode = 25` and `versionName = "1.0.25"` in `app/build.gradle.kts`.
+
+### Version 1.0.24
 - Redesigned In-App / Headphone Volume card layout in Settings: Separated title/subtitle into full-width header and moved "Default (60%)" button and percentage text into a dedicated control row above the slider, completely eliminating text truncation/cut-off in English ("In-App / Headp...") and Khmer.
 - High-Definition Album Artwork Architecture: Upgraded YouTube thumbnail extractor to dynamically query and resolve crystal-clear 1280x720 HD (`maxresdefault.jpg`) instead of low-resolution 320x180 (`mqdefault.jpg`), yielding 16x higher image fidelity.
 - Added `SmartArtworkImage` composable with automatic resolution escalation to `maxresdefault.jpg` and cascading fallback across `hq720.jpg`, `sddefault.jpg`, and `hqdefault.jpg`.
