@@ -699,6 +699,82 @@ suspend fun downloadAudioToStorage(
 
     for (targetUrl in candidateUrls) {
         try {
+            if (targetUrl.contains("googlevideo.com")) {
+                val clen = targetUrl.substringAfter("clen=").substringBefore("&").toLongOrNull() ?: -1L
+                val totalLength = if (clen > 0) clen else {
+                    val headReq = Request.Builder()
+                        .url(targetUrl)
+                        .head()
+                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                        .build()
+                    val headResp = client.newCall(headReq).execute()
+                    val len = headResp.body?.contentLength() ?: -1L
+                    headResp.close()
+                    len
+                }
+
+                if (totalLength > 50000L) {
+                    val outputStream = FileOutputStream(tempFile)
+                    var downloadedBytes = 0L
+                    val chunkSize = 1048576L // 1 MB chunks
+                    var currentStart = 0L
+                    var lastProgressTime = 0L
+                    var chunkSuccess = true
+
+                    while (currentStart < totalLength) {
+                        val currentEnd = minOf(currentStart + chunkSize - 1, totalLength - 1)
+                        val rangeReq = Request.Builder()
+                            .url(targetUrl)
+                            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                            .header("Range", "bytes=$currentStart-$currentEnd")
+                            .build()
+                        val rangeResp = client.newCall(rangeReq).execute()
+                        if (rangeResp.isSuccessful || rangeResp.code == 206) {
+                            val rangeBody = rangeResp.body
+                            if (rangeBody != null) {
+                                val buffer = ByteArray(32768)
+                                val inStream = rangeBody.byteStream()
+                                var r: Int
+                                while (inStream.read(buffer).also { r = it } != -1) {
+                                    outputStream.write(buffer, 0, r)
+                                    downloadedBytes += r
+
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastProgressTime > 120) {
+                                        lastProgressTime = now
+                                        val mb = downloadedBytes / (1024.0 * 1024.0)
+                                        val totalMb = totalLength / (1024.0 * 1024.0)
+                                        val p = 45 + ((downloadedBytes * 45) / totalLength).toInt().coerceIn(0, 45)
+                                        val sizeStr = if (mb >= 1.0) String.format("%.1f MB", mb) else "${downloadedBytes / 1024} KB"
+                                        val msg = if (isKhmer) "កំពុងទាញយក: $p% ($sizeStr / ${String.format("%.1f MB", totalMb)})"
+                                                  else "Downloading: $p% ($sizeStr / ${String.format("%.1f MB", totalMb)})"
+                                        withContext(Dispatchers.Main) {
+                                            onProgress(p, msg)
+                                        }
+                                    }
+                                }
+                                inStream.close()
+                            }
+                            rangeResp.close()
+                            currentStart = currentEnd + 1
+                        } else {
+                            rangeResp.close()
+                            chunkSuccess = false
+                            break
+                        }
+                    }
+                    outputStream.flush()
+                    outputStream.close()
+
+                    if (chunkSuccess && tempFile.exists() && tempFile.length() > 50000L) {
+                        downloadSucceeded = true
+                        break
+                    } else {
+                        tempFile.delete()
+                    }
+                }
+            }
+
             val req = Request.Builder()
                 .url(targetUrl)
                 .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
@@ -2430,7 +2506,7 @@ fun HomeScreen(
                 }
 
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Language Switcher Pill
@@ -2451,34 +2527,40 @@ fun HomeScreen(
                     }
 
                     // Import Button
-                    IconButton(
-                        onClick = onImportClick,
+                    Surface(
                         modifier = Modifier
                             .size(38.dp)
-                            .background(Color.White, CircleShape)
-                            .border(1.dp, Color(0xFFECEEF2), CircleShape)
+                            .clip(CircleShape)
+                            .clickable { onImportClick() },
+                        color = Color.White,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFECEEF2))
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = "Import",
-                            tint = Color(0xFF14161D),
-                            modifier = Modifier.size(18.dp)
-                        )
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = "Import",
+                                tint = Color(0xFF14161D),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
 
                     // Download by Link Button
-                    IconButton(
-                        onClick = onDownloadClick,
+                    Surface(
                         modifier = Modifier
                             .size(38.dp)
-                            .background(Color(0xFF14161D), CircleShape)
+                            .clip(CircleShape)
+                            .clickable { onDownloadClick() },
+                        color = Color(0xFF14161D)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Download,
-                            contentDescription = "Download",
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = "Download",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -2915,12 +2997,17 @@ fun LibraryScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .padding(end = 8.dp)
+                ) {
                     Text(
                         text = if (isKhmer) "បណ្ណាល័យ" else "Library",
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFF14161D)
+                        color = Color(0xFF14161D),
+                        maxLines = 1
                     )
                     Text(
                         text = if (isPlaylistsTab) {
@@ -2929,44 +3016,62 @@ fun LibraryScreen(
                             if (isKhmer) "${displayedSongs.size} បទក្នុងឧបករណ៍" else "${displayedSongs.size} tracks available"
                         },
                         fontSize = 12.sp,
-                        color = Color(0xFF8A909E)
+                        color = Color(0xFF8A909E),
+                        maxLines = 1
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    // Rescan Library Button
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Rescan Library Circle Button
                     Surface(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
+                            .size(34.dp)
+                            .clip(CircleShape)
                             .clickable { onRescanLibrary() },
                         color = Color.White,
                         border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFECEEF2))
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(imageVector = Icons.Default.Refresh, contentDescription = null, tint = Color(0xFF14161D), modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(text = if (isKhmer) "ស្កេន" else "Scan", color = Color(0xFF14161D), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = if (isKhmer) "ស្កេន" else "Scan",
+                                tint = Color(0xFF14161D),
+                                modifier = Modifier.size(16.dp)
+                            )
                         }
                     }
 
-                    // Create Playlist Button
-                    Surface(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
-                            .clickable { onCreatePlaylistClick() },
-                        color = Color.White,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFECEEF2))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                    if (isPlaylistsTab) {
+                        // Create Playlist Button
+                        Surface(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .clickable { onCreatePlaylistClick() },
+                            color = Color(0xFF14161D)
                         ) {
-                            Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = Color(0xFF14161D), modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(text = if (isKhmer) "Playlist" else "+ List", color = Color(0xFF14161D), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Row(
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = if (isKhmer) "បញ្ជីចម្រៀង" else "+ List",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
                         }
                     }
 
@@ -2975,15 +3080,28 @@ fun LibraryScreen(
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
                             .clickable { onImportClick() },
-                        color = Color(0xFF14161D)
+                        color = if (isPlaylistsTab) Color.White else Color(0xFF14161D),
+                        border = if (isPlaylistsTab) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFECEEF2)) else null
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(imageVector = Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = null,
+                                tint = if (isPlaylistsTab) Color(0xFF14161D) else Color.White,
+                                modifier = Modifier.size(14.dp)
+                            )
                             Spacer(modifier = Modifier.width(3.dp))
-                            Text(text = if (isKhmer) "នាំចូល" else "Import", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                text = if (isKhmer) "នាំចូល" else "Import",
+                                color = if (isPlaylistsTab) Color(0xFF14161D) else Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
                         }
                     }
                 }
@@ -3281,7 +3399,7 @@ fun SettingsScreen(
                             color = Color(0xFF14161D)
                         )
                         Text(
-                            text = "Version: v1.0.12",
+                            text = "Version: v1.0.13",
                             fontSize = 13.sp,
                             color = Color(0xFF8A909E)
                         )
@@ -3848,9 +3966,9 @@ fun AppUpdateDialog(
         delay(400)
         try {
             val currentVer = try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.12"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.13"
             } catch (e: Exception) {
-                "1.0.12"
+                "1.0.13"
             }
             val info = checker.checkLatestRelease(currentVer)
             updateInfo = info
