@@ -567,9 +567,85 @@ suspend fun downloadAudioToStorage(
         candidateUrls.add(u)
     }
 
-    // Try high-speed Cobalt API instances
-    val isSocialOrYt = u.contains("youtube.com") || u.contains("youtu.be") ||
-            u.contains("tiktok.com") || u.contains("facebook.com") || u.contains("fb.watch") ||
+    // YouTube stream extraction
+    val isYoutube = u.contains("youtube.com") || u.contains("youtu.be")
+    if (isYoutube) {
+        val id = when {
+            u.contains("youtu.be/") -> u.substringAfter("youtu.be/").substringBefore("?").substringBefore("&")
+            u.contains("shorts/") -> u.substringAfter("shorts/").substringBefore("?").substringBefore("&")
+            u.contains("embed/") -> u.substringAfter("embed/").substringBefore("?").substringBefore("&")
+            u.contains("v=") -> u.substringAfter("v=").substringBefore("&")
+            else -> ""
+        }
+
+        if (id.isNotBlank()) {
+            val invidiousInstances = mutableListOf(
+                "https://invidious.f5.si",
+                "https://invidious.protokolla.fi",
+                "https://inv.nadeko.net",
+                "https://invidious.nerdvpn.de"
+            )
+
+            // Dynamically discover healthiest Invidious instances
+            try {
+                val listReq = Request.Builder()
+                    .url("https://api.invidious.io/instances.json?sort_by=health")
+                    .header("User-Agent", "Mozilla/5.0")
+                    .build()
+                val listResp = client.newCall(listReq).execute()
+                if (listResp.isSuccessful) {
+                    val arr = JSONArray(listResp.body?.string() ?: "[]")
+                    for (i in 0 until arr.length()) {
+                        val item = arr.getJSONArray(i)
+                        val meta = item.getJSONObject(1)
+                        if (meta.optString("type") == "https") {
+                            val uri = meta.optString("uri")
+                            if (uri.isNotBlank() && !invidiousInstances.contains(uri)) {
+                                invidiousInstances.add(uri)
+                            }
+                        }
+                        if (invidiousInstances.size >= 8) break
+                    }
+                }
+            } catch (e: Exception) {}
+
+            for (inst in invidiousInstances) {
+                try {
+                    val apiReq = Request.Builder()
+                        .url("$inst/api/v1/videos/$id")
+                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                        .build()
+                    val apiResp = client.newCall(apiReq).execute()
+                    if (apiResp.isSuccessful) {
+                        val body = apiResp.body?.string() ?: ""
+                        val json = JSONObject(body)
+                        val adapt = json.optJSONArray("adaptiveFormats")
+                        if (adapt != null) {
+                            for (i in 0 until adapt.length()) {
+                                val f = adapt.getJSONObject(i)
+                                val type = f.optString("type", "")
+                                if (type.contains("audio/mp4") || type.contains("audio/webm")) {
+                                    val streamUrl = f.optString("url", "")
+                                    if (streamUrl.isNotBlank() && !candidateUrls.contains(streamUrl)) {
+                                        candidateUrls.add(streamUrl)
+                                    }
+                                }
+                            }
+                        }
+                        if (candidateUrls.isNotEmpty()) break
+                    }
+                } catch (e: Exception) {}
+            }
+
+            for (inst in invidiousInstances) {
+                candidateUrls.add("$inst/latest_version?id=$id&itag=140")
+                candidateUrls.add("$inst/latest_version?id=$id&itag=18")
+            }
+        }
+    }
+
+    // Try high-speed Cobalt API instances as supplementary/social media fallback
+    val isSocialOrYt = isYoutube || u.contains("tiktok.com") || u.contains("facebook.com") || u.contains("fb.watch") ||
             u.contains("instagram.com") || u.contains("soundcloud.com") || u.contains("twitter.com") || u.contains("x.com")
 
     if (isSocialOrYt) {
@@ -603,65 +679,13 @@ suspend fun downloadAudioToStorage(
                     if (fname.isNotBlank()) {
                         extractedNameFromCobalt = fname
                     }
-                    if (streamUrl.isNotBlank()) {
-                        candidateUrls.add(0, streamUrl)
+                    if (streamUrl.isNotBlank() && !candidateUrls.contains(streamUrl)) {
+                        candidateUrls.add(streamUrl)
                         break
                     }
                 }
             } catch (e: Exception) {
                 // Try next cobalt instance
-            }
-        }
-    }
-
-    // Invidious fallback for YouTube
-    if (candidateUrls.isEmpty() && (u.contains("youtube.com") || u.contains("youtu.be"))) {
-        val id = when {
-            u.contains("youtu.be/") -> u.substringAfter("youtu.be/").substringBefore("?").substringBefore("&")
-            u.contains("shorts/") -> u.substringAfter("shorts/").substringBefore("?").substringBefore("&")
-            u.contains("embed/") -> u.substringAfter("embed/").substringBefore("?").substringBefore("&")
-            u.contains("v=") -> u.substringAfter("v=").substringBefore("&")
-            else -> ""
-        }
-
-        if (id.isNotBlank()) {
-            val instances = listOf(
-                "https://inv.nadeko.net",
-                "https://yt.chocolatemoo53.com",
-                "https://invidious.nerdvpn.de"
-            )
-
-            for (inst in instances) {
-                try {
-                    val apiReq = Request.Builder()
-                        .url("$inst/api/v1/videos/$id")
-                        .header("User-Agent", "MusicHub/1.0")
-                        .build()
-                    val apiResp = client.newCall(apiReq).execute()
-                    if (apiResp.isSuccessful) {
-                        val body = apiResp.body?.string() ?: ""
-                        val json = JSONObject(body)
-                        val adapt = json.optJSONArray("adaptiveFormats")
-                        if (adapt != null) {
-                            for (i in 0 until adapt.length()) {
-                                val f = adapt.getJSONObject(i)
-                                val type = f.optString("type", "")
-                                if (type.contains("audio/mp4") || type.contains("audio/webm")) {
-                                    val streamUrl = f.optString("url", "")
-                                    if (streamUrl.isNotBlank()) {
-                                        candidateUrls.add(streamUrl)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {}
-                if (candidateUrls.isNotEmpty()) break
-            }
-
-            for (inst in instances) {
-                candidateUrls.add("$inst/latest_version?id=$id&itag=140")
-                candidateUrls.add("$inst/latest_version?id=$id&itag=18")
             }
         }
     }
@@ -690,6 +714,10 @@ suspend fun downloadAudioToStorage(
                     }
 
                     val totalBytes = body.contentLength()
+                    if (totalBytes == 0L) {
+                        body.close()
+                        continue
+                    }
                     val inputStream = body.byteStream()
                     val outputStream = FileOutputStream(tempFile)
                     val buffer = ByteArray(32768)
@@ -3253,7 +3281,7 @@ fun SettingsScreen(
                             color = Color(0xFF14161D)
                         )
                         Text(
-                            text = "Version: v1.0.11",
+                            text = "Version: v1.0.12",
                             fontSize = 13.sp,
                             color = Color(0xFF8A909E)
                         )
@@ -3820,9 +3848,9 @@ fun AppUpdateDialog(
         delay(400)
         try {
             val currentVer = try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.11"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.12"
             } catch (e: Exception) {
-                "1.0.11"
+                "1.0.12"
             }
             val info = checker.checkLatestRelease(currentVer)
             updateInfo = info
