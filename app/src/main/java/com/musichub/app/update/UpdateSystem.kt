@@ -21,8 +21,8 @@ data class UpdateInfo(
 )
 
 class GitHubUpdateChecker(
-    private val repoOwner: String = "musichub-android",
-    private val repoName: String = "musichub",
+    private val repoOwner: String = "SithpongRin",
+    private val repoName: String = "MusicHubbb",
     private val client: OkHttpClient = OkHttpClient()
 ) {
     suspend fun checkLatestRelease(currentVersion: String): UpdateInfo = withContext(Dispatchers.IO) {
