@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
+import android.media.audiofx.Equalizer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -1046,7 +1047,12 @@ fun MusicHubApp() {
     var showDownloadModal by remember { mutableStateOf(false) }
     var showUpdateModal by remember { mutableStateOf(false) }
     var editingSong by remember { mutableStateOf<SongItem?>(null) }
-    var selectedPreset by remember { mutableStateOf("Bass Boost") }
+    var selectedPreset by remember {
+        mutableStateOf(
+            context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
+                .getString("equalizer_preset", "Bass Boost") ?: "Bass Boost"
+        )
+    }
     var audioQuality by remember { mutableStateOf("High Quality (320 kbps)") }
 
     // Multi-Permission Launcher for Notifications and Media Storage
@@ -1104,8 +1110,73 @@ fun MusicHubApp() {
             .edit().putFloat("app_volume", appVolume).apply()
     }
 
+    // Hardware/Software DSP Equalizer hook
+    var equalizerInstance by remember { mutableStateOf<Equalizer?>(null) }
+
+    val applyEqualizerPreset: (Equalizer?, String) -> Unit = remember {
+        { eq, preset ->
+            if (eq != null) {
+                try {
+                    eq.enabled = true
+                    val numBands = eq.numberOfBands.toInt()
+                    val range = eq.bandLevelRange
+                    val minLevel = range[0].toInt()
+                    val maxLevel = range[1].toInt()
+
+                    val bandGains = when (preset) {
+                        "Bass Boost" -> listOf(1.0f, 0.7f, 0.0f, -0.2f, -0.2f)
+                        "Vocal Boost" -> listOf(-0.3f, 0.2f, 0.9f, 0.5f, -0.2f)
+                        "Electronic" -> listOf(0.8f, 0.4f, 0.0f, 0.5f, 0.9f)
+                        "Rock" -> listOf(0.7f, 0.3f, -0.2f, 0.4f, 0.8f)
+                        "Acoustic" -> listOf(0.4f, 0.2f, 0.3f, 0.5f, 0.6f)
+                        "Flat" -> listOf(0.0f, 0.0f, 0.0f, 0.0f, 0.0f)
+                        else -> listOf(0.0f, 0.0f, 0.0f, 0.0f, 0.0f)
+                    }
+
+                    for (i in 0 until numBands) {
+                        val gain = if (i < bandGains.size) bandGains[i] else 0.0f
+                        val targetLevel = if (gain >= 0f) {
+                            (gain * maxLevel).toInt()
+                        } else {
+                            (-gain * minLevel).toInt()
+                        }
+                        eq.setBandLevel(i.toShort(), targetLevel.coerceIn(minLevel, maxLevel).toShort())
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    val attachEqualizer: () -> Unit = remember(exoPlayer, selectedPreset) {
+        {
+            if (equalizerInstance == null) {
+                val sessionId = exoPlayer.audioSessionId
+                if (sessionId != C.AUDIO_SESSION_ID_UNSET && sessionId != 0) {
+                    try {
+                        val eq = Equalizer(0, sessionId).apply {
+                            enabled = true
+                        }
+                        equalizerInstance = eq
+                        applyEqualizerPreset(eq, selectedPreset)
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(selectedPreset) {
+        context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
+            .edit().putString("equalizer_preset", selectedPreset).apply()
+        equalizerInstance?.let { applyEqualizerPreset(it, selectedPreset) }
+    }
+
     DisposableEffect(Unit) {
+        attachEqualizer()
         onDispose {
+            try {
+                equalizerInstance?.release()
+            } catch (_: Exception) {}
+            equalizerInstance = null
             exoPlayer.release()
             MediaPlaybackService.stop(context)
         }
@@ -1203,6 +1274,7 @@ fun MusicHubApp() {
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
+                    attachEqualizer()
                     val song = currentSong
                     if (song != null) {
                         val dur = if (exoPlayer.duration > 0) exoPlayer.duration else (song.durationSec * 1000L)
@@ -4023,9 +4095,9 @@ fun SettingsScreen(
     val context = LocalContext.current
     val currentAppVersion = remember {
         try {
-            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.22"
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.23"
         } catch (e: Exception) {
-            "1.0.22"
+            "1.0.23"
         }
     }
 
@@ -4141,7 +4213,10 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Box(
                                 modifier = Modifier
                                     .size(40.dp)
@@ -4156,26 +4231,50 @@ fun SettingsScreen(
                                 )
                             }
                             Spacer(modifier = Modifier.width(14.dp))
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = if (isKhmer) "កម្រិតសំឡេង App / កាស" else "In-App / Headphone Volume",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 15.sp,
-                                    color = Color(0xFF14161D)
+                                    color = Color(0xFF14161D),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
                                     text = if (isKhmer) "កែសម្រួលកុំអោយលឺខ្លាំងពេកពេលដាក់កាស" else "Prevent loud audio when using headphones",
                                     fontSize = 12.sp,
-                                    color = Color(0xFF8A909E)
+                                    color = Color(0xFF8A909E),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
-                        Text(
-                            text = "${(appVolume * 100).toInt()}%",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF14161D)
-                        )
+
+                        Spacer(modifier = Modifier.width(10.dp))
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable { onVolumeChange(0.60f) },
+                                color = Color(0xFFECEEF2)
+                            ) {
+                                Text(
+                                    text = if (isKhmer) "លំនាំដើម" else "Default",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF14161D),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "${(appVolume * 100).toInt()}%",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF14161D)
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -4921,9 +5020,9 @@ fun AppUpdateDialog(
         delay(400)
         try {
             val currentVer = try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.22"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.23"
             } catch (e: Exception) {
-                "1.0.22"
+                "1.0.23"
             }
             val info = checker.checkLatestRelease(currentVer)
             updateInfo = info

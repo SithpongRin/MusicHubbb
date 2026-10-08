@@ -284,7 +284,15 @@ The app requests only required permissions:
 
 # Release History & Changelog
 
-### Version 1.0.22 (Current)
+### Version 1.0.23 (Current)
+- Fixed volume card layout in Settings: Added `Modifier.weight(1f)` with ellipsis truncation to ensure volume percentage text ("60%") is never clipped or pushed off screen when using English UI language.
+- Added 1-Tap "Default" / "លំនាំដើម" quick-reset button on the volume card in Settings to instantly reset audio gain to safe 60% headphone level.
+- Integrated hardware/software DSP Equalizer (`android.media.audiofx.Equalizer`) attached directly to ExoPlayer's `audioSessionId` with multi-band frequency modulation for presets (Bass Boost, Vocal Boost, Electronic, Rock, Acoustic, Flat).
+- Persisted Equalizer preset selection to `SharedPreferences` across app restarts.
+- Added `MODIFY_AUDIO_SETTINGS` permission in `AndroidManifest.xml`.
+- Updated `versionCode = 23` and `versionName = "1.0.23"` in `app/build.gradle.kts`.
+
+### Version 1.0.22
 - Fixed playlist song reordering: replaced standard touch slop gestures with unconsumed `awaitEachGesture` pointer tracking, enabling instant real-time drag-and-drop reordering without scroll interception from parent `LazyColumn`.
 - Added 1-Tap Quick Reorder Dropdown Menu to the drag handle (`≡`): users can either drag directly or tap to select Move Up, Move Down, Move to Top, or Move to Bottom.
 - Further enlarged vinyl record center spindle hub to 76.dp (with 34.dp inner hole and 3.5.dp metallic silver bevel border).
