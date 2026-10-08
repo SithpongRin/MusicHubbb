@@ -3731,6 +3731,15 @@ fun SettingsScreen(
     onCheckUpdate: () -> Unit,
     totalSongs: Int
 ) {
+    val context = LocalContext.current
+    val currentAppVersion = remember {
+        try {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.20"
+        } catch (e: Exception) {
+            "1.0.20"
+        }
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -3852,7 +3861,7 @@ fun SettingsScreen(
                             color = Color(0xFF14161D)
                         )
                         Text(
-                            text = "Version: v1.0.15",
+                            text = "Version: v$currentAppVersion",
                             fontSize = 13.sp,
                             color = Color(0xFF8A909E)
                         )
@@ -3969,10 +3978,10 @@ fun NowPlayingDialog(
                     }
                 }
 
-                // Rotating Vinyl Record Disc with realistic grooves, glossy sweep sheen, and clean bevel label
+                // Rotating Vinyl Record Disc with realistic grooves, glossy sweep sheen, and enlarged album artwork
                 Box(
                     modifier = Modifier
-                        .size(285.dp)
+                        .size(300.dp)
                         .scale(artScale)
                         .shadow(24.dp, CircleShape)
                         .clip(CircleShape)
@@ -3981,12 +3990,12 @@ fun NowPlayingDialog(
                     contentAlignment = Alignment.Center
                 ) {
                     // Outer Vinyl Grooves (concentric realistic rings)
-                    Box(modifier = Modifier.size(272.dp).border(1.dp, Color(0x22FFFFFF), CircleShape))
-                    Box(modifier = Modifier.size(254.dp).border(1.dp, Color(0x14FFFFFF), CircleShape))
-                    Box(modifier = Modifier.size(236.dp).border(1.dp, Color(0x1CFFFFFF), CircleShape))
-                    Box(modifier = Modifier.size(218.dp).border(1.dp, Color(0x12FFFFFF), CircleShape))
-                    Box(modifier = Modifier.size(200.dp).border(1.dp, Color(0x18FFFFFF), CircleShape))
-                    Box(modifier = Modifier.size(182.dp).border(1.dp, Color(0x10FFFFFF), CircleShape))
+                    Box(modifier = Modifier.size(288.dp).border(1.dp, Color(0x22FFFFFF), CircleShape))
+                    Box(modifier = Modifier.size(274.dp).border(1.dp, Color(0x14FFFFFF), CircleShape))
+                    Box(modifier = Modifier.size(260.dp).border(1.dp, Color(0x1CFFFFFF), CircleShape))
+                    Box(modifier = Modifier.size(246.dp).border(1.dp, Color(0x12FFFFFF), CircleShape))
+                    Box(modifier = Modifier.size(232.dp).border(1.dp, Color(0x18FFFFFF), CircleShape))
+                    Box(modifier = Modifier.size(220.dp).border(1.dp, Color(0x10FFFFFF), CircleShape))
 
                     // Vinyl Radial Sheen Reflection (authentic vinyl gloss under light)
                     Box(
@@ -4010,14 +4019,14 @@ fun NowPlayingDialog(
                     // Outer Metallic Bevel Ring around Center Label
                     Box(
                         modifier = Modifier
-                            .size(158.dp)
+                            .size(216.dp)
                             .border(1.5.dp, Color(0x6094A3B8), CircleShape)
                     )
 
-                    // Center Vinyl Label / Album Artwork Sticker (scaled 1.48f to remove letterbox cutoffs)
+                    // Center Vinyl Label / Album Artwork Sticker (enlarged for prominent artwork view)
                     Box(
                         modifier = Modifier
-                            .size(152.dp)
+                            .size(210.dp)
                             .clip(CircleShape)
                             .background(Color(0xFF1E212D)),
                         contentAlignment = Alignment.Center
@@ -4029,14 +4038,14 @@ fun NowPlayingDialog(
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .scale(1.48f)
+                                    .scale(1.35f)
                             )
                         } else {
                             Icon(
                                 imageVector = Icons.Default.MusicNote,
                                 contentDescription = null,
                                 tint = Color.White,
-                                modifier = Modifier.size(52.dp)
+                                modifier = Modifier.size(64.dp)
                             )
                         }
 
@@ -4534,9 +4543,9 @@ fun AppUpdateDialog(
         delay(400)
         try {
             val currentVer = try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.15"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.20"
             } catch (e: Exception) {
-                "1.0.15"
+                "1.0.20"
             }
             val info = checker.checkLatestRelease(currentVer)
             updateInfo = info
