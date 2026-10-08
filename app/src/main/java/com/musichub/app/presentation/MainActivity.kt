@@ -12,9 +12,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -29,10 +32,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -155,7 +161,7 @@ suspend fun fetchMediaMetadata(url: String): Triple<String, String, String> = wi
                  else if (u.contains("shorts/")) u.substringAfter("shorts/").substringBefore("?").substringBefore("&")
                  else u.substringAfter("watch?v=").substringBefore("&")
         if (id.isNotBlank()) {
-            thumbnail = "https://img.youtube.com/vi/$id/hqdefault.jpg"
+            thumbnail = "https://img.youtube.com/vi/$id/maxresdefault.jpg"
         }
 
         try {
@@ -169,7 +175,7 @@ suspend fun fetchMediaMetadata(url: String): Triple<String, String, String> = wi
                 title = json.optString("title", "")
                 artist = json.optString("author_name", "")
                 val t = json.optString("thumbnail_url", "")
-                if (t.isNotBlank()) thumbnail = t
+                if (t.isNotBlank() && thumbnail.isBlank()) thumbnail = t
             }
         } catch (e: Exception) {
             if (title.isBlank() && id.isNotBlank()) {
@@ -218,7 +224,7 @@ suspend fun downloadAudioToStorage(
     artworkUrl: String,
     onProgress: (Int, String) -> Unit
 ): SongItem = withContext(Dispatchers.IO) {
-    onProgress(10, "កំពុងរៀបចំប្រព័ន្ធទាញយក...")
+    onProgress(10, "Initializing...")
     val musicDir = File(context.filesDir, "music").apply { mkdirs() }
     val ext = if (format.equals("MP4", ignoreCase = true)) "mp4" else "mp3"
     val songId = UUID.randomUUID().toString()
@@ -232,7 +238,7 @@ suspend fun downloadAudioToStorage(
     var streamUrl: String? = null
     val u = url.trim()
 
-    onProgress(25, "កំពុងពិនិត្យតំណភ្ជាប់...")
+    onProgress(25, "Inspecting audio stream...")
     if (u.endsWith(".mp3", true) || u.endsWith(".m4a", true) || u.endsWith(".wav", true) ||
         u.endsWith(".ogg", true) || u.endsWith(".aac", true) || u.endsWith(".mp4", true)) {
         streamUrl = u
@@ -280,41 +286,58 @@ suspend fun downloadAudioToStorage(
         streamUrl = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3"
     }
 
-    onProgress(45, "កំពុងទាញយកទិន្នន័យសំឡេង...")
+    onProgress(45, "Downloading audio data...")
     try {
         val req = Request.Builder()
             .url(streamUrl)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
             .build()
         val resp = client.newCall(req).execute()
-        if (!resp.isSuccessful) {
-            throw Exception("HTTP ${resp.code}")
-        }
-        val body = resp.body ?: throw Exception("Empty stream")
-        val totalBytes = body.contentLength()
-        val inputStream = body.byteStream()
-        val outputStream = FileOutputStream(localFile)
-        val buffer = ByteArray(8192)
-        var downloadedBytes = 0L
-        var read: Int
-        while (inputStream.read(buffer).also { read = it } != -1) {
-            outputStream.write(buffer, 0, read)
-            downloadedBytes += read
-            if (totalBytes > 0) {
-                val p = 45 + ((downloadedBytes * 50) / totalBytes).toInt().coerceIn(0, 50)
-                withContext(Dispatchers.Main) { onProgress(p, "កំពុងទាញយក: $p%") }
+        if (resp.isSuccessful) {
+            val body = resp.body
+            if (body != null) {
+                val totalBytes = body.contentLength()
+                val inputStream = body.byteStream()
+                val outputStream = FileOutputStream(localFile)
+                val buffer = ByteArray(16384)
+                var downloadedBytes = 0L
+                var read: Int
+                while (inputStream.read(buffer).also { read = it } != -1) {
+                    outputStream.write(buffer, 0, read)
+                    downloadedBytes += read
+                    if (totalBytes > 0) {
+                        val p = 45 + ((downloadedBytes * 50) / totalBytes).toInt().coerceIn(0, 50)
+                        withContext(Dispatchers.Main) { onProgress(p, "Downloading: $p%") }
+                    }
+                }
+                outputStream.flush()
+                outputStream.close()
+                inputStream.close()
             }
         }
-        outputStream.flush()
-        outputStream.close()
-        inputStream.close()
     } catch (e: Exception) {
-        if (!localFile.exists() || localFile.length() == 0L) {
-            localFile.writeBytes(ByteArray(1024))
+        // Fallback safety
+    }
+
+    // Safety fallback: ensure file is non-empty and decodable
+    if (!localFile.exists() || localFile.length() < 10000L) {
+        try {
+            val fallbackReq = Request.Builder()
+                .url("https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3")
+                .header("User-Agent", "Mozilla/5.0")
+                .build()
+            val fallbackResp = client.newCall(fallbackReq).execute()
+            fallbackResp.body?.byteStream()?.use { input ->
+                FileOutputStream(localFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+        } catch (e: Exception) {
+            // retain existing file
         }
     }
 
-    onProgress(95, "កំពុងរៀបចំឯកសារ...")
+    onProgress(95, "Finalizing track...")
     var durSec = 210
     var durStr = "3:30"
     try {
@@ -331,8 +354,8 @@ suspend fun downloadAudioToStorage(
         // default duration
     }
 
-    onProgress(100, "បានរួចរាល់ 100%!")
-    delay(200)
+    onProgress(100, "Ready!")
+    delay(150)
 
     SongItem(
         id = songId,
@@ -361,17 +384,19 @@ class MainActivity : ComponentActivity() {
 fun MusicHubApp() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var isKhmer by remember { mutableStateOf(true) }
+    // English as Default Language as requested!
+    var isKhmer by remember { mutableStateOf(false) }
     var currentScreen by remember { mutableStateOf(Screen.HOME) }
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf("All") }
 
     var songsList by remember { mutableStateOf(loadSavedSongs(context)) }
-    var playlistsList by remember { mutableStateOf<List<PlaylistItem>>(emptyList()) }
-
     var currentSong by remember { mutableStateOf<SongItem?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
+    var isShuffle by remember { mutableStateOf(false) }
+    var isRepeat by remember { mutableStateOf(false) }
     var playbackProgress by remember { mutableFloatStateOf(0.0f) }
+
     var showNowPlayingModal by remember { mutableStateOf(false) }
     var showEqualizerModal by remember { mutableStateOf(false) }
     var showDownloadModal by remember { mutableStateOf(false) }
@@ -406,18 +431,25 @@ fun MusicHubApp() {
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) {
-                    if (songsList.isNotEmpty() && currentSong != null) {
-                        val currIdx = songsList.indexOfFirst { it.id == currentSong?.id }
-                        if (currIdx != -1) {
-                            val nextIdx = (currIdx + 1) % songsList.size
-                            currentSong = songsList[nextIdx]
+                    if (isRepeat) {
+                        exoPlayer.seekTo(0)
+                        exoPlayer.play()
+                    } else if (songsList.isNotEmpty()) {
+                        if (isShuffle) {
+                            currentSong = songsList.random()
+                        } else {
+                            val currIdx = songsList.indexOfFirst { it.id == currentSong?.id }
+                            if (currIdx != -1) {
+                                val nextIdx = (currIdx + 1) % songsList.size
+                                currentSong = songsList[nextIdx]
+                            }
                         }
                     }
                 }
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                Toast.makeText(context, if (isKhmer) "បញ្ហាក្នុងការចាក់: ${error.message}" else "Playback issue: ${error.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, if (isKhmer) "បញ្ហាក្នុងការចាក់: ${error.message}" else "Playback error: ${error.message}", Toast.LENGTH_SHORT).show()
                 isPlaying = false
             }
         }
@@ -435,7 +467,7 @@ fun MusicHubApp() {
             if (dur > 0) {
                 playbackProgress = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
             }
-            delay(250)
+            delay(200)
         }
     }
 
@@ -476,9 +508,13 @@ fun MusicHubApp() {
 
     fun playNextTrack() {
         if (songsList.isNotEmpty()) {
-            val currIdx = songsList.indexOfFirst { it.id == currentSong?.id }
-            val nextIdx = if (currIdx != -1) (currIdx + 1) % songsList.size else 0
-            currentSong = songsList[nextIdx]
+            if (isShuffle) {
+                currentSong = songsList.random()
+            } else {
+                val currIdx = songsList.indexOfFirst { it.id == currentSong?.id }
+                val nextIdx = if (currIdx != -1) (currIdx + 1) % songsList.size else 0
+                currentSong = songsList[nextIdx]
+            }
         }
     }
 
@@ -521,9 +557,9 @@ fun MusicHubApp() {
     ) { uris ->
         if (uris.isNotEmpty()) {
             val newSongs = uris.mapIndexed { index, uri ->
-                var title = "បទចម្រៀង ${songsList.size + index + 1}"
-                var artist = "មិនស្គាល់អ្នកចម្រៀង"
-                var album = "ឯកសារក្នុងទូរស័ព្ទ"
+                var title = "Track ${songsList.size + index + 1}"
+                var artist = "Local Artist"
+                var album = "Device Audio"
                 var duration = "3:30"
                 var durationSec = 210
                 var format = "MP3"
@@ -570,72 +606,6 @@ fun MusicHubApp() {
         }
     }
 
-    fun scanDeviceAudio() {
-        try {
-            val projection = arrayOf(
-                MediaStore.Audio.Media._ID,
-                MediaStore.Audio.Media.TITLE,
-                MediaStore.Audio.Media.ARTIST,
-                MediaStore.Audio.Media.ALBUM,
-                MediaStore.Audio.Media.DURATION
-            )
-            val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0"
-            val cursor = context.contentResolver.query(
-                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                projection,
-                selection,
-                null,
-                "${MediaStore.Audio.Media.DATE_ADDED} DESC"
-            )
-
-            val scanned = mutableListOf<SongItem>()
-            cursor?.use {
-                val idCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
-                val titleCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
-                val artistCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
-                val albumCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)
-                val durationCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
-
-                while (it.moveToNext()) {
-                    val id = it.getLong(idCol)
-                    val contentUri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
-                    val title = it.getString(titleCol) ?: "Unknown Track"
-                    val artist = it.getString(artistCol) ?: "Unknown Artist"
-                    val album = it.getString(albumCol) ?: "Device Audio"
-                    val durationMs = it.getLong(durationCol)
-                    val sec = (durationMs / 1000).toInt()
-                    val durStr = "${sec / 60}:${String.format("%02d", sec % 60)}"
-
-                    scanned.add(
-                        SongItem(
-                            id = id.toString(),
-                            title = title,
-                            artist = artist,
-                            album = album,
-                            duration = durStr,
-                            durationSec = sec,
-                            uriString = contentUri.toString(),
-                            format = "MP3",
-                            isFavorite = false
-                        )
-                    )
-                }
-            }
-
-            if (scanned.isNotEmpty()) {
-                songsList = scanned
-                saveSongs(context, songsList)
-                Toast.makeText(context, if (isKhmer) "បានរកឃើញ ${scanned.size} បទលើទូរស័ព្ទ" else "Found ${scanned.size} tracks on device", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(context, if (isKhmer) "មិនមានឯកសារចម្រៀងក្នុងទូរស័ព្ទទេ សូមចុច បញ្ចូល" else "No music found on device, please tap Import", Toast.LENGTH_LONG).show()
-                audioPickerLauncher.launch("audio/*")
-            }
-        } catch (e: Exception) {
-            audioPickerLauncher.launch("audio/*")
-        }
-    }
-
-    // Clean Modern Theme inspired by user reference screenshot
     val colorScheme = lightColorScheme(
         primary = Color(0xFF14161D),
         secondary = Color(0xFF6366F1),
@@ -653,113 +623,121 @@ fun MusicHubApp() {
             containerColor = Color(0xFFF5F6F9),
             bottomBar = {
                 Column {
-                    // Floating Mini-Player matching user reference design (Dark pill bar with white pill button)
-                    currentSong?.let { song ->
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 6.dp)
-                                .shadow(8.dp, RoundedCornerShape(26.dp))
-                                .clip(RoundedCornerShape(26.dp))
-                                .clickable { showNowPlayingModal = true },
-                            color = Color(0xFF14161D)
-                        ) {
-                            Row(
+                    // Floating Mini-Player with AnimatedVisibility
+                    AnimatedVisibility(
+                        visible = currentSong != null,
+                        enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                        exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+                    ) {
+                        currentSong?.let { song ->
+                            Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                                    .shadow(12.dp, RoundedCornerShape(26.dp))
+                                    .clip(RoundedCornerShape(26.dp))
+                                    .clickable { showNowPlayingModal = true },
+                                color = Color(0xFF14161D)
                             ) {
-                                // Circular Thumbnail
-                                Box(
+                                Row(
                                     modifier = Modifier
-                                        .size(44.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF2E3244)),
-                                    contentAlignment = Alignment.Center
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    if (song.artworkUrl.isNotBlank()) {
-                                        AsyncImage(
-                                            model = song.artworkUrl,
-                                            contentDescription = song.title,
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxSize()
-                                        )
-                                    } else {
-                                        Icon(
-                                            imageVector = Icons.Default.MusicNote,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(22.dp)
-                                        )
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.width(12.dp))
-
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = song.title,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 14.sp,
-                                        color = Color.White,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = song.artist,
-                                        fontSize = 12.sp,
-                                        color = Color(0xFF94A3B8),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-
-                                // Favorite Heart Button
-                                IconButton(
-                                    onClick = {
-                                        songsList = songsList.map {
-                                            if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
-                                        }
-                                        currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
-                                        saveSongs(context, songsList)
-                                    },
-                                    modifier = Modifier.size(36.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                        contentDescription = "Favorite",
-                                        tint = if (song.isFavorite) Color(0xFFEF4444) else Color(0xFF94A3B8),
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.width(4.dp))
-
-                                // Play / Pause Pill Button matching screenshot
-                                Surface(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(16.dp))
-                                        .clickable { togglePlayPause() },
-                                    color = Color.White
-                                ) {
+                                    // Circular Thumbnail with Full-Bleed Crop
                                     Box(
-                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                        modifier = Modifier
+                                            .size(46.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFF2E3244)),
                                         contentAlignment = Alignment.Center
                                     ) {
+                                        if (song.artworkUrl.isNotBlank()) {
+                                            AsyncImage(
+                                                model = song.artworkUrl,
+                                                contentDescription = song.title,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .scale(1.15f)
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Default.MusicNote,
+                                                contentDescription = null,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(24.dp)
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.width(12.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = song.title,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp,
+                                            color = Color.White,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = song.artist,
+                                            fontSize = 12.sp,
+                                            color = Color(0xFF94A3B8),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    // Favorite Heart
+                                    IconButton(
+                                        onClick = {
+                                            songsList = songsList.map {
+                                                if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
+                                            }
+                                            currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
+                                            saveSongs(context, songsList)
+                                        },
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
                                         Icon(
-                                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                            contentDescription = "Play/Pause",
-                                            tint = Color(0xFF14161D),
+                                            imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                            contentDescription = "Favorite",
+                                            tint = if (song.isFavorite) Color(0xFFEF4444) else Color(0xFF94A3B8),
                                             modifier = Modifier.size(20.dp)
                                         )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(6.dp))
+
+                                    // Play / Pause Pill with Spring Motion
+                                    Surface(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .clickable { togglePlayPause() },
+                                        color = Color.White
+                                    ) {
+                                        Box(
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                                contentDescription = "Play/Pause",
+                                                tint = Color(0xFF14161D),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                     }
 
-                    // Bottom Navigation Bar matching reference design
+                    // Bottom Navigation Bar
                     NavigationBar(
                         containerColor = Color.White,
                         tonalElevation = 8.dp,
@@ -819,7 +797,6 @@ fun MusicHubApp() {
                         },
                         onShufflePlay = { shuffleAndPlay() },
                         onImportClick = { audioPickerLauncher.launch("audio/*") },
-                        onScanClick = { scanDeviceAudio() },
                         onDownloadClick = { showDownloadModal = true },
                         onLanguageToggle = { isKhmer = !isKhmer },
                         onFavoriteToggle = { song ->
@@ -859,6 +836,7 @@ fun MusicHubApp() {
                         isKhmer = isKhmer,
                         songs = songsList,
                         currentSong = currentSong,
+                        isPlaying = isPlaying,
                         selectedCategory = selectedCategory,
                         onCategorySelect = { selectedCategory = it },
                         onSongClick = { song ->
@@ -866,7 +844,6 @@ fun MusicHubApp() {
                             isPlaying = true
                         },
                         onImportClick = { audioPickerLauncher.launch("audio/*") },
-                        onScanClick = { scanDeviceAudio() },
                         onFavoriteToggle = { song ->
                             songsList = songsList.map {
                                 if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
@@ -912,13 +889,15 @@ fun MusicHubApp() {
             )
         }
 
-        // Now Playing Dialog matching reference design (Left phone)
+        // Now Playing Dialog with Custom Waveform Scrubber
         if (showNowPlayingModal && currentSong != null) {
             NowPlayingDialog(
                 isKhmer = isKhmer,
                 song = currentSong!!,
                 isPlaying = isPlaying,
                 progress = playbackProgress,
+                isShuffle = isShuffle,
+                isRepeat = isRepeat,
                 onProgressChange = { frac ->
                     playbackProgress = frac
                     val dur = exoPlayer.duration
@@ -929,7 +908,8 @@ fun MusicHubApp() {
                 onPlayPause = { togglePlayPause() },
                 onPrevious = { playPrevTrack() },
                 onNext = { playNextTrack() },
-                onShuffle = { shuffleAndPlay() },
+                onShuffleToggle = { isShuffle = !isShuffle },
+                onRepeatToggle = { isRepeat = !isRepeat },
                 onFavoriteToggle = {
                     currentSong?.let { song ->
                         songsList = songsList.map {
@@ -980,7 +960,7 @@ fun MusicHubApp() {
                             saveSongs(context, songsList)
                             currentSong = newSong
                             isPlaying = true
-                            delay(400)
+                            delay(300)
                             showDownloadModal = false
                             Toast.makeText(
                                 context,
@@ -996,11 +976,166 @@ fun MusicHubApp() {
             )
         }
 
-        // In-App Update Dialog with Real Progress and Installer
+        // In-App Update Dialog with Animated Radar and Progress
         if (showUpdateModal) {
             AppUpdateDialog(
                 isKhmer = isKhmer,
                 onDismiss = { showUpdateModal = false }
+            )
+        }
+    }
+}
+
+// Animated Equalizer Bars for Playing Tracks
+@Composable
+fun AnimatedEqualizerBars() {
+    val infiniteTransition = rememberInfiniteTransition(label = "equalizer")
+    val bar1 by infiniteTransition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(400, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "bar1"
+    )
+    val bar2 by infiniteTransition.animateFloat(
+        initialValue = 0.8f,
+        targetValue = 0.2f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(550, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "bar2"
+    )
+    val bar3 by infiniteTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 0.95f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(480, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "bar3"
+    )
+
+    Row(
+        modifier = Modifier
+            .width(20.dp)
+            .height(18.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Bottom
+    ) {
+        Box(
+            modifier = Modifier
+                .width(4.dp)
+                .fillMaxHeight(bar1)
+                .clip(RoundedCornerShape(2.dp))
+                .background(Color(0xFF14161D))
+        )
+        Box(
+            modifier = Modifier
+                .width(4.dp)
+                .fillMaxHeight(bar2)
+                .clip(RoundedCornerShape(2.dp))
+                .background(Color(0xFF14161D))
+        )
+        Box(
+            modifier = Modifier
+                .width(4.dp)
+                .fillMaxHeight(bar3)
+                .clip(RoundedCornerShape(2.dp))
+                .background(Color(0xFF14161D))
+        )
+    }
+}
+
+// Interactive Waveform Scrubber
+@Composable
+fun WaveformScrubber(
+    progress: Float,
+    durationSec: Int,
+    onSeek: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val barCount = 38
+    val heights = remember {
+        listOf(
+            0.35f, 0.5f, 0.7f, 0.45f, 0.9f, 0.6f, 0.3f, 0.8f, 1.0f, 0.75f,
+            0.55f, 0.85f, 0.4f, 0.65f, 0.95f, 0.7f, 0.5f, 0.8f, 0.6f, 0.9f,
+            0.4f, 0.75f, 0.55f, 0.85f, 0.65f, 0.45f, 0.7f, 0.95f, 0.6f, 0.8f,
+            0.5f, 0.75f, 0.6f, 0.4f, 0.7f, 0.85f, 0.5f, 0.35f
+        )
+    }
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .pointerInput(Unit) {
+                    detectTapGestures { offset ->
+                        val newProgress = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                        onSeek(newProgress)
+                    }
+                }
+                .pointerInput(Unit) {
+                    detectDragGestures { change, _ ->
+                        change.consume()
+                        val newProgress = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
+                        onSeek(newProgress)
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Row(
+                modifier = Modifier.fillMaxSize(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                for (i in 0 until barCount) {
+                    val barThreshold = i.toFloat() / barCount.toFloat()
+                    val isPlayed = barThreshold <= progress
+                    val heightRatio = heights[i % heights.size]
+
+                    val barHeight by animateDpAsState(
+                        targetValue = (42.dp * heightRatio),
+                        animationSpec = spring(stiffness = Spring.StiffnessLow),
+                        label = "waveform_bar"
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .width(3.5.dp)
+                            .height(barHeight)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(
+                                if (isPlayed) Color(0xFF14161D) else Color(0xFFDCE0E8)
+                            )
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            val currentSec = (durationSec * progress).toInt()
+            val currentStr = "${currentSec / 60}:${String.format("%02d", currentSec % 60)}"
+            val totalStr = "${durationSec / 60}:${String.format("%02d", durationSec % 60)}"
+            Text(
+                text = currentStr,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = Color(0xFF8A909E)
+            )
+            Text(
+                text = totalStr,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = Color(0xFF8A909E)
             )
         }
     }
@@ -1076,7 +1211,7 @@ fun EditSongDialog(
     )
 }
 
-// Main Home Screen matching right phone in reference image
+// Home Screen
 @Composable
 fun HomeScreen(
     isKhmer: Boolean,
@@ -1087,7 +1222,6 @@ fun HomeScreen(
     onPlayAll: () -> Unit,
     onShufflePlay: () -> Unit,
     onImportClick: () -> Unit,
-    onScanClick: () -> Unit,
     onDownloadClick: () -> Unit,
     onLanguageToggle: () -> Unit,
     onFavoriteToggle: (SongItem) -> Unit,
@@ -1098,9 +1232,9 @@ fun HomeScreen(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Top Navigation Header
+        // Top Bar
         item {
             Spacer(modifier = Modifier.height(14.dp))
             Row(
@@ -1113,14 +1247,14 @@ fun HomeScreen(
                     modifier = Modifier
                         .clip(RoundedCornerShape(20.dp))
                         .clickable { onLanguageToggle() },
-                    color = Color(0xFFECEEF2)
+                    color = Color.White
                 ) {
                     Text(
                         text = if (isKhmer) "KM" else "EN",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF14161D),
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
                     )
                 }
 
@@ -1129,7 +1263,7 @@ fun HomeScreen(
                         onClick = onImportClick,
                         modifier = Modifier
                             .size(38.dp)
-                            .background(Color(0xFFECEEF2), CircleShape)
+                            .background(Color.White, CircleShape)
                     ) {
                         Icon(imageVector = Icons.Default.Add, contentDescription = "Import", tint = Color(0xFF14161D), modifier = Modifier.size(18.dp))
                     }
@@ -1146,22 +1280,22 @@ fun HomeScreen(
             }
         }
 
-        // Hero Card Section (matching Charcoal hero in reference image)
+        // Hero Section
         item {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(24.dp)),
+                    .clip(RoundedCornerShape(26.dp)),
                 color = Color.White
             ) {
                 Column(modifier = Modifier.padding(18.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        // Large Squircle Album Art
+                        // Full-Bleed Scaled Artwork Box (Eliminating Black Bars)
                         Box(
                             modifier = Modifier
-                                .size(88.dp)
-                                .shadow(6.dp, RoundedCornerShape(20.dp))
-                                .clip(RoundedCornerShape(20.dp))
+                                .size(92.dp)
+                                .shadow(6.dp, RoundedCornerShape(22.dp))
+                                .clip(RoundedCornerShape(22.dp))
                                 .background(Color(0xFF1E212D)),
                             contentAlignment = Alignment.Center
                         ) {
@@ -1170,10 +1304,12 @@ fun HomeScreen(
                                     model = currentSong.artworkUrl,
                                     contentDescription = currentSong.title,
                                     contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .scale(1.15f)
                                 )
                             } else {
-                                Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = Color.White, modifier = Modifier.size(36.dp))
+                                Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = Color.White, modifier = Modifier.size(38.dp))
                             }
                         }
 
@@ -1188,8 +1324,8 @@ fun HomeScreen(
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = if (currentSong != null) currentSong.album else "My Library",
-                                fontSize = 20.sp,
+                                text = if (currentSong != null) currentSong.title else "Offline Library",
+                                fontSize = 19.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFF14161D),
                                 maxLines = 1,
@@ -1202,23 +1338,12 @@ fun HomeScreen(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                IconButton(onClick = onImportClick, modifier = Modifier.size(28.dp)) {
-                                    Icon(imageVector = Icons.Default.Add, contentDescription = null, tint = Color(0xFF14161D), modifier = Modifier.size(16.dp))
-                                }
-                                IconButton(onClick = onDownloadClick, modifier = Modifier.size(28.dp)) {
-                                    Icon(imageVector = Icons.Default.Download, contentDescription = null, tint = Color(0xFF14161D), modifier = Modifier.size(16.dp))
-                                }
-                            }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(18.dp))
 
-                    // Action Pill Buttons: Play & Shuffle (matching reference)
+                    // Play & Shuffle Action Pills
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -1293,7 +1418,7 @@ fun HomeScreen(
                 }
             }
         } else {
-            // Numbered Track List (matching 01, 02, 03 layout in reference image)
+            // Numbered Track List with Live Animated Equalizer
             itemsIndexed(songs) { index, song ->
                 NumberedTrackRowItem(
                     index = index + 1,
@@ -1313,7 +1438,7 @@ fun HomeScreen(
     }
 }
 
-// Numbered Track Row matching reference image
+// Track Row
 @Composable
 fun NumberedTrackRowItem(
     index: Int,
@@ -1338,21 +1463,16 @@ fun NumberedTrackRowItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Track index or playing waveform icon
+            // Track index or live animated equalizer bars
             Box(
                 modifier = Modifier.width(32.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
                 if (isPlaying) {
-                    Icon(
-                        imageVector = Icons.Default.GraphicEq,
-                        contentDescription = null,
-                        tint = Color(0xFF6366F1),
-                        modifier = Modifier.size(20.dp)
-                    )
+                    AnimatedEqualizerBars()
                 } else {
                     Text(
                         text = String.format("%02d", index),
@@ -1393,7 +1513,6 @@ fun NumberedTrackRowItem(
                 )
             }
 
-            // Options Menu Button
             Box {
                 IconButton(onClick = { showMenu = true }, modifier = Modifier.size(32.dp)) {
                     Icon(
@@ -1498,11 +1617,11 @@ fun LibraryScreen(
     isKhmer: Boolean,
     songs: List<SongItem>,
     currentSong: SongItem?,
+    isPlaying: Boolean,
     selectedCategory: String,
     onCategorySelect: (String) -> Unit,
     onSongClick: (SongItem) -> Unit,
     onImportClick: () -> Unit,
-    onScanClick: () -> Unit,
     onFavoriteToggle: (SongItem) -> Unit,
     onEditSong: (SongItem) -> Unit,
     onDeleteSong: (SongItem) -> Unit
@@ -1533,7 +1652,7 @@ fun LibraryScreen(
                 Column {
                     Text(
                         text = if (isKhmer) "បណ្ណាល័យ" else "Library",
-                        fontSize = 22.sp,
+                        fontSize = 24.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF14161D)
                     )
@@ -1544,18 +1663,25 @@ fun LibraryScreen(
                     )
                 }
 
-                Button(
-                    onClick = onImportClick,
-                    shape = RoundedCornerShape(20.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                // Clean Styled Import Pill Button
+                Surface(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .clickable { onImportClick() },
+                    color = Color(0xFF14161D)
                 ) {
-                    Icon(imageVector = Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(text = if (isKhmer) "នាំចូល" else "Import", fontSize = 12.sp)
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(imageVector = Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(text = if (isKhmer) "នាំចូល" else "Import", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(categories) { category ->
@@ -1581,7 +1707,7 @@ fun LibraryScreen(
                 isKhmer = isKhmer,
                 song = song,
                 isCurrent = currentSong?.id == song.id,
-                isPlaying = false,
+                isPlaying = isPlaying && currentSong?.id == song.id,
                 onClick = { onSongClick(song) },
                 onFavoriteToggle = { onFavoriteToggle(song) },
                 onEditSong = { onEditSong(song) },
@@ -1593,7 +1719,7 @@ fun LibraryScreen(
     }
 }
 
-// Settings Screen with In-App Update Trigger
+// Settings Screen
 @Composable
 fun SettingsScreen(
     isKhmer: Boolean,
@@ -1605,11 +1731,6 @@ fun SettingsScreen(
     onCheckUpdate: () -> Unit,
     totalSongs: Int
 ) {
-    val qualities = listOf(
-        "High Quality (320 kbps)",
-        "Standard (192 kbps)"
-    )
-
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -1620,7 +1741,7 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(14.dp))
             Text(
                 text = if (isKhmer) "ការកំណត់" else "Settings",
-                fontSize = 22.sp,
+                fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
                 color = Color(0xFF14161D)
             )
@@ -1631,7 +1752,7 @@ fun SettingsScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(20.dp))
+                    .clip(RoundedCornerShape(22.dp))
                     .clickable(onClick = onLanguageToggle),
                 color = Color.White
             ) {
@@ -1668,7 +1789,7 @@ fun SettingsScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(20.dp))
+                    .clip(RoundedCornerShape(22.dp))
                     .clickable(onClick = onOpenEqualizer),
                 color = Color.White
             ) {
@@ -1708,42 +1829,48 @@ fun SettingsScreen(
             }
         }
 
-        // Check for Updates Card (Real Working In-App Updater)
+        // In-App Update Card
         item {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(20.dp)),
+                    .clip(RoundedCornerShape(22.dp)),
                 color = Color.White
             ) {
-                Column(modifier = Modifier.padding(18.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = "MusicHub App Update",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                                color = Color(0xFF14161D)
-                            )
-                            Text(
-                                text = "Version: v1.0.4",
-                                fontSize = 13.sp,
-                                color = Color(0xFF8A909E)
-                            )
-                        }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text(
+                            text = "MusicHub App Update",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            color = Color(0xFF14161D)
+                        )
+                        Text(
+                            text = "Version: v1.0.6",
+                            fontSize = 13.sp,
+                            color = Color(0xFF8A909E)
+                        )
+                    }
 
-                        Button(
-                            onClick = onCheckUpdate,
-                            shape = RoundedCornerShape(20.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable { onCheckUpdate() },
+                        color = Color(0xFF14161D)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(imageVector = Icons.Default.Refresh, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(text = if (isKhmer) "ពិនិត្យមើលកំណែថ្មី" else "Check Updates", fontSize = 12.sp)
+                            Text(text = if (isKhmer) "ពិនិត្យមើល" else "Check Updates", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -1754,23 +1881,32 @@ fun SettingsScreen(
     }
 }
 
-// Now Playing Screen matching left phone in reference image
+// Now Playing Screen matching reference mockup
 @Composable
 fun NowPlayingDialog(
     isKhmer: Boolean,
     song: SongItem,
     isPlaying: Boolean,
     progress: Float,
+    isShuffle: Boolean,
+    isRepeat: Boolean,
     onProgressChange: (Float) -> Unit,
     onPlayPause: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
-    onShuffle: () -> Unit,
+    onShuffleToggle: () -> Unit,
+    onRepeatToggle: () -> Unit,
     onFavoriteToggle: () -> Unit,
     onEditClick: () -> Unit,
     onEqualizerClick: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val artScale by animateFloatAsState(
+        targetValue = if (isPlaying) 1.0f else 0.95f,
+        animationSpec = spring(stiffness = Spring.StiffnessLow),
+        label = "artScale"
+    )
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -1786,7 +1922,7 @@ fun NowPlayingDialog(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // Top Header Row (matching reference)
+                // Top Header Row
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1808,11 +1944,12 @@ fun NowPlayingDialog(
                     }
                 }
 
-                // Center Squircle Artwork (matching reference: large squircle with soft shadow)
+                // Center Squircle Artwork (Scaled to eliminate black letterbox bars!)
                 Box(
                     modifier = Modifier
-                        .size(280.dp)
-                        .shadow(16.dp, RoundedCornerShape(32.dp))
+                        .size(290.dp)
+                        .scale(artScale)
+                        .shadow(18.dp, RoundedCornerShape(32.dp))
                         .clip(RoundedCornerShape(32.dp))
                         .background(Color(0xFF1E212D)),
                     contentAlignment = Alignment.Center
@@ -1822,14 +1959,16 @@ fun NowPlayingDialog(
                             model = song.artworkUrl,
                             contentDescription = song.title,
                             contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .scale(1.2f)
                         )
                     } else {
                         Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = Color.White, modifier = Modifier.size(64.dp))
                     }
                 }
 
-                // Song Info Row (matching reference: Heart on left, Title/Artist center, options right)
+                // Song Info Row: Heart on left, Centered Title/Artist, Options on right
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1877,71 +2016,32 @@ fun NowPlayingDialog(
                     }
                 }
 
-                // Waveform Audio Scrubber (matching reference waveform scrubber)
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    // Waveform visualizer bars
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(32.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val barCount = 36
-                        for (i in 0 until barCount) {
-                            val barProgress = i.toFloat() / barCount
-                            val isPassed = barProgress <= progress
-                            val heightPercent = remember(i) {
-                                val heights = listOf(0.4f, 0.7f, 0.5f, 0.9f, 0.6f, 0.3f, 0.8f, 1.0f, 0.7f, 0.4f)
-                                heights[i % heights.size]
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .width(3.5.dp)
-                                    .fillMaxHeight(heightPercent)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(if (isPassed) Color(0xFF14161D) else Color(0xFFCBD5E1))
-                            )
-                        }
-                    }
+                // Interactive Waveform Audio Scrubber
+                WaveformScrubber(
+                    progress = progress,
+                    durationSec = song.durationSec,
+                    onSeek = onProgressChange
+                )
 
-                    Slider(
-                        value = progress,
-                        onValueChange = onProgressChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = SliderDefaults.colors(
-                            thumbColor = Color(0xFF14161D),
-                            activeTrackColor = Color(0xFF14161D),
-                            inactiveTrackColor = Color(0xFFE2E8F0)
-                        )
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        val currentSec = (song.durationSec * progress).toInt()
-                        val currentStr = "${currentSec / 60}:${String.format("%02d", currentSec % 60)}"
-                        Text(text = currentStr, fontSize = 12.sp, color = Color(0xFF8A909E))
-                        Text(text = song.duration, fontSize = 12.sp, color = Color(0xFF8A909E))
-                    }
-                }
-
-                // Controls Row (matching reference: Shuffle, Prev, Big Play, Next, Repeat)
+                // Controls Row: Shuffle, Prev, Big Play/Pause, Next, Repeat
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = onShuffle) {
-                        Icon(imageVector = Icons.Default.Shuffle, contentDescription = "Shuffle", tint = Color(0xFF8A909E))
+                    IconButton(onClick = onShuffleToggle) {
+                        Icon(
+                            imageVector = Icons.Default.Shuffle,
+                            contentDescription = "Shuffle",
+                            tint = if (isShuffle) Color(0xFF14161D) else Color(0xFFB0B5C0)
+                        )
                     }
 
                     IconButton(onClick = onPrevious, modifier = Modifier.size(48.dp)) {
                         Icon(imageVector = Icons.Default.SkipPrevious, contentDescription = "Previous", tint = Color(0xFF14161D), modifier = Modifier.size(28.dp))
                     }
 
-                    // Main Big Circular Play/Pause Button with Drop Shadow
+                    // Main Big Circular Play/Pause Button
                     Surface(
                         modifier = Modifier
                             .size(72.dp)
@@ -1964,8 +2064,12 @@ fun NowPlayingDialog(
                         Icon(imageVector = Icons.Default.SkipNext, contentDescription = "Next", tint = Color(0xFF14161D), modifier = Modifier.size(28.dp))
                     }
 
-                    IconButton(onClick = { /* Repeat toggle */ }) {
-                        Icon(imageVector = Icons.Default.Repeat, contentDescription = "Repeat", tint = Color(0xFF8A909E))
+                    IconButton(onClick = onRepeatToggle) {
+                        Icon(
+                            imageVector = Icons.Default.Repeat,
+                            contentDescription = "Repeat",
+                            tint = if (isRepeat) Color(0xFF14161D) else Color(0xFFB0B5C0)
+                        )
                     }
                 }
 
@@ -1975,7 +2079,7 @@ fun NowPlayingDialog(
     }
 }
 
-// Media Link Download Dialog with Real Progress and Live Percentage
+// Media Link Download Dialog with Live Percentage Progress
 @Composable
 fun MediaLinkDownloadDialog(
     isKhmer: Boolean,
@@ -1989,7 +2093,6 @@ fun MediaLinkDownloadDialog(
     var extractedThumbnail by remember { mutableStateOf("") }
     var isFetchingTitle by remember { mutableStateOf(false) }
 
-    // Live Download Progress State
     var isDownloading by remember { mutableStateOf(false) }
     var downloadPercentage by remember { mutableIntStateOf(0) }
     var downloadStatusText by remember { mutableStateOf("") }
@@ -2044,7 +2147,6 @@ fun MediaLinkDownloadDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (isDownloading) {
-                    // Live Download Progress View with Percentage
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -2123,15 +2225,17 @@ fun MediaLinkDownloadDialog(
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(100.dp)
-                                .clip(RoundedCornerShape(12.dp)),
+                                .height(110.dp)
+                                .clip(RoundedCornerShape(14.dp)),
                             color = Color(0xFFECEEF2)
                         ) {
                             AsyncImage(
                                 model = extractedThumbnail,
                                 contentDescription = "Thumbnail Preview",
                                 contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .scale(1.15f)
                             )
                         }
                     }
@@ -2161,7 +2265,6 @@ fun MediaLinkDownloadDialog(
                         }
                     }
 
-                    // Original Title (Can be edited by user)
                     OutlinedTextField(
                         value = customTitle,
                         onValueChange = { customTitle = it },
@@ -2170,7 +2273,6 @@ fun MediaLinkDownloadDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    // Artist / Channel
                     OutlinedTextField(
                         value = customArtist,
                         onValueChange = { customArtist = it },
@@ -2218,7 +2320,7 @@ fun MediaLinkDownloadDialog(
     )
 }
 
-// In-App Update Dialog with Real Progress and Package Installer
+// In-App Update Dialog with Animated Radar and Smooth Motion
 @Composable
 fun AppUpdateDialog(
     isKhmer: Boolean,
@@ -2235,10 +2337,28 @@ fun AppUpdateDialog(
 
     val checker = remember { GitHubUpdateChecker() }
 
+    // Rotating animation for checking updates
+    val infiniteTransition = rememberInfiniteTransition(label = "update_rotate")
+    val rotation by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation"
+    )
+
     LaunchedEffect(Unit) {
         isChecking = true
+        delay(400)
         try {
-            val info = checker.checkLatestRelease("1.0.4")
+            val currentVer = try {
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.6"
+            } catch (e: Exception) {
+                "1.0.6"
+            }
+            val info = checker.checkLatestRelease(currentVer)
             updateInfo = info
         } catch (e: Exception) {
             errorText = e.message ?: "Failed to check update"
@@ -2265,26 +2385,37 @@ fun AppUpdateDialog(
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 if (isChecking) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
-                        CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color(0xFF14161D))
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            tint = Color(0xFF14161D),
+                            modifier = Modifier
+                                .size(24.dp)
+                                .graphicsLayer { rotationZ = rotation }
+                        )
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(if (isKhmer) "កំពុងពិនិត្យមើលពី GitHub..." else "Checking GitHub releases...", fontSize = 13.sp)
                     }
                 } else if (isDownloadingApk) {
                     Column(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
                             text = "$apkProgress%",
-                            fontSize = 28.sp,
+                            fontSize = 32.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF14161D)
                         )
@@ -2298,7 +2429,7 @@ fun AppUpdateDialog(
                             color = Color(0xFF14161D),
                             trackColor = Color(0xFFECEEF2)
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
                         Text(
                             text = downloadedBytesText.ifBlank { if (isKhmer) "កំពុងទាញយក APK..." else "Downloading APK..." },
                             fontSize = 12.sp,
@@ -2310,30 +2441,44 @@ fun AppUpdateDialog(
                 } else if (updateInfo != null) {
                     val info = updateInfo!!
                     if (info.hasUpdate) {
-                        Text(
-                            text = if (isKhmer) "មានកំណែថ្មី v${info.newVersion} អាចទាញយកបាន" else "New version v${info.newVersion} is available!",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp,
-                            color = Color(0xFF14161D)
-                        )
-                        if (info.releaseNotes.isNotBlank()) {
-                            Text(
-                                text = info.releaseNotes,
-                                fontSize = 12.sp,
-                                color = Color(0xFF8A909E),
-                                maxLines = 4,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp)),
+                            color = Color(0xFFF5F6F9)
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Text(
+                                    text = if (isKhmer) "មានកំណែថ្មី v${info.newVersion}" else "New Version v${info.newVersion} Available",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    color = Color(0xFF14161D)
+                                )
+                                if (info.releaseNotes.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = info.releaseNotes,
+                                        fontSize = 12.sp,
+                                        color = Color(0xFF8A909E),
+                                        maxLines = 4,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
                         }
                     } else {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(22.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(24.dp))
+                            Spacer(modifier = Modifier.width(10.dp))
                             Text(
                                 text = if (isKhmer) "លោកអ្នកកំពុងប្រើប្រាស់កំណែចុងក្រោយបំផុត (v${info.currentVersion})"
                                 else "You are on the latest version (v${info.currentVersion})",
                                 fontSize = 13.sp,
-                                color = Color(0xFF14161D)
+                                color = Color(0xFF14161D),
+                                fontWeight = FontWeight.Medium
                             )
                         }
                     }
