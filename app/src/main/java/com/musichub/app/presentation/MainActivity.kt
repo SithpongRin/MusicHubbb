@@ -54,6 +54,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.media3.common.AudioAttributes
@@ -479,7 +480,7 @@ suspend fun fetchMediaMetadata(url: String): Triple<String, String, String> = wi
 
     val ytId = LocalMediaExtractor.extractYouTubeId(u)
     if (ytId != null) {
-        thumbnail = "https://i.ytimg.com/vi/$ytId/hqdefault.jpg"
+        thumbnail = "https://i.ytimg.com/vi/$ytId/mqdefault.jpg"
         try {
             val meta = LocalMediaExtractor.fetchMetadata(ytId, client)
             if (meta != null) {
@@ -1458,7 +1459,7 @@ fun MusicHubApp() {
                                                 contentScale = ContentScale.Crop,
                                                 modifier = Modifier
                                                     .fillMaxSize()
-                                                    .scale(1.15f)
+                                                    .scale(1.40f)
                                             )
                                         } else {
                                             Icon(
@@ -1593,6 +1594,9 @@ fun MusicHubApp() {
                         songs = songsList,
                         currentSong = currentSong,
                         isPlaying = isPlaying,
+                        playlists = playlists,
+                        onPlaylistClick = { playlist -> viewingPlaylist = playlist },
+                        onCreatePlaylistClick = { showCreatePlaylistModal = true },
                         onSongClick = { song ->
                             currentSong = song
                             isPlaying = true
@@ -2622,13 +2626,17 @@ fun PlaylistDetailDialog(
     onLoopModeToggle: () -> Unit,
     onSongClick: (SongItem) -> Unit,
     onPlayAll: () -> Unit,
-    onMoveSongUp: (Int) -> Unit,
-    onMoveSongDown: (Int) -> Unit,
+    onMoveSongUp: (Int) -> Unit = {},
+    onMoveSongDown: (Int) -> Unit = {},
     onSaveSongIds: (List<String>) -> Unit,
     onRemoveSong: (SongItem) -> Unit,
     onDismiss: () -> Unit
 ) {
     var showSelectSongsDialog by remember { mutableStateOf(false) }
+
+    var songsOrder by remember(playlist.songIds) { mutableStateOf(playlist.songIds) }
+    var draggingIndex by remember { mutableStateOf<Int?>(null) }
+    var dragOffsetY by remember { mutableStateOf(0f) }
 
     if (showSelectSongsDialog) {
         SelectPlaylistSongsDialog(
@@ -2636,6 +2644,7 @@ fun PlaylistDetailDialog(
             playlist = playlist,
             allSongs = allSongs,
             onSaveSelection = { newIds ->
+                songsOrder = newIds
                 onSaveSongIds(newIds)
                 showSelectSongsDialog = false
             },
@@ -2643,8 +2652,8 @@ fun PlaylistDetailDialog(
         )
     }
 
-    val playlistSongs = remember(playlist.songIds, allSongs) {
-        playlist.songIds.mapNotNull { id -> allSongs.find { it.id == id } }
+    val playlistSongs = remember(songsOrder, allSongs) {
+        songsOrder.mapNotNull { id -> allSongs.find { it.id == id } }
     }
 
     Dialog(
@@ -2798,13 +2807,23 @@ fun PlaylistDetailDialog(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        itemsIndexed(playlistSongs) { index, song ->
+                        itemsIndexed(playlistSongs, key = { _, song -> song.id }) { index, song ->
+                            val isDragging = draggingIndex == index
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .zIndex(if (isDragging) 10f else 1f)
+                                    .graphicsLayer {
+                                        if (isDragging) {
+                                            translationY = dragOffsetY
+                                            scaleX = 1.02f
+                                            scaleY = 1.02f
+                                        }
+                                    }
                                     .clip(RoundedCornerShape(14.dp))
-                                    .clickable { onSongClick(song) },
-                                color = if (currentSong?.id == song.id) Color.White else Color.Transparent
+                                    .clickable(enabled = draggingIndex == null) { onSongClick(song) },
+                                color = if (isDragging) Color(0xFFE2E8F0) else if (currentSong?.id == song.id) Color.White else Color.Transparent,
+                                shadowElevation = if (isDragging) 8.dp else 0.dp
                             ) {
                                 Row(
                                     modifier = Modifier
@@ -2832,7 +2851,9 @@ fun PlaylistDetailDialog(
                                                 model = song.artworkUrl,
                                                 contentDescription = song.title,
                                                 contentScale = ContentScale.Crop,
-                                                modifier = Modifier.fillMaxSize()
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .scale(1.40f)
                                             )
                                         } else {
                                             Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = Color(0xFF64748B), modifier = Modifier.size(20.dp))
@@ -2859,30 +2880,61 @@ fun PlaylistDetailDialog(
                                         )
                                     }
 
-                                    // Move Up Button
-                                    IconButton(
-                                        onClick = { onMoveSongUp(index) },
-                                        enabled = index > 0,
-                                        modifier = Modifier.size(28.dp)
+                                    // Drag Handle for Reordering (drag to reorder song position)
+                                    Box(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .pointerInput(index, songsOrder) {
+                                                detectDragGestures(
+                                                    onDragStart = {
+                                                        draggingIndex = index
+                                                        dragOffsetY = 0f
+                                                    },
+                                                    onDragEnd = {
+                                                        val finalOrder = songsOrder
+                                                        draggingIndex = null
+                                                        dragOffsetY = 0f
+                                                        onSaveSongIds(finalOrder)
+                                                    },
+                                                    onDragCancel = {
+                                                        val finalOrder = songsOrder
+                                                        draggingIndex = null
+                                                        dragOffsetY = 0f
+                                                        onSaveSongIds(finalOrder)
+                                                    },
+                                                    onDrag = { change, dragAmount ->
+                                                        change.consume()
+                                                        dragOffsetY += dragAmount.y
+                                                        val curIdx = draggingIndex ?: return@detectDragGestures
+                                                        val step = 150f
+                                                        if (dragOffsetY > step * 0.5f && curIdx < songsOrder.size - 1) {
+                                                            val targetIdx = curIdx + 1
+                                                            val mutable = songsOrder.toMutableList()
+                                                            val item = mutable.removeAt(curIdx)
+                                                            mutable.add(targetIdx, item)
+                                                            songsOrder = mutable
+                                                            draggingIndex = targetIdx
+                                                            dragOffsetY -= step
+                                                            onSaveSongIds(mutable)
+                                                        } else if (dragOffsetY < -step * 0.5f && curIdx > 0) {
+                                                            val targetIdx = curIdx - 1
+                                                            val mutable = songsOrder.toMutableList()
+                                                            val item = mutable.removeAt(curIdx)
+                                                            mutable.add(targetIdx, item)
+                                                            songsOrder = mutable
+                                                            draggingIndex = targetIdx
+                                                            dragOffsetY += step
+                                                            onSaveSongIds(mutable)
+                                                        }
+                                                    }
+                                                )
+                                            },
+                                        contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Default.KeyboardArrowUp,
-                                            contentDescription = "Move Up",
-                                            tint = if (index > 0) Color(0xFF14161D) else Color(0xFFCBD5E1),
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-
-                                    // Move Down Button
-                                    IconButton(
-                                        onClick = { onMoveSongDown(index) },
-                                        enabled = index < playlistSongs.size - 1,
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.KeyboardArrowDown,
-                                            contentDescription = "Move Down",
-                                            tint = if (index < playlistSongs.size - 1) Color(0xFF14161D) else Color(0xFFCBD5E1),
+                                            imageVector = Icons.Default.DragHandle,
+                                            contentDescription = "Drag to reorder",
+                                            tint = if (isDragging) Color(0xFF14161D) else Color(0xFF94A3B8),
                                             modifier = Modifier.size(20.dp)
                                         )
                                     }
@@ -2916,6 +2968,9 @@ fun HomeScreen(
     songs: List<SongItem>,
     currentSong: SongItem?,
     isPlaying: Boolean,
+    playlists: List<PlaylistItem> = emptyList(),
+    onPlaylistClick: (PlaylistItem) -> Unit = {},
+    onCreatePlaylistClick: () -> Unit = {},
     onSongClick: (SongItem) -> Unit,
     onPlayAll: () -> Unit,
     onShufflePlay: () -> Unit,
@@ -3045,7 +3100,7 @@ fun HomeScreen(
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier
                                         .fillMaxSize()
-                                        .scale(1.15f)
+                                        .scale(1.40f)
                                 )
                             } else {
                                 Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = Color.White, modifier = Modifier.size(38.dp))
@@ -3111,6 +3166,143 @@ fun HomeScreen(
                             Icon(imageVector = Icons.Default.Shuffle, contentDescription = null, tint = Color(0xFF14161D), modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(text = if (isKhmer) "ច្របល់" else "Shuffle", color = Color(0xFF14161D), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Playlists Horizontal Cards Section
+        if (playlists.isNotEmpty()) {
+            item {
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isKhmer) "បញ្ជីចម្រៀង (Playlists)" else "Playlists",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF14161D)
+                        )
+                        Surface(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .clickable { onCreatePlaylistClick() },
+                            color = Color.White,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFECEEF2))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = null, tint = Color(0xFF14161D), modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (isKhmer) "បង្កើតថ្មី" else "New",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF14161D)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        contentPadding = PaddingValues(bottom = 6.dp)
+                    ) {
+                        items(playlists) { playlist ->
+                            // Find the first song artwork in this playlist
+                            val firstArtwork = playlist.songIds.firstNotNullOfOrNull { id ->
+                                songs.find { it.id == id && it.artworkUrl.isNotBlank() }?.artworkUrl
+                            }
+
+                            Surface(
+                                modifier = Modifier
+                                    .width(136.dp)
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .clickable { onPlaylistClick(playlist) },
+                                color = Color.White,
+                                shadowElevation = 2.dp
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    // Cover Artwork Box
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(116.dp)
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(
+                                                Brush.linearGradient(
+                                                    listOf(Color(0xFF232733), Color(0xFF14161D))
+                                                )
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (!firstArtwork.isNullOrBlank()) {
+                                            AsyncImage(
+                                                model = firstArtwork,
+                                                contentDescription = playlist.title,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .scale(1.40f)
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Default.QueueMusic,
+                                                contentDescription = null,
+                                                tint = Color.White.copy(alpha = 0.8f),
+                                                modifier = Modifier.size(38.dp)
+                                            )
+                                        }
+
+                                        // Badge indicating song count in bottom-right
+                                        Box(
+                                            modifier = Modifier
+                                                .align(Alignment.BottomEnd)
+                                                .padding(6.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color(0xCC000000))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                text = "${playlist.songIds.size}",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color.White
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    Text(
+                                        text = playlist.title,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF14161D),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+
+                                    Spacer(modifier = Modifier.height(2.dp))
+
+                                    Text(
+                                        text = if (isKhmer) "${playlist.songIds.size} បទ" else "${playlist.songIds.size} songs",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF8A909E),
+                                        maxLines = 1
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -3243,7 +3435,7 @@ fun NumberedTrackRowItem(
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
                             .fillMaxSize()
-                            .scale(1.12f)
+                            .scale(1.40f)
                     )
                 } else {
                     Icon(
@@ -3650,7 +3842,9 @@ fun LibraryScreen(
                                         model = firstSong.artworkUrl,
                                         contentDescription = playlist.title,
                                         contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize()
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .scale(1.40f)
                                     )
                                 } else {
                                     Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = Color.White, modifier = Modifier.size(24.dp))
@@ -3734,9 +3928,9 @@ fun SettingsScreen(
     val context = LocalContext.current
     val currentAppVersion = remember {
         try {
-            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.20"
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.21"
         } catch (e: Exception) {
-            "1.0.20"
+            "1.0.21"
         }
     }
 
@@ -3978,26 +4172,44 @@ fun NowPlayingDialog(
                     }
                 }
 
-                // Rotating Vinyl Record Disc with realistic grooves, glossy sweep sheen, and enlarged album artwork
+                // Rotating Picture Disc with full-bleed artwork and enlarged center spindle hub
                 Box(
                     modifier = Modifier
-                        .size(300.dp)
+                        .size(290.dp)
                         .scale(artScale)
                         .shadow(24.dp, CircleShape)
                         .clip(CircleShape)
-                        .background(Color(0xFF0F1116))
+                        .background(Color(0xFF1E212D))
                         .graphicsLayer { rotationZ = discRotation },
                     contentAlignment = Alignment.Center
                 ) {
-                    // Outer Vinyl Grooves (concentric realistic rings)
-                    Box(modifier = Modifier.size(288.dp).border(1.dp, Color(0x22FFFFFF), CircleShape))
-                    Box(modifier = Modifier.size(274.dp).border(1.dp, Color(0x14FFFFFF), CircleShape))
-                    Box(modifier = Modifier.size(260.dp).border(1.dp, Color(0x1CFFFFFF), CircleShape))
-                    Box(modifier = Modifier.size(246.dp).border(1.dp, Color(0x12FFFFFF), CircleShape))
-                    Box(modifier = Modifier.size(232.dp).border(1.dp, Color(0x18FFFFFF), CircleShape))
-                    Box(modifier = Modifier.size(220.dp).border(1.dp, Color(0x10FFFFFF), CircleShape))
+                    // Full-bleed Album Artwork (fills the entire circular disc)
+                    if (song.artworkUrl.isNotBlank()) {
+                        AsyncImage(
+                            model = song.artworkUrl,
+                            contentDescription = song.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .scale(1.40f)
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color(0xFF1E212D)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MusicNote,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(72.dp)
+                            )
+                        }
+                    }
 
-                    // Vinyl Radial Sheen Reflection (authentic vinyl gloss under light)
+                    // Disc Radial Sheen Reflection (authentic vinyl/CD sweep reflection under light)
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -4016,63 +4228,30 @@ fun NowPlayingDialog(
                             )
                     )
 
-                    // Outer Metallic Bevel Ring around Center Label
+                    // Outer Disc Edge Border
                     Box(
                         modifier = Modifier
-                            .size(216.dp)
-                            .border(1.5.dp, Color(0x6094A3B8), CircleShape)
+                            .fillMaxSize()
+                            .border(1.5.dp, Color(0x35000000), CircleShape)
                     )
 
-                    // Center Vinyl Label / Album Artwork Sticker (enlarged for prominent artwork view)
+                    // Center Spindle Hub & Metallic Silver Ring (enlarged per user request)
                     Box(
                         modifier = Modifier
-                            .size(210.dp)
+                            .size(54.dp)
+                            .shadow(6.dp, CircleShape)
                             .clip(CircleShape)
-                            .background(Color(0xFF1E212D)),
+                            .background(Color(0xFF14161D))
+                            .border(3.dp, Color(0xFFE2E8F0), CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (song.artworkUrl.isNotBlank()) {
-                            AsyncImage(
-                                model = song.artworkUrl,
-                                contentDescription = song.title,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .scale(1.35f)
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.MusicNote,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(64.dp)
-                            )
-                        }
-
-                        // Inner Bevel Ring Overlay to give label depth
                         Box(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .border(2.dp, Color(0x40000000), CircleShape)
-                        )
-
-                        // Center Vinyl Spindle Hole & Metallic Silver Ring
-                        Box(
-                            modifier = Modifier
-                                .size(38.dp)
+                                .size(24.dp)
                                 .clip(CircleShape)
-                                .background(Color(0xFF101217))
-                                .border(2.5.dp, Color(0xFFE2E8F0), CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(16.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF0F172A))
-                                    .border(1.dp, Color(0x60000000), CircleShape)
-                            )
-                        }
+                                .background(Color(0xFF0B0D12))
+                                .border(1.dp, Color(0x60FFFFFF), CircleShape)
+                        )
                     }
                 }
 
@@ -4543,9 +4722,9 @@ fun AppUpdateDialog(
         delay(400)
         try {
             val currentVer = try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.20"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.21"
             } catch (e: Exception) {
-                "1.0.20"
+                "1.0.21"
             }
             val info = checker.checkLatestRelease(currentVer)
             updateInfo = info

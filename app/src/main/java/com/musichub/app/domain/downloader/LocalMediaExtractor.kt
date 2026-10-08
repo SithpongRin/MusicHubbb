@@ -84,7 +84,7 @@ object LocalMediaExtractor {
                 val json = JSONObject(bodyStr)
                 val rawTitle = json.optString("title", "").trim()
                 val author = json.optString("author_name", "YouTube").trim()
-                val thumb = "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+                val thumb = "https://i.ytimg.com/vi/$videoId/mqdefault.jpg"
 
                 if (rawTitle.isNotBlank()) {
                     return@withContext YouTubeMetadata(
