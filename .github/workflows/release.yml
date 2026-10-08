@@ -40,8 +40,8 @@ jobs:
       - name: Grant Execute Permission to Gradlew
         run: chmod +x gradlew
 
-      - name: Build APK (Release or Debug Fallback)
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+      - name: Build APK with Permanent Keystore
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Prepare Release Artifacts
         run: |
@@ -52,7 +52,7 @@ jobs:
           mkdir -p build/release-assets
           
           # Find generated APK and copy to release folder
-          APK_FILE=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
+          APK_FILE=$(find app/build/outputs/apk -name "*release*.apk" -o -name "*.apk" | head -n 1)
           if [ -n "$APK_FILE" ]; then
             echo "Found APK: $APK_FILE"
             cp "$APK_FILE" "build/release-assets/MusicHub-${VERSION_TAG}.apk"

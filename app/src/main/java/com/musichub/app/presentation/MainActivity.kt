@@ -3253,7 +3253,7 @@ fun SettingsScreen(
                             color = Color(0xFF14161D)
                         )
                         Text(
-                            text = "Version: v1.0.10",
+                            text = "Version: v1.0.11",
                             fontSize = 13.sp,
                             color = Color(0xFF8A909E)
                         )
@@ -3820,9 +3820,9 @@ fun AppUpdateDialog(
         delay(400)
         try {
             val currentVer = try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.10"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.11"
             } catch (e: Exception) {
-                "1.0.10"
+                "1.0.11"
             }
             val info = checker.checkLatestRelease(currentVer)
             updateInfo = info
