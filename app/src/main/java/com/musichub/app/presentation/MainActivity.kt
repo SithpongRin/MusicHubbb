@@ -96,6 +96,8 @@ import com.musichub.app.domain.downloader.LocalMediaExtractor
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 
+val LocalDarkMode = compositionLocalOf { false }
+
 enum class Screen(val kmTitle: String, val enTitle: String, val icon: ImageVector) {
     HOME("ទំព័រដើម", "Home", Icons.Default.Home),
     SEARCH("ស្វែងរក", "Search", Icons.Default.Search),
@@ -319,7 +321,7 @@ fun resolvePlayableUriInternal(context: Context, song: SongItem, publicDir: File
         for (f in allFiles) {
             if (f.isFile && f.length() > 1024) {
                 val fname = f.nameWithoutExtension.lowercase()
-                if (fname.contains(cleanTitle.lowercase()) || (cleanArtist.isNotBlank() && fname.contains(cleanArtist.lowercase()))) {
+                if (cleanTitle.isNotBlank() && fname.contains(cleanTitle.lowercase())) {
                     return Uri.fromFile(f).toString()
                 }
             }
@@ -384,8 +386,13 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
         }
     } catch (e: Exception) {}
 
-    // 3. Scan physical audio files in Music/MusicHub/Songs and Music/MusicHub
-    val scanDirs = listOf(songsSubDir, publicDir)
+    // 3. Scan physical audio files in Music/MusicHub/Songs, Music/MusicHub root, and external files dir
+    val scanDirs = listOfNotNull(
+        songsSubDir,
+        publicDir,
+        context.getExternalFilesDir(Environment.DIRECTORY_MUSIC),
+        File(context.filesDir, "music")
+    )
     for (dir in scanDirs) {
         if (!dir.exists() || !dir.isDirectory) continue
         val audioFiles = dir.listFiles { f ->
@@ -397,23 +404,25 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
         for (file in audioFiles) {
             val baseName = file.nameWithoutExtension
             val ext = file.extension.uppercase()
-            val parts = if (baseName.contains(" - ")) baseName.split(" - ", limit = 2) else listOf("MusicHub", baseName)
-            val parsedArtist = parts.getOrNull(0)?.trim() ?: "MusicHub"
-            val parsedTitle = parts.getOrNull(1)?.trim() ?: baseName
-            val key = makeKey(parsedArtist, parsedTitle)
-
-            if (key in seenKeys) continue
-
-            val coverCandidate = File(coversSubDir, "$baseName.jpg")
-            val rootCoverCandidate = File(publicDir, "$baseName.jpg")
-            var artUri = when {
-                coverCandidate.exists() -> Uri.fromFile(coverCandidate).toString()
-                rootCoverCandidate.exists() -> Uri.fromFile(rootCoverCandidate).toString()
-                else -> ""
+            var parsedArtist = "MusicHub"
+            var parsedTitle = baseName
+            if (baseName.contains(" - ")) {
+                val parts = baseName.split(" - ", limit = 2)
+                parsedArtist = parts.getOrNull(0)?.trim() ?: "MusicHub"
+                parsedTitle = parts.getOrNull(1)?.trim() ?: baseName
             }
 
             var durStr = "3:30"
             var durSec = 210
+            var artUri = ""
+            val coverCandidate = File(coversSubDir, "$baseName.jpg")
+            val rootCoverCandidate = File(publicDir, "$baseName.jpg")
+            if (coverCandidate.exists()) {
+                artUri = Uri.fromFile(coverCandidate).toString()
+            } else if (rootCoverCandidate.exists()) {
+                artUri = Uri.fromFile(rootCoverCandidate).toString()
+            }
+
             try {
                 val mmr = MediaMetadataRetriever()
                 mmr.setDataSource(file.absolutePath)
@@ -421,6 +430,14 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
                 if (d != null && d > 0) {
                     durSec = (d / 1000).toInt()
                     durStr = "%d:%02d".format(durSec / 60, durSec % 60)
+                }
+                val tagTitle = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+                val tagArtist = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+                if (!tagTitle.isNullOrBlank() && (parsedTitle == baseName || parsedTitle.isBlank())) {
+                    parsedTitle = tagTitle.trim()
+                }
+                if (!tagArtist.isNullOrBlank() && (parsedArtist == "MusicHub" || parsedArtist.isBlank())) {
+                    parsedArtist = tagArtist.trim()
                 }
                 if (artUri.isBlank()) {
                     val embedded = mmr.embeddedPicture
@@ -435,41 +452,126 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
                 mmr.release()
             } catch (e: Exception) {}
 
-            seenKeys.add(key)
-            resultList.add(
-                SongItem(
-                    id = UUID.randomUUID().toString(),
-                    title = parsedTitle,
-                    artist = parsedArtist,
-                    album = "MusicHub",
-                    duration = durStr,
-                    durationSec = durSec,
-                    artworkUrl = artUri,
-                    uriString = Uri.fromFile(file).toString(),
-                    format = ext,
-                    isFavorite = false
+            val fileUri = Uri.fromFile(file).toString()
+            val fileIdentityKey = makeKey(parsedArtist, parsedTitle)
+
+            val alreadyPresent = resultList.any {
+                it.uriString.equals(fileUri, ignoreCase = true) ||
+                (parsedArtist != "MusicHub" && makeKey(it.artist, it.title) == fileIdentityKey)
+            }
+            if (!alreadyPresent) {
+                seenKeys.add(fileIdentityKey)
+                resultList.add(
+                    SongItem(
+                        id = UUID.randomUUID().toString(),
+                        title = parsedTitle,
+                        artist = parsedArtist,
+                        album = "MusicHub",
+                        duration = durStr,
+                        durationSec = durSec,
+                        artworkUrl = artUri,
+                        uriString = fileUri,
+                        format = ext,
+                        isFavorite = false
+                    )
                 )
-            )
+            }
         }
     }
 
-    // Clean and de-duplicate: Keep highest quality metadata (prefer known artist & real artwork)
+    // 4. Also scan MediaStore audio if on Android 10+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        try {
+            val projection = arrayOf(
+                MediaStore.Audio.Media._ID,
+                MediaStore.Audio.Media.TITLE,
+                MediaStore.Audio.Media.ARTIST,
+                MediaStore.Audio.Media.DURATION,
+                MediaStore.Audio.Media.RELATIVE_PATH
+            )
+            val selection = "${MediaStore.Audio.Media.RELATIVE_PATH} LIKE ?"
+            val selectionArgs = arrayOf("%MusicHub%")
+            context.contentResolver.query(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                projection,
+                selection,
+                selectionArgs,
+                null
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
+                val titleCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
+                val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
+                val durCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
+
+                while (cursor.moveToNext()) {
+                    val mediaId = cursor.getLong(idCol)
+                    val contentUri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, mediaId).toString()
+                    val mTitle = cursor.getString(titleCol) ?: "Track"
+                    val mArtist = cursor.getString(artistCol) ?: "MusicHub"
+                    val mDur = cursor.getLong(durCol)
+                    val mDurSec = if (mDur > 0) (mDur / 1000).toInt() else 210
+                    val mDurStr = "%d:%02d".format(mDurSec / 60, mDurSec % 60)
+
+                    val alreadyPresent = resultList.any {
+                        it.uriString.equals(contentUri, ignoreCase = true) ||
+                        (mArtist != "MusicHub" && makeKey(it.artist, it.title) == makeKey(mArtist, mTitle))
+                    }
+                    if (!alreadyPresent) {
+                        resultList.add(
+                            SongItem(
+                                id = UUID.randomUUID().toString(),
+                                title = mTitle,
+                                artist = mArtist,
+                                album = "MusicHub",
+                                duration = mDurStr,
+                                durationSec = mDurSec,
+                                artworkUrl = "",
+                                uriString = contentUri,
+                                format = "MP3",
+                                isFavorite = false
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) {}
+    }
+
+    // 5. Clean & De-duplicate: Keep the version with highest quality metadata
+    // CRITICAL: NEVER truncate title or discard distinct songs!
     val cleanedList = mutableListOf<SongItem>()
-    val processedTitles = mutableSetOf<String>()
+    val seenUris = mutableSetOf<String>()
+    val seenKnownTrackKeys = mutableSetOf<String>()
 
     val sorted = resultList.sortedWith(
         compareByDescending<SongItem> { it.artworkUrl.isNotBlank() }
-            .thenByDescending { it.artist != "<unknown>" && it.artist != "MusicHub" }
+            .thenByDescending { it.artist.isNotBlank() && it.artist != "<unknown>" && it.artist != "MusicHub" }
     )
 
     for (s in sorted) {
-        val normTitle = s.title.lowercase()
-            .replace(Regex("[^a-z0-9\\u1780-\\u17ff]"), "")
-            .take(12)
-        val normKey = if (normTitle.isNotBlank()) normTitle else s.title.lowercase().trim()
-        if (processedTitles.add(normKey)) {
-            cleanedList.add(s)
+        val uriKey = s.uriString.trim().lowercase()
+        // If exact same URI was already included, skip duplicate
+        if (uriKey.isNotBlank() && seenUris.contains(uriKey)) {
+            continue
         }
+
+        val artistNorm = s.artist.trim().lowercase()
+        val titleNorm = s.title.trim().lowercase()
+        val isKnownArtist = artistNorm.isNotBlank() && artistNorm != "<unknown>" && artistNorm != "musichub"
+
+        if (isKnownArtist && titleNorm.isNotBlank()) {
+            val trackKey = "$artistNorm - $titleNorm"
+            if (seenKnownTrackKeys.contains(trackKey)) {
+                // Duplicate track metadata already present with better artwork, skip duplicate
+                continue
+            }
+            seenKnownTrackKeys.add(trackKey)
+        }
+
+        if (uriKey.isNotBlank()) {
+            seenUris.add(uriKey)
+        }
+        cleanedList.add(s)
     }
 
     saveSongs(context, cleanedList)
@@ -1015,6 +1117,18 @@ fun MusicHubApp() {
     val scope = rememberCoroutineScope()
     // English as Default Language
     var isKhmer by remember { mutableStateOf(false) }
+    var isDarkMode by remember {
+        mutableStateOf(
+            context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
+                .getBoolean("dark_mode", false)
+        )
+    }
+    val onDarkModeToggle: () -> Unit = {
+        val nextMode = !isDarkMode
+        isDarkMode = nextMode
+        context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
+            .edit().putBoolean("dark_mode", nextMode).apply()
+    }
     var currentScreen by remember { mutableStateOf(Screen.HOME) }
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf("All") }
@@ -1034,13 +1148,22 @@ fun MusicHubApp() {
     var playbackPositionMs by remember { mutableLongStateOf(0L) }
     var playbackDurationMs by remember { mutableLongStateOf(0L) }
 
-    val currentQueue: List<SongItem> = remember(activePlaylistId, playlists, songsList) {
-        if (activePlaylistId != null) {
-            val pl = playlists.find { it.id == activePlaylistId }
-            pl?.songIds?.mapNotNull { id -> songsList.find { it.id == id } }?.ifEmpty { songsList } ?: songsList
-        } else {
-            songsList
+    fun getCurrentPlaybackQueue(): List<SongItem> {
+        val pid = activePlaylistId
+        if (pid != null) {
+            val pl = playlists.find { it.id == pid }
+            if (pl != null) {
+                val plSongs = pl.songIds.mapNotNull { id -> songsList.find { it.id == id } }
+                if (plSongs.isNotEmpty()) {
+                    return plSongs
+                }
+            }
         }
+        return songsList
+    }
+
+    val currentQueue: List<SongItem> = remember(activePlaylistId, playlists, songsList) {
+        getCurrentPlaybackQueue()
     }
 
     var showNowPlayingModal by remember { mutableStateOf(false) }
@@ -1288,6 +1411,70 @@ fun MusicHubApp() {
         }
     }
 
+    fun playNextTrack(isAutoEnded: Boolean = false) {
+        val queue = getCurrentPlaybackQueue()
+        if (queue.isEmpty()) {
+            isPlaying = false
+            return
+        }
+        if (isAutoEnded && loopMode == LoopMode.ONE) {
+            exoPlayer.seekTo(0)
+            exoPlayer.play()
+            return
+        }
+        if (isShuffle) {
+            val nextSong = if (queue.size > 1) {
+                queue.filter { it.id != currentSong?.id }.randomOrNull() ?: queue.random()
+            } else {
+                queue.first()
+            }
+            currentSong = nextSong
+            isPlaying = true
+        } else {
+            val currIdx = queue.indexOfFirst { it.id == currentSong?.id }
+            if (currIdx != -1) {
+                if (currIdx + 1 < queue.size) {
+                    currentSong = queue[currIdx + 1]
+                    isPlaying = true
+                } else if (loopMode == LoopMode.ALL) {
+                    currentSong = queue.first()
+                    isPlaying = true
+                } else {
+                    if (isAutoEnded) {
+                        isPlaying = false
+                        exoPlayer.seekTo(0)
+                        exoPlayer.pause()
+                    } else {
+                        currentSong = queue.first()
+                        isPlaying = true
+                    }
+                }
+            } else {
+                currentSong = queue.first()
+                isPlaying = true
+            }
+        }
+    }
+
+    fun playPrevTrack() {
+        val queue = getCurrentPlaybackQueue()
+        if (queue.isEmpty()) return
+        val currIdx = queue.indexOfFirst { it.id == currentSong?.id }
+        val prevIdx = if (currIdx > 0) currIdx - 1 else queue.size - 1
+        currentSong = queue[prevIdx]
+        isPlaying = true
+    }
+
+    val onTrackEndedState by rememberUpdatedState {
+        playNextTrack(isAutoEnded = true)
+    }
+    val onNextTrackState by rememberUpdatedState {
+        playNextTrack(isAutoEnded = false)
+    }
+    val onPrevTrackState by rememberUpdatedState {
+        playPrevTrack()
+    }
+
     // Hook up MediaPlaybackService notification action and seek listener
     DisposableEffect(Unit) {
         MediaPlaybackService.onActionReceived = { action ->
@@ -1305,22 +1492,10 @@ fun MusicHubApp() {
                     }
                 }
                 MediaPlaybackService.ACTION_NEXT -> {
-                    if (currentQueue.isNotEmpty()) {
-                        if (isShuffle) {
-                            currentSong = currentQueue.random()
-                        } else {
-                            val currIdx = currentQueue.indexOfFirst { it.id == currentSong?.id }
-                            val nextIdx = if (currIdx != -1) (currIdx + 1) % currentQueue.size else 0
-                            currentSong = currentQueue[nextIdx]
-                        }
-                    }
+                    onNextTrackState()
                 }
                 MediaPlaybackService.ACTION_PREV -> {
-                    if (currentQueue.isNotEmpty()) {
-                        val currIdx = currentQueue.indexOfFirst { it.id == currentSong?.id }
-                        val prevIdx = if (currIdx > 0) currIdx - 1 else currentQueue.size - 1
-                        currentSong = currentQueue[prevIdx]
-                    }
+                    onPrevTrackState()
                 }
                 MediaPlaybackService.ACTION_STOP -> {
                     if (exoPlayer.isPlaying) exoPlayer.pause()
@@ -1397,27 +1572,7 @@ fun MusicHubApp() {
                         )
                     }
                 } else if (playbackState == Player.STATE_ENDED) {
-                    if (loopMode == LoopMode.ONE) {
-                        exoPlayer.seekTo(0)
-                        exoPlayer.play()
-                    } else if (currentQueue.isNotEmpty()) {
-                        if (isShuffle) {
-                            currentSong = currentQueue.random()
-                        } else {
-                            val currIdx = currentQueue.indexOfFirst { it.id == currentSong?.id }
-                            if (currIdx != -1) {
-                                if (currIdx + 1 < currentQueue.size) {
-                                    currentSong = currentQueue[currIdx + 1]
-                                } else if (loopMode == LoopMode.ALL) {
-                                    currentSong = currentQueue.first()
-                                } else {
-                                    isPlaying = false
-                                }
-                            } else {
-                                currentSong = currentQueue.first()
-                            }
-                        }
-                    }
+                    onTrackEndedState()
                 }
             }
 
@@ -1497,28 +1652,8 @@ fun MusicHubApp() {
         }
     }
 
-    fun playNextTrack() {
-        if (currentQueue.isNotEmpty()) {
-            if (isShuffle) {
-                currentSong = currentQueue.random()
-            } else {
-                val currIdx = currentQueue.indexOfFirst { it.id == currentSong?.id }
-                val nextIdx = if (currIdx != -1) (currIdx + 1) % currentQueue.size else 0
-                currentSong = currentQueue[nextIdx]
-            }
-        }
-    }
-
-    fun playPrevTrack() {
-        if (currentQueue.isNotEmpty()) {
-            val currIdx = currentQueue.indexOfFirst { it.id == currentSong?.id }
-            val prevIdx = if (currIdx > 0) currIdx - 1 else currentQueue.size - 1
-            currentSong = currentQueue[prevIdx]
-        }
-    }
-
-
     fun shuffleAndPlay() {
+        activePlaylistId = null
         if (songsList.isNotEmpty()) {
             val shuffled = songsList.shuffled()
             currentSong = shuffled.first()
@@ -1600,21 +1735,38 @@ fun MusicHubApp() {
         }
     }
 
-    val colorScheme = lightColorScheme(
-        primary = Color(0xFF14161D),
-        secondary = Color(0xFF6366F1),
-        background = Color(0xFFF5F6F9),
-        surface = Color(0xFFFFFFFF),
-        surfaceVariant = Color(0xFFEBEDF2),
-        onPrimary = Color.White,
-        onBackground = Color(0xFF111318),
-        onSurface = Color(0xFF181A20),
-        onSurfaceVariant = Color(0xFF757B89)
-    )
+    val colorScheme = if (isDarkMode) {
+        darkColorScheme(
+            primary = Color(0xFF818CF8),
+            secondary = Color(0xFF6366F1),
+            background = Color(0xFF0F1117),
+            surface = Color(0xFF1A1D26),
+            surfaceVariant = Color(0xFF262A36),
+            onPrimary = Color.White,
+            onBackground = Color(0xFFF1F3F9),
+            onSurface = Color(0xFFF1F3F9),
+            onSurfaceVariant = Color(0xFF9CA3AF),
+            outline = Color(0xFF2E3344)
+        )
+    } else {
+        lightColorScheme(
+            primary = Color(0xFF14161D),
+            secondary = Color(0xFF6366F1),
+            background = Color(0xFFF5F6F9),
+            surface = Color(0xFFFFFFFF),
+            surfaceVariant = Color(0xFFEBEDF2),
+            onPrimary = Color.White,
+            onBackground = Color(0xFF111318),
+            onSurface = Color(0xFF181A20),
+            onSurfaceVariant = Color(0xFF757B89),
+            outline = Color(0xFFECEEF2)
+        )
+    }
 
-    MaterialTheme(colorScheme = colorScheme) {
-        Scaffold(
-            containerColor = Color(0xFFF5F6F9),
+    CompositionLocalProvider(LocalDarkMode provides isDarkMode) {
+        MaterialTheme(colorScheme = colorScheme) {
+            Scaffold(
+                containerColor = MaterialTheme.colorScheme.background,
             bottomBar = {
                 Column {
                     // Floating Mini-Player with AnimatedVisibility
@@ -1741,7 +1893,7 @@ fun MusicHubApp() {
 
                     // Bottom Navigation Bar
                     NavigationBar(
-                        containerColor = Color.White,
+                        containerColor = MaterialTheme.colorScheme.surface,
                         tonalElevation = 8.dp,
                         modifier = Modifier.shadow(12.dp)
                     ) {
@@ -1763,11 +1915,11 @@ fun MusicHubApp() {
                                 selected = currentScreen == screen,
                                 onClick = { currentScreen = screen },
                                 colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = Color(0xFF14161D),
-                                    selectedTextColor = Color(0xFF14161D),
-                                    unselectedIconColor = Color(0xFF94A3B8),
-                                    unselectedTextColor = Color(0xFF94A3B8),
-                                    indicatorColor = Color(0xFFECEEF2)
+                                    selectedIconColor = if (isDarkMode) Color(0xFF818CF8) else Color(0xFF14161D),
+                                    selectedTextColor = if (isDarkMode) Color(0xFF818CF8) else Color(0xFF14161D),
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    indicatorColor = MaterialTheme.colorScheme.surfaceVariant
                                 )
                             )
                         }
@@ -1779,7 +1931,7 @@ fun MusicHubApp() {
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
-                    .background(Color(0xFFF5F6F9))
+                    .background(MaterialTheme.colorScheme.background)
             ) {
                 when (currentScreen) {
                     Screen.HOME -> HomeScreen(
@@ -1791,10 +1943,12 @@ fun MusicHubApp() {
                         onPlaylistClick = { playlist -> viewingPlaylist = playlist },
                         onCreatePlaylistClick = { showCreatePlaylistModal = true },
                         onSongClick = { song ->
+                            activePlaylistId = null
                             currentSong = song
                             isPlaying = true
                         },
                         onPlayAll = {
+                            activePlaylistId = null
                             if (songsList.isNotEmpty()) {
                                 currentSong = songsList.first()
                                 isPlaying = true
@@ -1827,6 +1981,7 @@ fun MusicHubApp() {
                         currentSong = currentSong,
                         isPlaying = isPlaying,
                         onSongClick = { song ->
+                            activePlaylistId = null
                             currentSong = song
                             isPlaying = true
                         },
@@ -1850,6 +2005,7 @@ fun MusicHubApp() {
                         selectedCategory = selectedCategory,
                         onCategorySelect = { selectedCategory = it },
                         onSongClick = { song ->
+                            activePlaylistId = null
                             currentSong = song
                             isPlaying = true
                         },
@@ -1857,6 +2013,9 @@ fun MusicHubApp() {
                         onCreatePlaylistClick = { showCreatePlaylistModal = true },
                         onPlaylistClick = { playlist -> viewingPlaylist = playlist },
                         onDeletePlaylist = { playlist ->
+                            if (activePlaylistId == playlist.id) {
+                                activePlaylistId = null
+                            }
                             playlists = playlists.filter { it.id != playlist.id }
                             savePlaylists(context, playlists)
                             Toast.makeText(context, if (isKhmer) "បានលុប Playlist" else "Playlist deleted", Toast.LENGTH_SHORT).show()
@@ -1887,6 +2046,8 @@ fun MusicHubApp() {
                     Screen.SETTINGS -> SettingsScreen(
                         isKhmer = isKhmer,
                         onLanguageToggle = { isKhmer = !isKhmer },
+                        isDarkMode = isDarkMode,
+                        onDarkModeToggle = onDarkModeToggle,
                         audioQuality = audioQuality,
                         onQualityChange = { audioQuality = it },
                         selectedPreset = selectedPreset,
@@ -2169,6 +2330,7 @@ fun MusicHubApp() {
                 onDismiss = { viewingPlaylist = null }
             )
         }
+        }
     }
 }
 
@@ -2256,26 +2418,27 @@ fun AnimatedEqualizerBars() {
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.Bottom
     ) {
+        val barColor = if (LocalDarkMode.current) Color(0xFF818CF8) else Color(0xFF14161D)
         Box(
             modifier = Modifier
                 .width(4.dp)
                 .fillMaxHeight(bar1)
                 .clip(RoundedCornerShape(2.dp))
-                .background(Color(0xFF14161D))
+                .background(barColor)
         )
         Box(
             modifier = Modifier
                 .width(4.dp)
                 .fillMaxHeight(bar2)
                 .clip(RoundedCornerShape(2.dp))
-                .background(Color(0xFF14161D))
+                .background(barColor)
         )
         Box(
             modifier = Modifier
                 .width(4.dp)
                 .fillMaxHeight(bar3)
                 .clip(RoundedCornerShape(2.dp))
-                .background(Color(0xFF14161D))
+                .background(barColor)
         )
     }
 }
@@ -2356,7 +2519,11 @@ fun WaveformScrubber(
                             .height(targetHeight)
                             .clip(RoundedCornerShape(3.dp))
                             .background(
-                                if (isPlayed) Color(0xFF14161D) else Color(0xFFDCE0E8)
+                                if (isPlayed) {
+                                    if (LocalDarkMode.current) Color(0xFF818CF8) else Color(0xFF14161D)
+                                } else {
+                                    if (LocalDarkMode.current) Color(0xFF2E3344) else Color(0xFFDCE0E8)
+                                }
                             )
                     )
                 }
@@ -2371,7 +2538,7 @@ fun WaveformScrubber(
                     .height(48.dp)
                     .shadow(3.dp, RoundedCornerShape(2.dp))
                     .clip(RoundedCornerShape(2.dp))
-                    .background(Color(0xFF14161D))
+                    .background(if (LocalDarkMode.current) Color(0xFF818CF8) else Color(0xFF14161D))
             )
         }
 
@@ -2394,13 +2561,13 @@ fun WaveformScrubber(
                 text = currentStr,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
-                color = Color(0xFF8A909E)
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
                 text = totalStr,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
-                color = Color(0xFF8A909E)
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
@@ -2420,16 +2587,16 @@ fun EditSongDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color.White,
+        containerColor = MaterialTheme.colorScheme.surface,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(imageVector = Icons.Default.Edit, contentDescription = null, tint = Color(0xFF14161D))
+                Icon(imageVector = Icons.Default.Edit, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = if (isKhmer) "កែសម្រួលព័ត៌មានបទចម្រៀង" else "Edit Song Info",
                     fontWeight = FontWeight.Bold,
                     fontSize = 17.sp,
-                    color = Color(0xFF14161D)
+                    color = MaterialTheme.colorScheme.onSurface
                 )
             }
         },
@@ -2463,14 +2630,14 @@ fun EditSongDialog(
         confirmButton = {
             Button(
                 onClick = { onSave(title, artist, album) },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
             ) {
-                Text(text = if (isKhmer) "រក្សាទុក" else "Save")
+                Text(text = if (isKhmer) "រក្សាទុក" else "Save", color = Color.White)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text(text = if (isKhmer) "បោះបង់" else "Cancel", color = Color(0xFF64748B))
+                Text(text = if (isKhmer) "បោះបង់" else "Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     )
@@ -2486,16 +2653,16 @@ fun CreatePlaylistDialog(
     var title by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color.White,
+        containerColor = MaterialTheme.colorScheme.surface,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = Color(0xFF14161D))
+                Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = if (isKhmer) "បង្កើត Playlist ថ្មី" else "Create New Playlist",
                     fontWeight = FontWeight.Bold,
                     fontSize = 17.sp,
-                    color = Color(0xFF14161D)
+                    color = MaterialTheme.colorScheme.onSurface
                 )
             }
         },
@@ -2515,14 +2682,14 @@ fun CreatePlaylistDialog(
                         onCreate(title.trim())
                     }
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
             ) {
-                Text(if (isKhmer) "បង្កើត" else "Create")
+                Text(if (isKhmer) "បង្កើត" else "Create", color = Color.White)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text(if (isKhmer) "បោះបង់" else "Cancel", color = Color(0xFF8A909E))
+                Text(if (isKhmer) "បោះបង់" else "Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     )
@@ -2540,16 +2707,16 @@ fun AddToPlaylistDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color.White,
+        containerColor = MaterialTheme.colorScheme.surface,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(imageVector = Icons.Default.PlaylistAdd, contentDescription = null, tint = Color(0xFF14161D))
+                Icon(imageVector = Icons.Default.PlaylistAdd, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = if (isKhmer) "បញ្ចូលក្នុង Playlist" else "Add to Playlist",
                     fontWeight = FontWeight.Bold,
                     fontSize = 17.sp,
-                    color = Color(0xFF14161D)
+                    color = MaterialTheme.colorScheme.onSurface
                 )
             }
         },
@@ -2562,7 +2729,7 @@ fun AddToPlaylistDialog(
                     text = song.title,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
-                    color = Color(0xFF8A909E),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -2576,19 +2743,19 @@ fun AddToPlaylistDialog(
                             onDismiss()
                             onCreateNewPlaylist()
                         },
-                    color = Color(0xFFF5F6F9)
+                    color = MaterialTheme.colorScheme.surfaceVariant
                 ) {
                     Row(
                         modifier = Modifier.padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(imageVector = Icons.Default.Add, contentDescription = null, tint = Color(0xFF14161D), modifier = Modifier.size(20.dp))
+                        Icon(imageVector = Icons.Default.Add, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = if (isKhmer) "+ បង្កើត Playlist ថ្មី" else "+ Create New Playlist",
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp,
-                            color = Color(0xFF14161D)
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -2597,7 +2764,7 @@ fun AddToPlaylistDialog(
                     Text(
                         text = if (isKhmer) "មិនទាន់មាន Playlist ណាមួយទេ" else "No playlists created yet",
                         fontSize = 12.sp,
-                        color = Color(0xFF8A909E),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 8.dp)
                     )
                 } else {
@@ -2614,7 +2781,7 @@ fun AddToPlaylistDialog(
                                     .clickable {
                                         onAddToPlaylist(playlist)
                                     },
-                                color = if (alreadyIn) Color(0xFFF1F5F9) else Color(0xFFECEEF2)
+                                color = if (alreadyIn) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant
                             ) {
                                 Row(
                                     modifier = Modifier
@@ -2628,14 +2795,14 @@ fun AddToPlaylistDialog(
                                             text = playlist.title,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 13.sp,
-                                            color = Color(0xFF14161D),
+                                            color = MaterialTheme.colorScheme.onSurface,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
                                             text = if (isKhmer) "${playlist.songIds.size} បទ" else "${playlist.songIds.size} tracks",
                                             fontSize = 11.sp,
-                                            color = Color(0xFF8A909E)
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                     if (alreadyIn) {
@@ -2655,7 +2822,7 @@ fun AddToPlaylistDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text(if (isKhmer) "បិទ" else "Close", color = Color(0xFF14161D))
+                Text(if (isKhmer) "បិទ" else "Close", color = MaterialTheme.colorScheme.onSurface)
             }
         }
     )
@@ -2673,6 +2840,8 @@ fun SelectPlaylistSongsDialog(
     var searchQuery by remember { mutableStateOf("") }
     var selectedIds by remember { mutableStateOf(playlist.songIds.filter { id -> allSongs.any { it.id == id } }) }
 
+    val isDark = LocalDarkMode.current
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -2682,7 +2851,7 @@ fun SelectPlaylistSongsDialog(
                 .fillMaxSize()
                 .padding(16.dp),
             shape = RoundedCornerShape(24.dp),
-            color = Color.White
+            color = if (isDark) Color(0xFF1E222D) else Color.White
         ) {
             Column(
                 modifier = Modifier
@@ -2699,10 +2868,10 @@ fun SelectPlaylistSongsDialog(
                         text = if (isKhmer) "រៀបចំបទក្នុង Playlist (${selectedIds.size})" else "Select & Order Songs (${selectedIds.size})",
                         fontSize = 17.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFF14161D)
+                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
                     )
                     IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Close", tint = Color(0xFF64748B))
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B))
                     }
                 }
 
@@ -2713,12 +2882,12 @@ fun SelectPlaylistSongsDialog(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
                     placeholder = { Text(if (isKhmer) "ស្វែងរកបទចម្រៀង..." else "Search tracks...", fontSize = 13.sp) },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF94A3B8), modifier = Modifier.size(20.dp)) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8), modifier = Modifier.size(20.dp)) },
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color(0xFF14161D),
-                        unfocusedBorderColor = Color(0xFFE2E8F0)
+                        focusedBorderColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D),
+                        unfocusedBorderColor = if (isDark) Color(0xFF334155) else Color(0xFFE2E8F0)
                     ),
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -2750,10 +2919,10 @@ fun SelectPlaylistSongsDialog(
                                         selectedIds + song.id
                                     }
                                 },
-                            color = if (isSelected) Color(0xFFF1F5F9) else Color.White,
+                            color = if (isSelected) (if (isDark) Color(0xFF282F3E) else Color(0xFFF1F5F9)) else (if (isDark) Color(0xFF1E222D) else Color.White),
                             border = androidx.compose.foundation.BorderStroke(
                                 1.dp,
-                                if (isSelected) Color(0xFF14161D) else Color(0xFFE2E8F0)
+                                if (isSelected) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFE2E8F0))
                             )
                         ) {
                             Row(
@@ -2767,7 +2936,7 @@ fun SelectPlaylistSongsDialog(
                                     modifier = Modifier
                                         .size(28.dp)
                                         .clip(CircleShape)
-                                        .background(if (isSelected) Color(0xFF14161D) else Color(0xFFECEEF2)),
+                                        .background(if (isSelected) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFECEEF2))),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     if (isSelected && orderIndex != null) {
@@ -2781,7 +2950,7 @@ fun SelectPlaylistSongsDialog(
                                         Icon(
                                             Icons.Default.Add,
                                             contentDescription = null,
-                                            tint = Color(0xFF94A3B8),
+                                            tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF94A3B8),
                                             modifier = Modifier.size(16.dp)
                                         )
                                     }
@@ -2794,14 +2963,14 @@ fun SelectPlaylistSongsDialog(
                                         text = song.title,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 13.sp,
-                                        color = Color(0xFF14161D),
+                                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
                                         text = "${song.artist} • ${song.duration}",
                                         fontSize = 11.sp,
-                                        color = Color(0xFF8A909E),
+                                        color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -2817,7 +2986,7 @@ fun SelectPlaylistSongsDialog(
                                         }
                                     },
                                     colors = CheckboxDefaults.colors(
-                                        checkedColor = Color(0xFF14161D)
+                                        checkedColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)
                                     )
                                 )
                             }
@@ -2846,7 +3015,7 @@ fun SelectPlaylistSongsDialog(
                         },
                         modifier = Modifier.weight(1.5f),
                         shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                        colors = ButtonDefaults.buttonColors(containerColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D))
                     ) {
                         Text(if (isKhmer) "រក្សាទុក (${selectedIds.size} បទ)" else "Save (${selectedIds.size})")
                     }
@@ -2902,9 +3071,10 @@ fun PlaylistDetailDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
+        val isDark = LocalDarkMode.current
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = Color(0xFFF5F6F9)
+            color = if (isDark) Color(0xFF14161D) else Color(0xFFF5F6F9)
         ) {
             Column(
                 modifier = Modifier
@@ -2921,15 +3091,15 @@ fun PlaylistDetailDialog(
                         onClick = onDismiss,
                         modifier = Modifier
                             .size(40.dp)
-                            .background(Color.White, CircleShape)
+                            .background(if (isDark) Color(0xFF1E222D) else Color.White, CircleShape)
                     ) {
-                        Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = Color(0xFF14161D))
+                        Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D))
                     }
                     Text(
                         text = playlist.title,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFF14161D),
+                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
@@ -2941,9 +3111,9 @@ fun PlaylistDetailDialog(
                         onClick = { showSelectSongsDialog = true },
                         modifier = Modifier
                             .size(40.dp)
-                            .background(Color.White, CircleShape)
+                            .background(if (isDark) Color(0xFF1E222D) else Color.White, CircleShape)
                     ) {
-                        Icon(imageVector = Icons.Default.PlaylistAdd, contentDescription = "Select Songs", tint = Color(0xFF14161D))
+                        Icon(imageVector = Icons.Default.PlaylistAdd, contentDescription = "Select Songs", tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D))
                     }
                 }
 
@@ -2958,7 +3128,7 @@ fun PlaylistDetailDialog(
                     Text(
                         text = if (isKhmer) "${playlistSongs.size} បទចម្រៀង" else "${playlistSongs.size} tracks",
                         fontSize = 13.sp,
-                        color = Color(0xFF8A909E),
+                        color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E),
                         fontWeight = FontWeight.Medium
                     )
 
@@ -2971,10 +3141,10 @@ fun PlaylistDetailDialog(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(20.dp))
                                 .clickable { onLoopModeToggle() },
-                            color = if (loopMode != LoopMode.OFF) Color(0xFF14161D) else Color.White,
+                            color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF1E222D) else Color.White),
                             border = androidx.compose.foundation.BorderStroke(
                                 1.dp,
-                                if (loopMode != LoopMode.OFF) Color(0xFF14161D) else Color(0xFFCBD5E1)
+                                if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
                             )
                         ) {
                             Row(
@@ -2984,7 +3154,7 @@ fun PlaylistDetailDialog(
                                 Icon(
                                     imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
                                     contentDescription = "Loop",
-                                    tint = if (loopMode != LoopMode.OFF) Color.White else Color(0xFF64748B),
+                                    tint = if (loopMode != LoopMode.OFF) Color.White else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
@@ -2996,7 +3166,7 @@ fun PlaylistDetailDialog(
                                     },
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (loopMode != LoopMode.OFF) Color.White else Color(0xFF64748B)
+                                    color = if (loopMode != LoopMode.OFF) Color.White else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B))
                                 )
                             }
                         }
@@ -3006,7 +3176,7 @@ fun PlaylistDetailDialog(
                             Button(
                                 onClick = onPlayAll,
                                 shape = RoundedCornerShape(20.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D)),
+                                colors = ButtonDefaults.buttonColors(containerColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)),
                                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)
                             ) {
                                 Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
@@ -3025,18 +3195,18 @@ fun PlaylistDetailDialog(
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = Color(0xFF94A3B8), modifier = Modifier.size(48.dp))
+                            Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8), modifier = Modifier.size(48.dp))
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
                                 text = if (isKhmer) "មិនទាន់មានចម្រៀងក្នុង Playlist នេះទេ" else "No songs in this playlist yet",
                                 fontSize = 14.sp,
-                                color = Color(0xFF8A909E)
+                                color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E)
                             )
                             Spacer(modifier = Modifier.height(16.dp))
                             Button(
                                 onClick = { showSelectSongsDialog = true },
                                 shape = RoundedCornerShape(20.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                                colors = ButtonDefaults.buttonColors(containerColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D))
                             ) {
                                 Icon(Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -3064,7 +3234,7 @@ fun PlaylistDetailDialog(
                                     }
                                     .clip(RoundedCornerShape(14.dp))
                                     .clickable(enabled = draggingIndex == null) { onSongClick(song) },
-                                color = if (isDragging) Color(0xFFE2E8F0) else if (currentSong?.id == song.id) Color.White else Color.Transparent,
+                                color = if (isDragging) (if (isDark) Color(0xFF334155) else Color(0xFFE2E8F0)) else if (currentSong?.id == song.id) (if (isDark) Color(0xFF1E222D) else Color.White) else Color.Transparent,
                                 shadowElevation = if (isDragging) 8.dp else 0.dp
                             ) {
                                 Row(
@@ -3076,7 +3246,7 @@ fun PlaylistDetailDialog(
                                     Text(
                                         text = String.format("%02d", index + 1),
                                         fontSize = 12.sp,
-                                        color = Color(0xFF8A909E),
+                                        color = if (isDark) Color(0xFF64748B) else Color(0xFF8A909E),
                                         fontWeight = FontWeight.Medium,
                                         modifier = Modifier.width(24.dp)
                                     )
@@ -3085,7 +3255,7 @@ fun PlaylistDetailDialog(
                                         modifier = Modifier
                                             .size(42.dp)
                                             .clip(RoundedCornerShape(10.dp))
-                                            .background(Color(0xFFECEEF2)),
+                                            .background(if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2)),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         if (song.artworkUrl.isNotBlank()) {
@@ -3096,7 +3266,7 @@ fun PlaylistDetailDialog(
                                                 modifier = Modifier.fillMaxSize()
                                             )
                                         } else {
-                                            Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = Color(0xFF64748B), modifier = Modifier.size(20.dp))
+                                            Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B), modifier = Modifier.size(20.dp))
                                         }
                                     }
 
@@ -3107,14 +3277,14 @@ fun PlaylistDetailDialog(
                                             text = song.title,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 13.sp,
-                                            color = Color(0xFF14161D),
+                                            color = if (currentSong?.id == song.id) (if (isDark) Color(0xFF818CF8) else Color(0xFF14161D)) else (if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)),
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
                                             text = "${song.artist} • ${song.duration}",
                                             fontSize = 11.sp,
-                                            color = Color(0xFF8A909E),
+                                            color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E),
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
@@ -3314,13 +3484,13 @@ fun HomeScreen(
                         text = "MusicHub",
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Black,
-                        color = Color(0xFF14161D),
+                        color = MaterialTheme.colorScheme.onSurface,
                         letterSpacing = (-0.5).sp
                     )
                     Text(
                         text = if (isKhmer) "តន្ត្រីរបស់អ្នក គ្រប់ពេលវេលា" else "Listen Offline Everywhere",
                         fontSize = 12.sp,
-                        color = Color(0xFF8A909E),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontWeight = FontWeight.Medium
                     )
                 }
@@ -3334,14 +3504,14 @@ fun HomeScreen(
                         modifier = Modifier
                             .clip(RoundedCornerShape(18.dp))
                             .clickable { onLanguageToggle() },
-                        color = Color.White,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFECEEF2))
+                        color = MaterialTheme.colorScheme.surface,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                     ) {
                         Text(
                             text = if (isKhmer) "ខ្មែរ" else "EN",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF14161D),
+                            color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                         )
                     }
@@ -3352,14 +3522,14 @@ fun HomeScreen(
                             .size(38.dp)
                             .clip(CircleShape)
                             .clickable { onImportClick() },
-                        color = Color.White,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFECEEF2))
+                        color = MaterialTheme.colorScheme.surface,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Default.Add,
                                 contentDescription = "Import",
-                                tint = Color(0xFF14161D),
+                                tint = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -3371,7 +3541,7 @@ fun HomeScreen(
                             .size(38.dp)
                             .clip(CircleShape)
                             .clickable { onDownloadClick() },
-                        color = Color(0xFF14161D)
+                        color = if (LocalDarkMode.current) Color(0xFF6366F1) else Color(0xFF14161D)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
@@ -3392,7 +3562,7 @@ fun HomeScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(26.dp)),
-                color = Color.White
+                color = MaterialTheme.colorScheme.surface
             ) {
                 Column(modifier = Modifier.padding(18.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3423,7 +3593,7 @@ fun HomeScreen(
                             Text(
                                 text = if (isKhmer) "ចម្រៀង • ${songs.size} បទ • Offline" else "MusicHub • ${songs.size} songs • Offline",
                                 fontSize = 11.sp,
-                                color = Color(0xFF8A909E),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontWeight = FontWeight.Medium
                             )
                             Spacer(modifier = Modifier.height(2.dp))
@@ -3431,14 +3601,14 @@ fun HomeScreen(
                                 text = if (currentSong != null) currentSong.title else "Offline Library",
                                 fontSize = 19.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFF14161D),
+                                color = MaterialTheme.colorScheme.onSurface,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
                                 text = if (currentSong != null) currentSong.artist else "MusicHub Player",
                                 fontSize = 13.sp,
-                                color = Color(0xFF64748B),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -3458,11 +3628,11 @@ fun HomeScreen(
                                 .weight(1f)
                                 .height(44.dp),
                             shape = RoundedCornerShape(22.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                            colors = ButtonDefaults.buttonColors(containerColor = if (LocalDarkMode.current) Color(0xFF6366F1) else Color(0xFF14161D))
                         ) {
                             Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(text = if (isKhmer) "ចាក់ទាំងអស់" else "Play", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(text = if (isKhmer) "ចាក់ទាំងអស់" else "Play", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
 
                         Button(
@@ -3471,11 +3641,11 @@ fun HomeScreen(
                                 .weight(1f)
                                 .height(44.dp),
                             shape = RoundedCornerShape(22.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFECEEF2))
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                         ) {
-                            Icon(imageVector = Icons.Default.Shuffle, contentDescription = null, tint = Color(0xFF14161D), modifier = Modifier.size(18.dp))
+                            Icon(imageVector = Icons.Default.Shuffle, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(text = if (isKhmer) "ច្របល់" else "Shuffle", color = Color(0xFF14161D), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(text = if (isKhmer) "ច្របល់" else "Shuffle", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
                     }
                 }
@@ -3497,26 +3667,26 @@ fun HomeScreen(
                             text = if (isKhmer) "បញ្ជីចម្រៀង (Playlists)" else "Playlists",
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF14161D)
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Surface(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(16.dp))
                                 .clickable { onCreatePlaylistClick() },
-                            color = Color.White,
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFECEEF2))
+                            color = MaterialTheme.colorScheme.surface,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(Icons.Default.Add, contentDescription = null, tint = Color(0xFF14161D), modifier = Modifier.size(14.dp))
+                                Icon(Icons.Default.Add, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(14.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
                                     text = if (isKhmer) "បង្កើតថ្មី" else "New",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF14161D)
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
                             }
                         }
@@ -3539,7 +3709,7 @@ fun HomeScreen(
                                     .width(136.dp)
                                     .clip(RoundedCornerShape(18.dp))
                                     .clickable { onPlaylistClick(playlist) },
-                                color = Color.White,
+                                color = MaterialTheme.colorScheme.surface,
                                 shadowElevation = 2.dp
                             ) {
                                 Column(modifier = Modifier.padding(10.dp)) {
@@ -3596,7 +3766,7 @@ fun HomeScreen(
                                         text = playlist.title,
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF14161D),
+                                        color = MaterialTheme.colorScheme.onSurface,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -3606,7 +3776,7 @@ fun HomeScreen(
                                     Text(
                                         text = if (isKhmer) "${playlist.songIds.size} បទ" else "${playlist.songIds.size} songs",
                                         fontSize = 11.sp,
-                                        color = Color(0xFF8A909E),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1
                                     )
                                 }
@@ -3624,7 +3794,7 @@ fun HomeScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(24.dp)),
-                    color = Color.White
+                    color = MaterialTheme.colorScheme.surface
                 ) {
                     Column(
                         modifier = Modifier
@@ -3636,22 +3806,22 @@ fun HomeScreen(
                             text = if (isKhmer) "មិនទាន់មានបទចម្រៀងទេ" else "No Music Found",
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF14161D)
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             text = if (isKhmer) "ទាញយកតាមលីង ឬនាំចូលចម្រៀងពីទូរស័ព្ទដើម្បីស្តាប់" else "Download via link or import local audio files to start",
                             fontSize = 12.sp,
-                            color = Color(0xFF8A909E),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(18.dp))
                         Button(
                             onClick = onDownloadClick,
                             shape = RoundedCornerShape(20.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                         ) {
-                            Text(if (isKhmer) "ទាញយកតាមលីង" else "Download by Link")
+                            Text(if (isKhmer) "ទាញយកតាមលីង" else "Download by Link", color = Color.White)
                         }
                     }
                 }
@@ -3701,7 +3871,7 @@ fun NumberedTrackRowItem(
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onClick),
-        color = if (isCurrent) Color.White else Color.Transparent
+        color = if (isCurrent) MaterialTheme.colorScheme.surface else Color.Transparent
     ) {
         Row(
             modifier = Modifier
@@ -3721,7 +3891,7 @@ fun NumberedTrackRowItem(
                         text = String.format("%02d", index),
                         fontSize = 12.sp,
                         fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
-                        color = if (isCurrent) Color(0xFF14161D) else Color(0xFF94A3B8)
+                        color = if (isCurrent) (if (LocalDarkMode.current) Color(0xFF818CF8) else Color(0xFF14161D)) else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -3733,7 +3903,7 @@ fun NumberedTrackRowItem(
                 modifier = Modifier
                     .size(46.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0xFFECEEF2)),
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
             ) {
                 if (song.artworkUrl.isNotBlank()) {
@@ -3747,7 +3917,7 @@ fun NumberedTrackRowItem(
                     Icon(
                         imageVector = Icons.Default.MusicNote,
                         contentDescription = null,
-                        tint = Color(0xFF64748B),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(22.dp)
                     )
                 }
@@ -3760,7 +3930,7 @@ fun NumberedTrackRowItem(
                     text = song.title,
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp,
-                    color = Color(0xFF14161D),
+                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -3768,7 +3938,7 @@ fun NumberedTrackRowItem(
                 Text(
                     text = "${song.artist} • ${song.duration}",
                     fontSize = 12.sp,
-                    color = Color(0xFF8A909E),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -3778,7 +3948,7 @@ fun NumberedTrackRowItem(
                 Icon(
                     imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                     contentDescription = "Favorite",
-                    tint = if (song.isFavorite) Color(0xFFEF4444) else Color(0xFF94A3B8),
+                    tint = if (song.isFavorite) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp)
                 )
             }
@@ -3788,31 +3958,31 @@ fun NumberedTrackRowItem(
                     Icon(
                         imageVector = Icons.Default.MoreHoriz,
                         contentDescription = "Options",
-                        tint = Color(0xFF8A909E),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(20.dp)
                     )
                 }
                 DropdownMenu(
                     expanded = showMenu,
                     onDismissRequest = { showMenu = false },
-                    modifier = Modifier.background(Color.White)
+                    modifier = Modifier.background(MaterialTheme.colorScheme.surface)
                 ) {
                     DropdownMenuItem(
-                        text = { Text(if (isKhmer) "បញ្ចូលក្នុង Playlist" else "Add to Playlist", color = Color(0xFF14161D)) },
+                        text = { Text(if (isKhmer) "បញ្ចូលក្នុង Playlist" else "Add to Playlist", color = MaterialTheme.colorScheme.onSurface) },
                         onClick = {
                             showMenu = false
                             onAddToPlaylist()
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text(if (isKhmer) "កែសម្រួលព័ត៌មាន" else "Edit Info", color = Color(0xFF14161D)) },
+                        text = { Text(if (isKhmer) "កែសម្រួលព័ត៌មាន" else "Edit Info", color = MaterialTheme.colorScheme.onSurface) },
                         onClick = {
                             showMenu = false
                             onEditSong()
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text(if (isKhmer) "ចែករំលែក ឬ Copy ឯកសារ" else "Share / Copy File", color = Color(0xFF14161D)) },
+                        text = { Text(if (isKhmer) "ចែករំលែក ឬ Copy ឯកសារ" else "Share / Copy File", color = MaterialTheme.colorScheme.onSurface) },
                         onClick = {
                             showMenu = false
                             onShareSong()
@@ -3859,22 +4029,30 @@ fun SearchScreen(
                 text = if (isKhmer) "ស្វែងរកចម្រៀង" else "Search Songs",
                 fontSize = 22.sp,
                 fontWeight = FontWeight.Bold,
-                color = Color(0xFF14161D)
+                color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(modifier = Modifier.height(10.dp))
             OutlinedTextField(
                 value = query,
                 onValueChange = onQueryChange,
-                placeholder = { Text(if (isKhmer) "ស្វែងរកតាមចំណងជើង ឬអ្នកចម្រៀង..." else "Search by title or artist...", fontSize = 13.sp) },
-                leadingIcon = { Icon(imageVector = Icons.Default.Search, contentDescription = null, tint = Color(0xFF8A909E)) },
+                placeholder = {
+                    Text(
+                        if (isKhmer) "ស្វែងរកតាមចំណងជើង ឬអ្នកចម្រៀង..." else "Search by title or artist...",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                leadingIcon = { Icon(imageVector = Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
                 singleLine = true,
                 shape = RoundedCornerShape(20.dp),
                 modifier = Modifier.fillMaxWidth(),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = Color.White,
-                    unfocusedContainerColor = Color.White,
-                    focusedBorderColor = Color(0xFF14161D),
-                    unfocusedBorderColor = Color(0xFFE2E8F0)
+                    focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                    unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                    focusedContainerColor = MaterialTheme.colorScheme.surface,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outline
                 )
             )
         }
@@ -3957,7 +4135,7 @@ fun LibraryScreen(
                         text = if (isKhmer) "បណ្ណាល័យ" else "Library",
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFF14161D),
+                        color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1
                     )
                     Text(
@@ -3967,7 +4145,7 @@ fun LibraryScreen(
                             if (isKhmer) "${displayedSongs.size} បទក្នុងឧបករណ៍" else "${displayedSongs.size} tracks available"
                         },
                         fontSize = 12.sp,
-                        color = Color(0xFF8A909E),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1
                     )
                 }
@@ -3982,14 +4160,14 @@ fun LibraryScreen(
                             .size(34.dp)
                             .clip(CircleShape)
                             .clickable { onRescanLibrary() },
-                        color = Color.White,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFECEEF2))
+                        color = MaterialTheme.colorScheme.surface,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Default.Refresh,
                                 contentDescription = if (isKhmer) "ស្កេន" else "Scan",
-                                tint = Color(0xFF14161D),
+                                tint = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.size(16.dp)
                             )
                         }
@@ -4001,7 +4179,7 @@ fun LibraryScreen(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(20.dp))
                                 .clickable { onCreatePlaylistClick() },
-                            color = Color(0xFF14161D)
+                            color = if (LocalDarkMode.current) Color(0xFF6366F1) else Color(0xFF14161D)
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
@@ -4031,8 +4209,8 @@ fun LibraryScreen(
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
                             .clickable { onImportClick() },
-                        color = if (isPlaylistsTab) Color.White else Color(0xFF14161D),
-                        border = if (isPlaylistsTab) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFECEEF2)) else null
+                        color = if (isPlaylistsTab) MaterialTheme.colorScheme.surface else (if (LocalDarkMode.current) Color(0xFF6366F1) else Color(0xFF14161D)),
+                        border = if (isPlaylistsTab) androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline) else null
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
@@ -4041,13 +4219,13 @@ fun LibraryScreen(
                             Icon(
                                 imageVector = Icons.Default.Add,
                                 contentDescription = null,
-                                tint = if (isPlaylistsTab) Color(0xFF14161D) else Color.White,
+                                tint = if (isPlaylistsTab) MaterialTheme.colorScheme.onSurface else Color.White,
                                 modifier = Modifier.size(14.dp)
                             )
                             Spacer(modifier = Modifier.width(3.dp))
                             Text(
                                 text = if (isKhmer) "នាំចូល" else "Import",
-                                color = if (isPlaylistsTab) Color(0xFF14161D) else Color.White,
+                                color = if (isPlaylistsTab) MaterialTheme.colorScheme.onSurface else Color.White,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
@@ -4067,10 +4245,10 @@ fun LibraryScreen(
                         onClick = { onCategorySelect(category) },
                         label = { Text(category, fontSize = 12.sp) },
                         colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = Color(0xFF14161D),
+                            selectedContainerColor = if (LocalDarkMode.current) Color(0xFF6366F1) else Color(0xFF14161D),
                             selectedLabelColor = Color.White,
-                            containerColor = Color.White,
-                            labelColor = Color(0xFF8A909E)
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            labelColor = MaterialTheme.colorScheme.onSurfaceVariant
                         ),
                         border = null
                     )
@@ -4086,7 +4264,7 @@ fun LibraryScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(22.dp)),
-                        color = Color.White
+                        color = MaterialTheme.colorScheme.surface
                     ) {
                         Column(
                             modifier = Modifier
@@ -4094,28 +4272,28 @@ fun LibraryScreen(
                                 .padding(28.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = Color(0xFF94A3B8), modifier = Modifier.size(44.dp))
+                            Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(44.dp))
                             Spacer(modifier = Modifier.height(10.dp))
                             Text(
                                 text = if (isKhmer) "មិនទាន់មាន Playlist ទេ" else "No Playlists Yet",
                                 fontSize = 17.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFF14161D)
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = if (isKhmer) "បង្កើត Playlist ផ្ទាល់ខ្លួនដើម្បីចាត់ចែងចម្រៀងតាមចំណូលចិត្ត" else "Create your first playlist to organize your favorite songs",
                                 fontSize = 12.sp,
-                                color = Color(0xFF8A909E),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center
                             )
                             Spacer(modifier = Modifier.height(16.dp))
                             Button(
                                 onClick = onCreatePlaylistClick,
                                 shape = RoundedCornerShape(20.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                             ) {
-                                Text(if (isKhmer) "បង្កើត Playlist ថ្មី" else "+ Create Playlist")
+                                Text(if (isKhmer) "បង្កើត Playlist ថ្មី" else "+ Create Playlist", color = Color.White)
                             }
                         }
                     }
@@ -4128,7 +4306,7 @@ fun LibraryScreen(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(18.dp))
                             .clickable { onPlaylistClick(playlist) },
-                        color = Color.White
+                        color = MaterialTheme.colorScheme.surface
                     ) {
                         Row(
                             modifier = Modifier
@@ -4162,7 +4340,7 @@ fun LibraryScreen(
                                     text = playlist.title,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 15.sp,
-                                    color = Color(0xFF14161D),
+                                    color = MaterialTheme.colorScheme.onSurface,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -4170,7 +4348,7 @@ fun LibraryScreen(
                                 Text(
                                     text = if (isKhmer) "${playlist.songIds.size} បទ" else "${playlist.songIds.size} tracks",
                                     fontSize = 12.sp,
-                                    color = Color(0xFF8A909E)
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
 
@@ -4179,9 +4357,9 @@ fun LibraryScreen(
                                     onClick = { onPlayPlaylist(playlist) },
                                     modifier = Modifier
                                         .size(36.dp)
-                                        .background(Color(0xFFECEEF2), CircleShape)
+                                        .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
                                 ) {
-                                    Icon(imageVector = Icons.Default.PlayArrow, contentDescription = "Play", tint = Color(0xFF14161D), modifier = Modifier.size(18.dp))
+                                    Icon(imageVector = Icons.Default.PlayArrow, contentDescription = "Play", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
                                 }
                             }
 
@@ -4222,6 +4400,8 @@ fun LibraryScreen(
 fun SettingsScreen(
     isKhmer: Boolean,
     onLanguageToggle: () -> Unit,
+    isDarkMode: Boolean,
+    onDarkModeToggle: () -> Unit,
     audioQuality: String,
     onQualityChange: (String) -> Unit,
     selectedPreset: String,
@@ -4234,9 +4414,9 @@ fun SettingsScreen(
     val context = LocalContext.current
     val currentAppVersion = remember {
         try {
-            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.25"
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.26"
         } catch (e: Exception) {
-            "1.0.25"
+            "1.0.26"
         }
     }
 
@@ -4252,8 +4432,76 @@ fun SettingsScreen(
                 text = if (isKhmer) "ការកំណត់" else "Settings",
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
-                color = Color(0xFF14161D)
+                color = MaterialTheme.colorScheme.onSurface
             )
+        }
+
+        // Dark Mode Switcher Card
+        item {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(22.dp)),
+                color = MaterialTheme.colorScheme.surface
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (isDarkMode) Icons.Default.DarkMode else Icons.Default.LightMode,
+                                contentDescription = "Dark Mode",
+                                tint = if (isDarkMode) Color(0xFFFBBF24) else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(14.dp))
+
+                        Column {
+                            Text(
+                                text = if (isKhmer) "ទម្រង់ផ្ទៃងងឹត (Dark Mode)" else "Dark Mode",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (isDarkMode) {
+                                    if (isKhmer) "បើកដំណើរការ (On)" else "Enabled"
+                                } else {
+                                    if (isKhmer) "បិទ (Off)" else "Disabled"
+                                },
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Switch(
+                        checked = isDarkMode,
+                        onCheckedChange = { onDarkModeToggle() },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = Color(0xFF6366F1),
+                            uncheckedThumbColor = Color(0xFF8A909E),
+                            uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    )
+                }
+            }
         }
 
         // Language Switcher Card
@@ -4263,7 +4511,7 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(22.dp))
                     .clickable(onClick = onLanguageToggle),
-                color = Color.White
+                color = MaterialTheme.colorScheme.surface
             ) {
                 Row(
                     modifier = Modifier
@@ -4272,22 +4520,47 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Column {
-                        Text(
-                            text = if (isKhmer) "ភាសា (Language)" else "Language",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                            color = Color(0xFF14161D)
-                        )
-                        Text(
-                            text = if (isKhmer) "ភាសាខ្មែរ (Khmer)" else "English",
-                            fontSize = 13.sp,
-                            color = Color(0xFF8A909E)
-                        )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Language,
+                                contentDescription = "Language",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(14.dp))
+
+                        Column {
+                            Text(
+                                text = if (isKhmer) "ភាសា (Language)" else "Language",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (isKhmer) "ភាសាខ្មែរ (Khmer)" else "English",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
 
                     TextButton(onClick = onLanguageToggle) {
-                        Text(text = if (isKhmer) "Switch to EN" else "ប្តូរទៅភាសាខ្មែរ", color = Color(0xFF6366F1), fontWeight = FontWeight.Bold)
+                        Text(
+                            text = if (isKhmer) "Switch to EN" else "ប្តូរទៅភាសាខ្មែរ",
+                            color = Color(0xFF6366F1),
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
@@ -4300,7 +4573,7 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(22.dp))
                     .clickable(onClick = onOpenEqualizer),
-                color = Color.White
+                color = MaterialTheme.colorScheme.surface
             ) {
                 Row(
                     modifier = Modifier
@@ -4311,10 +4584,10 @@ fun SettingsScreen(
                     Box(
                         modifier = Modifier
                             .size(40.dp)
-                            .background(Color(0xFFECEEF2), CircleShape),
+                            .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(imageVector = Icons.Default.Tune, contentDescription = "EQ", tint = Color(0xFF14161D), modifier = Modifier.size(20.dp))
+                        Icon(imageVector = Icons.Default.Tune, contentDescription = "EQ", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
                     }
 
                     Spacer(modifier = Modifier.width(14.dp))
@@ -4324,16 +4597,16 @@ fun SettingsScreen(
                             text = if (isKhmer) "ប្រព័ន្ធកែសំឡេង Equalizer" else "Sound Equalizer",
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
-                            color = Color(0xFF14161D)
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
                             text = selectedPreset,
                             fontSize = 13.sp,
-                            color = Color(0xFF8A909E)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
-                    Icon(imageVector = Icons.Default.ChevronRight, contentDescription = "Open", tint = Color(0xFF8A909E))
+                    Icon(imageVector = Icons.Default.ChevronRight, contentDescription = "Open", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -4344,7 +4617,7 @@ fun SettingsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(22.dp)),
-                color = Color.White
+                color = MaterialTheme.colorScheme.surface
             ) {
                 Column(modifier = Modifier.padding(18.dp)) {
                     // Full-width Header Row (Never truncates text)
@@ -4355,13 +4628,13 @@ fun SettingsScreen(
                         Box(
                             modifier = Modifier
                                 .size(40.dp)
-                                .background(Color(0xFFECEEF2), CircleShape),
+                                .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = if (appVolume <= 0.08f) Icons.Default.VolumeMute else if (appVolume < 0.5f) Icons.Default.VolumeDown else Icons.Default.VolumeUp,
                                 contentDescription = "Volume",
-                                tint = Color(0xFF14161D),
+                                tint = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.size(20.dp)
                             )
                         }
@@ -4371,12 +4644,12 @@ fun SettingsScreen(
                                 text = if (isKhmer) "កម្រិតសំឡេង App / កាស" else "In-App / Headphone Volume",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 15.sp,
-                                color = Color(0xFF14161D)
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
                                 text = if (isKhmer) "កែសម្រួលកុំអោយលឺខ្លាំងពេកពេលដាក់កាស" else "Prevent loud audio when using headphones",
                                 fontSize = 12.sp,
-                                color = Color(0xFF8A909E)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -4393,7 +4666,7 @@ fun SettingsScreen(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
                                 .clickable { onVolumeChange(0.60f) },
-                            color = Color(0xFFECEEF2)
+                            color = MaterialTheme.colorScheme.surfaceVariant
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -4402,7 +4675,7 @@ fun SettingsScreen(
                                 Icon(
                                     imageVector = Icons.Default.Refresh,
                                     contentDescription = null,
-                                    tint = Color(0xFF14161D),
+                                    tint = MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.size(13.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -4410,7 +4683,7 @@ fun SettingsScreen(
                                     text = if (isKhmer) "លំនាំដើម (60%)" else "Default (60%)",
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF14161D)
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
                             }
                         }
@@ -4419,7 +4692,7 @@ fun SettingsScreen(
                             text = "${(appVolume * 100).toInt()}%",
                             fontSize = 16.sp,
                             fontWeight = FontWeight.ExtraBold,
-                            color = Color(0xFF14161D)
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
 
@@ -4430,9 +4703,9 @@ fun SettingsScreen(
                         onValueChange = onVolumeChange,
                         valueRange = 0.05f..1f,
                         colors = SliderDefaults.colors(
-                            thumbColor = Color(0xFF14161D),
-                            activeTrackColor = Color(0xFF14161D),
-                            inactiveTrackColor = Color(0xFFECEEF2)
+                            thumbColor = if (isDarkMode) Color(0xFF818CF8) else Color(0xFF14161D),
+                            activeTrackColor = if (isDarkMode) Color(0xFF818CF8) else Color(0xFF14161D),
+                            inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant
                         )
                     )
                 }
@@ -4445,7 +4718,7 @@ fun SettingsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(22.dp)),
-                color = Color.White
+                color = MaterialTheme.colorScheme.surface
             ) {
                 Row(
                     modifier = Modifier
@@ -4459,12 +4732,12 @@ fun SettingsScreen(
                             text = "MusicHub App Update",
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
-                            color = Color(0xFF14161D)
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
                             text = "Version: v$currentAppVersion",
                             fontSize = 13.sp,
-                            color = Color(0xFF8A909E)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
@@ -4474,7 +4747,7 @@ fun SettingsScreen(
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
                             .clickable { onCheckUpdate() },
-                        color = Color(0xFF14161D)
+                        color = if (isDarkMode) Color(0xFF6366F1) else Color(0xFF14161D)
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
@@ -4545,7 +4818,7 @@ fun NowPlayingDialog(
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = Color(0xFFF5F6F9)
+            color = MaterialTheme.colorScheme.background
         ) {
             Column(
                 modifier = Modifier
@@ -4561,22 +4834,22 @@ fun NowPlayingDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = onDismiss) {
-                        Icon(imageVector = Icons.Default.KeyboardArrowDown, contentDescription = "Down", tint = Color(0xFF14161D), modifier = Modifier.size(28.dp))
+                        Icon(imageVector = Icons.Default.KeyboardArrowDown, contentDescription = "Down", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
                     }
 
                     Text(
                         text = if (isKhmer) "កំពុងចាក់" else "Now Playing",
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFF14161D)
+                        color = MaterialTheme.colorScheme.onSurface
                     )
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = onShareClick) {
-                            Icon(imageVector = Icons.Default.Share, contentDescription = "Share", tint = Color(0xFF14161D))
+                            Icon(imageVector = Icons.Default.Share, contentDescription = "Share", tint = MaterialTheme.colorScheme.onSurface)
                         }
                         IconButton(onClick = onEqualizerClick) {
-                            Icon(imageVector = Icons.Default.Tune, contentDescription = "EQ", tint = Color(0xFF14161D))
+                            Icon(imageVector = Icons.Default.Tune, contentDescription = "EQ", tint = MaterialTheme.colorScheme.onSurface)
                         }
                     }
                 }
@@ -4674,7 +4947,7 @@ fun NowPlayingDialog(
                         Icon(
                             imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             contentDescription = "Favorite",
-                            tint = if (song.isFavorite) Color(0xFFEF4444) else Color(0xFF8A909E),
+                            tint = if (song.isFavorite) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(24.dp)
                         )
                     }
@@ -4687,7 +4960,7 @@ fun NowPlayingDialog(
                             text = song.title,
                             fontSize = 20.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF14161D),
+                            color = MaterialTheme.colorScheme.onSurface,
                             textAlign = TextAlign.Center,
                             maxLines = 1,
                             modifier = Modifier.basicMarquee(
@@ -4701,7 +4974,7 @@ fun NowPlayingDialog(
                         Text(
                             text = song.artist,
                             fontSize = 14.sp,
-                            color = Color(0xFF8A909E),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
                             maxLines = 1,
                             modifier = Modifier.basicMarquee(
@@ -4717,7 +4990,7 @@ fun NowPlayingDialog(
                         Icon(
                             imageVector = Icons.Default.MoreHoriz,
                             contentDescription = "Options",
-                            tint = Color(0xFF8A909E),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(24.dp)
                         )
                     }
@@ -4741,12 +5014,12 @@ fun NowPlayingDialog(
                         Icon(
                             imageVector = Icons.Default.Shuffle,
                             contentDescription = "Shuffle",
-                            tint = if (isShuffle) Color(0xFF14161D) else Color(0xFFB0B5C0)
+                            tint = if (isShuffle) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                         )
                     }
 
                     IconButton(onClick = onPrevious, modifier = Modifier.size(48.dp)) {
-                        Icon(imageVector = Icons.Default.SkipPrevious, contentDescription = "Previous", tint = Color(0xFF14161D), modifier = Modifier.size(28.dp))
+                        Icon(imageVector = Icons.Default.SkipPrevious, contentDescription = "Previous", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
                     }
 
                     // Main Big Circular Play/Pause Button
@@ -4756,7 +5029,7 @@ fun NowPlayingDialog(
                             .shadow(12.dp, CircleShape)
                             .clip(CircleShape)
                             .clickable { onPlayPause() },
-                        color = Color(0xFF14161D)
+                        color = if (LocalDarkMode.current) Color(0xFF6366F1) else Color(0xFF14161D)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
@@ -4769,14 +5042,14 @@ fun NowPlayingDialog(
                     }
 
                     IconButton(onClick = onNext, modifier = Modifier.size(48.dp)) {
-                        Icon(imageVector = Icons.Default.SkipNext, contentDescription = "Next", tint = Color(0xFF14161D), modifier = Modifier.size(28.dp))
+                        Icon(imageVector = Icons.Default.SkipNext, contentDescription = "Next", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
                     }
 
                     IconButton(onClick = onLoopModeToggle) {
                         Icon(
                             imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
                             contentDescription = "Loop Mode",
-                            tint = if (loopMode != LoopMode.OFF) Color(0xFF14161D) else Color(0xFFB0B5C0),
+                            tint = if (loopMode != LoopMode.OFF) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                             modifier = Modifier.size(24.dp)
                         )
                     }
@@ -4792,7 +5065,7 @@ fun NowPlayingDialog(
                     Icon(
                         imageVector = if (appVolume <= 0.08f) Icons.Default.VolumeMute else if (appVolume < 0.5f) Icons.Default.VolumeDown else Icons.Default.VolumeUp,
                         contentDescription = "Volume",
-                        tint = Color(0xFF8A909E),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -4802,16 +5075,16 @@ fun NowPlayingDialog(
                         valueRange = 0.05f..1f,
                         modifier = Modifier.weight(1f),
                         colors = SliderDefaults.colors(
-                            thumbColor = Color(0xFF14161D),
-                            activeTrackColor = Color(0xFF14161D),
-                            inactiveTrackColor = Color(0xFFE2E8F0)
+                            thumbColor = MaterialTheme.colorScheme.onSurface,
+                            activeTrackColor = MaterialTheme.colorScheme.onSurface,
+                            inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant
                         )
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = "${(appVolume * 100).toInt()}%",
                         fontSize = 11.sp,
-                        color = Color(0xFF8A909E),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.width(32.dp)
                     )
@@ -4884,18 +5157,20 @@ fun MediaLinkDownloadDialog(
         }
     }
 
+    val isDark = LocalDarkMode.current
+
     AlertDialog(
         onDismissRequest = { if (!isDownloading) onDismiss() },
-        containerColor = Color.White,
+        containerColor = if (isDark) Color(0xFF1E222D) else Color.White,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(imageVector = Icons.Default.Download, contentDescription = null, tint = Color(0xFF14161D))
+                Icon(imageVector = Icons.Default.Download, contentDescription = null, tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = if (isKhmer) "ទាញយកតាមរយៈលីង" else "Download by Link",
                     fontWeight = FontWeight.Bold,
                     fontSize = 17.sp,
-                    color = Color(0xFF14161D)
+                    color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
                 )
             }
         },
@@ -4912,7 +5187,7 @@ fun MediaLinkDownloadDialog(
                             text = "$downloadPercentage%",
                             fontSize = 32.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF14161D)
+                            color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         LinearProgressIndicator(
@@ -4921,14 +5196,14 @@ fun MediaLinkDownloadDialog(
                                 .fillMaxWidth()
                                 .height(8.dp)
                                 .clip(RoundedCornerShape(4.dp)),
-                            color = Color(0xFF14161D),
-                            trackColor = Color(0xFFECEEF2)
+                            color = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D),
+                            trackColor = if (isDark) Color(0xFF334155) else Color(0xFFECEEF2)
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
                             text = downloadStatusText.ifBlank { if (isKhmer) "កំពុងទាញយក..." else "Downloading..." },
                             fontSize = 13.sp,
-                            color = Color(0xFF8A909E),
+                            color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E),
                             textAlign = TextAlign.Center
                         )
                         Spacer(modifier = Modifier.height(14.dp))
@@ -4939,7 +5214,7 @@ fun MediaLinkDownloadDialog(
                             },
                             shape = RoundedCornerShape(8.dp)
                         ) {
-                            Text(if (isKhmer) "បោះបង់" else "Cancel", fontSize = 12.sp, color = Color(0xFF8A909E))
+                            Text(if (isKhmer) "បោះបង់" else "Cancel", fontSize = 12.sp, color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E))
                         }
                     }
                 } else {
@@ -4984,7 +5259,7 @@ fun MediaLinkDownloadDialog(
                         text = if (isKhmer) "បិទភ្ជាប់លីង YouTube, TikTok, Facebook ឬតំណភ្ជាប់ចម្រៀង:"
                         else "Paste link from YouTube, TikTok, Facebook or direct audio stream:",
                         fontSize = 12.sp,
-                        color = Color(0xFF8A909E)
+                        color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E)
                     )
 
                     OutlinedTextField(
@@ -4993,7 +5268,7 @@ fun MediaLinkDownloadDialog(
                             urlText = it
                             downloadErrorMessage = null
                         },
-                        placeholder = { Text("https://www.youtube.com/watch?v=...", color = Color(0xFF8A909E), fontSize = 12.sp) },
+                        placeholder = { Text("https://www.youtube.com/watch?v=...", color = if (isDark) Color(0xFF64748B) else Color(0xFF8A909E), fontSize = 12.sp) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -5005,14 +5280,14 @@ fun MediaLinkDownloadDialog(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Surface(
-                                color = Color(0xFFECEEF2),
+                                color = if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2),
                                 shape = RoundedCornerShape(6.dp)
                             ) {
                                 Text(
                                     text = "Platform: $detectedPlatform",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF14161D),
+                                    color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D),
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                 )
                             }
@@ -5033,7 +5308,7 @@ fun MediaLinkDownloadDialog(
                                 .fillMaxWidth()
                                 .height(110.dp)
                                 .clip(RoundedCornerShape(14.dp)),
-                            color = Color(0xFFECEEF2)
+                            color = if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2)
                         ) {
                             SmartArtworkImage(
                                 artworkUrl = extractedThumbnail,
@@ -5055,13 +5330,13 @@ fun MediaLinkDownloadDialog(
                                     .weight(1f)
                                     .clip(RoundedCornerShape(8.dp))
                                     .clickable { selectedFormat = fmt },
-                                color = if (selectedFormat == fmt) Color(0xFF14161D) else Color(0xFFECEEF2)
+                                color = if (selectedFormat == fmt) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2))
                             ) {
                                 Text(
                                     text = fmt,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (selectedFormat == fmt) Color.White else Color(0xFF8A909E),
+                                    color = if (selectedFormat == fmt) Color.White else (if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E)),
                                     textAlign = TextAlign.Center,
                                     modifier = Modifier.padding(vertical = 8.dp)
                                 )
@@ -5112,7 +5387,7 @@ fun MediaLinkDownloadDialog(
                             )
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                    colors = ButtonDefaults.buttonColors(containerColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D))
                 ) {
                     Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
@@ -5123,7 +5398,7 @@ fun MediaLinkDownloadDialog(
         dismissButton = {
             if (!isDownloading) {
                 TextButton(onClick = onDismiss) {
-                    Text(if (isKhmer) "បោះបង់" else "Cancel", color = Color(0xFF8A909E))
+                    Text(if (isKhmer) "បោះបង់" else "Cancel", color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E))
                 }
             }
         }
@@ -5391,15 +5666,16 @@ fun EqualizerDialog(
     onDismiss: () -> Unit
 ) {
     val presets = listOf("Bass Boost", "Vocal Boost", "Electronic", "Rock", "Flat", "Acoustic")
+    val isDark = LocalDarkMode.current
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color.White,
+        containerColor = if (isDark) Color(0xFF1E222D) else Color.White,
         title = {
             Text(
                 text = if (isKhmer) "ប្រព័ន្ធកែសំឡេង Equalizer" else "Sound Equalizer",
                 fontWeight = FontWeight.Bold,
-                color = Color(0xFF14161D)
+                color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
             )
         },
         text = {
@@ -5413,7 +5689,7 @@ fun EqualizerDialog(
                                 onSelectPreset(preset)
                                 onDismiss()
                             },
-                        color = if (currentPreset == preset) Color(0xFF14161D) else Color(0xFFECEEF2)
+                        color = if (currentPreset == preset) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2))
                     ) {
                         Row(
                             modifier = Modifier
@@ -5425,7 +5701,7 @@ fun EqualizerDialog(
                             Text(
                                 text = preset,
                                 fontWeight = if (currentPreset == preset) FontWeight.Bold else FontWeight.Normal,
-                                color = if (currentPreset == preset) Color.White else Color(0xFF14161D)
+                                color = if (currentPreset == preset) Color.White else (if (isDark) Color(0xFFCBD5E1) else Color(0xFF14161D))
                             )
                             if (currentPreset == preset) {
                                 Icon(imageVector = Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
@@ -5437,7 +5713,7 @@ fun EqualizerDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text(if (isKhmer) "បិទ" else "Close", color = Color(0xFF14161D))
+                Text(if (isKhmer) "បិទ" else "Close", color = if (isDark) Color(0xFF818CF8) else Color(0xFF14161D))
             }
         }
     )

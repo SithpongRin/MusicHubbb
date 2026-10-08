@@ -298,6 +298,19 @@ The app requests only required permissions:
 - Added master studio artwork search via iTunes Search API (`searchHdCoverArt`) for lossless 1000x1000px cover resolution.
 - Updated `versionCode = 24` and `versionName = "1.0.24"` in `app/build.gradle.kts`.
 
+### Version 1.0.26
+- Fixed Playlist Auto-Advance & Skipping Bug: Resolved Jetpack Compose closure capturing inside long-lived ExoPlayer `Player.Listener` and `MediaPlaybackService.onActionReceived` by implementing dynamic `getCurrentPlaybackQueue()` resolution and `rememberUpdatedState` triggers. When playing a playlist, playback transition (track end or manual skipping) strictly stays within the playlist queue and loops according to the active loop mode.
+- Ensured queue reset to general library (`activePlaylistId = null`) when selecting individual tracks from Home, Search, or Library screens, or when deleting the active playlist.
+- Full Dark Mode Theming Support for Dialogs: Unified `PlaylistDetailDialog`, `SelectPlaylistSongsDialog`, `MediaLinkDownloadDialog`, and `EqualizerDialog` with dynamic `LocalDarkMode` palette adaptations for surfaces, cards, borders, text, and interactive buttons.
+- Bumped `versionCode = 26` and `versionName = "1.0.26"` in `app/build.gradle.kts`.
+
+### Version 1.0.25
+- Added Dark Mode Toggle in Settings: Users can now switch between Light Mode and Dark Mode with persistent state saved in SharedPreferences.
+- Comprehensive Dark Theme implementation across MaterialTheme color schemes, Scaffold, NavigationBar, track items, headers, NowPlayingDialog, waveforms, and modals.
+- Fixed Disappeared/Missing Songs in Library: Removed aggressive 12-character title truncating de-duplication in `restoreAndSyncLibrary`. Songs with shared prefixes now persist distinctly.
+- Added Multi-Source Storage Sync: `restoreAndSyncLibrary` now actively searches public `Music/MusicHub`, `Music/MusicHub/Songs`, app-specific internal/external storage, and Android 10+ MediaStore queries for complete track preservation.
+- Fixed URI playable candidate matching to prevent hijacking tracks by artist match.
+
 ### Version 1.0.23
 - Fixed volume card layout in Settings: Added `Modifier.weight(1f)` with ellipsis truncation to ensure volume percentage text ("60%") is never clipped or pushed off screen when using English UI language.
 - Added 1-Tap "Default" / "លំនាំដើម" quick-reset button on the volume card in Settings to instantly reset audio gain to safe 60% headphone level.
