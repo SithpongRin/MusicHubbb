@@ -232,6 +232,28 @@ private fun loadSavedSongs(context: Context): List<SongItem> {
     return parseSongsFromJson(json)
 }
 
+fun getDeletedSongSignatures(context: Context): Set<String> {
+    val prefs = context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
+    return prefs.getStringSet("deleted_song_signatures", emptySet()) ?: emptySet()
+}
+
+fun addDeletedSongSignature(context: Context, song: SongItem) {
+    val prefs = context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
+    val set = prefs.getStringSet("deleted_song_signatures", emptySet())?.toMutableSet() ?: mutableSetOf()
+    if (song.uriString.isNotBlank()) {
+        set.add("uri:" + song.uriString.trim().lowercase())
+    }
+    val artistNorm = song.artist.trim().lowercase()
+    val titleNorm = song.title.trim().lowercase()
+    if (titleNorm.isNotBlank()) {
+        set.add("key:$artistNorm - $titleNorm")
+        if (song.durationSec > 0) {
+            set.add("title_dur:$titleNorm - ${song.durationSec}")
+        }
+    }
+    prefs.edit().putStringSet("deleted_song_signatures", set).apply()
+}
+
 private fun saveSongs(context: Context, list: List<SongItem>) {
     val prefs = context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
     val arr = JSONArray()
@@ -281,7 +303,7 @@ object MusicHubStorage {
     }
 }
 
-fun resolvePlayableUriInternal(context: Context, song: SongItem, publicDir: File): String {
+fun findExistingAudioUri(context: Context, song: SongItem, publicDir: File): String? {
     // 1. Check existing URI
     if (song.uriString.isNotBlank()) {
         try {
@@ -328,14 +350,40 @@ fun resolvePlayableUriInternal(context: Context, song: SongItem, publicDir: File
         }
     }
 
-    return song.uriString
+    return null
 }
 
 fun restoreAndSyncLibrary(context: Context): List<SongItem> {
     val resultList = mutableListOf<SongItem>()
-    val seenKeys = mutableSetOf<String>()
+    val seenFilePaths = mutableSetOf<String>()
+    val deletedSignatures = getDeletedSongSignatures(context)
+
+    fun isSongDeleted(uri: String, artist: String, title: String, durSec: Int): Boolean {
+        if (uri.isNotBlank() && deletedSignatures.contains("uri:" + uri.trim().lowercase())) {
+            return true
+        }
+        val artistNorm = artist.trim().lowercase()
+        val titleNorm = title.trim().lowercase()
+        if (titleNorm.isNotBlank()) {
+            if (deletedSignatures.contains("key:$artistNorm - $titleNorm")) return true
+            if (durSec > 0 && deletedSignatures.contains("title_dur:$titleNorm - $durSec")) return true
+        }
+        return false
+    }
 
     fun makeKey(artist: String, title: String) = "${artist.trim().lowercase()} - ${title.trim().lowercase()}"
+
+    fun getCanonicalPath(uriStr: String): String {
+        return try {
+            if (uriStr.startsWith("file://")) {
+                File(Uri.parse(uriStr).path ?: "").canonicalPath.lowercase()
+            } else {
+                uriStr.trim().lowercase()
+            }
+        } catch (e: Exception) {
+            uriStr.trim().lowercase()
+        }
+    }
 
     val publicDir = MusicHubStorage.getBaseDir()
     val songsSubDir = MusicHubStorage.getSongsDir()
@@ -344,8 +392,10 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
     // 1. SharedPreferences
     val prefSongs = loadSavedSongs(context)
     for (s in prefSongs) {
-        val key = makeKey(s.artist, s.title)
-        if (seenKeys.add(key)) {
+        if (isSongDeleted(s.uriString, s.artist, s.title, s.durationSec)) continue
+        val validUri = findExistingAudioUri(context, s, publicDir) ?: continue
+        val canonPath = getCanonicalPath(validUri)
+        if (seenFilePaths.add(canonPath)) {
             var art = s.artworkUrl
             val companionArt = File(coversSubDir, "${s.artist} - ${s.title}.jpg")
             val rootArt = File(publicDir, "${s.artist} - ${s.title}.jpg")
@@ -354,7 +404,6 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
             } else if (rootArt.exists()) {
                 art = Uri.fromFile(rootArt).toString()
             }
-            val validUri = resolvePlayableUriInternal(context, s, publicDir)
             resultList.add(s.copy(artworkUrl = art, uriString = validUri))
         }
     }
@@ -366,9 +415,10 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
             if (manifestFile.exists()) {
                 val manifestSongs = parseSongsFromJson(manifestFile.readText())
                 for (s in manifestSongs) {
-                    val key = makeKey(s.artist, s.title)
-                    if (key !in seenKeys) {
-                        val validUri = resolvePlayableUriInternal(context, s, publicDir)
+                    if (isSongDeleted(s.uriString, s.artist, s.title, s.durationSec)) continue
+                    val validUri = findExistingAudioUri(context, s, publicDir) ?: continue
+                    val canonPath = getCanonicalPath(validUri)
+                    if (seenFilePaths.add(canonPath)) {
                         var art = s.artworkUrl
                         val companionArt = File(coversSubDir, "${s.artist} - ${s.title}.jpg")
                         val rootArt = File(publicDir, "${s.artist} - ${s.title}.jpg")
@@ -377,8 +427,6 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
                         } else if (rootArt.exists()) {
                             art = Uri.fromFile(rootArt).toString()
                         }
-
-                        seenKeys.add(key)
                         resultList.add(s.copy(uriString = validUri, artworkUrl = art))
                     }
                 }
@@ -402,6 +450,10 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
         } ?: emptyArray()
 
         for (file in audioFiles) {
+            val fileUri = Uri.fromFile(file).toString()
+            val canonPath = try { file.canonicalPath.lowercase() } catch (e: Exception) { fileUri.lowercase() }
+            if (canonPath in seenFilePaths) continue
+
             val baseName = file.nameWithoutExtension
             val ext = file.extension.uppercase()
             var parsedArtist = "MusicHub"
@@ -452,126 +504,126 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
                 mmr.release()
             } catch (e: Exception) {}
 
-            val fileUri = Uri.fromFile(file).toString()
-            val fileIdentityKey = makeKey(parsedArtist, parsedTitle)
+            if (isSongDeleted(fileUri, parsedArtist, parsedTitle, durSec)) continue
 
-            val alreadyPresent = resultList.any {
-                it.uriString.equals(fileUri, ignoreCase = true) ||
-                (parsedArtist != "MusicHub" && makeKey(it.artist, it.title) == fileIdentityKey)
-            }
-            if (!alreadyPresent) {
-                seenKeys.add(fileIdentityKey)
-                resultList.add(
-                    SongItem(
-                        id = UUID.randomUUID().toString(),
-                        title = parsedTitle,
-                        artist = parsedArtist,
-                        album = "MusicHub",
-                        duration = durStr,
-                        durationSec = durSec,
-                        artworkUrl = artUri,
-                        uriString = fileUri,
-                        format = ext,
-                        isFavorite = false
-                    )
+            seenFilePaths.add(canonPath)
+            resultList.add(
+                SongItem(
+                    id = UUID.randomUUID().toString(),
+                    title = parsedTitle,
+                    artist = parsedArtist,
+                    album = "MusicHub",
+                    duration = durStr,
+                    durationSec = durSec,
+                    artworkUrl = artUri,
+                    uriString = fileUri,
+                    format = ext,
+                    isFavorite = false
                 )
-            }
+            )
         }
     }
 
-    // 4. Also scan MediaStore audio if on Android 10+
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        try {
-            val projection = arrayOf(
-                MediaStore.Audio.Media._ID,
-                MediaStore.Audio.Media.TITLE,
-                MediaStore.Audio.Media.ARTIST,
-                MediaStore.Audio.Media.DURATION,
-                MediaStore.Audio.Media.RELATIVE_PATH
-            )
-            val selection = "${MediaStore.Audio.Media.RELATIVE_PATH} LIKE ?"
-            val selectionArgs = arrayOf("%MusicHub%")
-            context.contentResolver.query(
-                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                projection,
-                selection,
-                selectionArgs,
-                null
-            )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
-                val titleCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
-                val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
-                val durCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
-
-                while (cursor.moveToNext()) {
-                    val mediaId = cursor.getLong(idCol)
-                    val contentUri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, mediaId).toString()
-                    val mTitle = cursor.getString(titleCol) ?: "Track"
-                    val mArtist = cursor.getString(artistCol) ?: "MusicHub"
-                    val mDur = cursor.getLong(durCol)
-                    val mDurSec = if (mDur > 0) (mDur / 1000).toInt() else 210
-                    val mDurStr = "%d:%02d".format(mDurSec / 60, mDurSec % 60)
-
-                    val alreadyPresent = resultList.any {
-                        it.uriString.equals(contentUri, ignoreCase = true) ||
-                        (mArtist != "MusicHub" && makeKey(it.artist, it.title) == makeKey(mArtist, mTitle))
-                    }
-                    if (!alreadyPresent) {
-                        resultList.add(
-                            SongItem(
-                                id = UUID.randomUUID().toString(),
-                                title = mTitle,
-                                artist = mArtist,
-                                album = "MusicHub",
-                                duration = mDurStr,
-                                durationSec = mDurSec,
-                                artworkUrl = "",
-                                uriString = contentUri,
-                                format = "MP3",
-                                isFavorite = false
-                            )
-                        )
-                    }
-                }
-            }
-        } catch (e: Exception) {}
+    // 4. Clean, Merge & De-duplicate: Keep the version with highest quality metadata
+    fun cleanArtist(artist: String): String {
+        return artist.lowercase()
+            .replace("vevo", "")
+            .replace("official", "")
+            .replace("topic", "")
+            .replace("channel", "")
+            .replace("records", "")
+            .replace("music", "")
+            .replace(Regex("[^a-z0-9]"), "")
+            .trim()
     }
 
-    // 5. Clean & De-duplicate: Keep the version with highest quality metadata
-    // CRITICAL: NEVER truncate title or discard distinct songs!
-    val cleanedList = mutableListOf<SongItem>()
-    val seenUris = mutableSetOf<String>()
-    val seenKnownTrackKeys = mutableSetOf<String>()
+    fun cleanTitle(title: String): String {
+        return title.lowercase()
+            .replace(Regex("\\(official.*\\)"), "")
+            .replace(Regex("\\[official.*\\]"), "")
+            .replace(Regex("\\(audio\\)"), "")
+            .replace(Regex("\\[audio\\]"), "")
+            .replace(Regex("\\(video\\)"), "")
+            .replace(Regex("\\[video\\]"), "")
+            .replace(Regex("\\(lyrics?\\)"), "")
+            .replace(Regex("\\[lyrics?\\]"), "")
+            .replace(Regex("[^a-z0-9]"), "")
+            .trim()
+    }
+
+    fun areDuplicates(a: SongItem, b: SongItem): Boolean {
+        if (a.uriString.isNotBlank() && b.uriString.isNotBlank()) {
+            if (a.uriString.equals(b.uriString, ignoreCase = true)) return true
+        }
+
+        val aTitleClean = cleanTitle(a.title)
+        val bTitleClean = cleanTitle(b.title)
+        if (aTitleClean.isBlank() || bTitleClean.isBlank()) return false
+
+        val aArtClean = cleanArtist(a.artist)
+        val bArtClean = cleanArtist(b.artist)
+
+        val durationMatches = a.durationSec > 0 && b.durationSec > 0 && kotlin.math.abs(a.durationSec - b.durationSec) <= 4
+
+        // 1. Same normalized title
+        if (aTitleClean == bTitleClean) {
+            if (aArtClean == bArtClean || aArtClean.contains(bArtClean) || bArtClean.contains(aArtClean)) {
+                return true
+            }
+            if (durationMatches) {
+                return true
+            }
+        }
+
+        // 2. Combination of artist + title
+        if (durationMatches) {
+            val comboA = aArtClean + aTitleClean
+            val comboB = bArtClean + bTitleClean
+            if (comboA == comboB || comboA.contains(comboB) || comboB.contains(comboA)) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    fun mergeDuplicates(existing: SongItem, candidate: SongItem): SongItem {
+        val bestArtwork = if (existing.artworkUrl.isNotBlank()) existing.artworkUrl else candidate.artworkUrl
+        val bestFavorite = existing.isFavorite || candidate.isFavorite
+        val bestArtist = when {
+            candidate.artist.isNotBlank() && !candidate.artist.endsWith("VEVO", ignoreCase = true) && candidate.artist != "MusicHub" && candidate.artist != "<unknown>" -> candidate.artist
+            existing.artist.isNotBlank() && !existing.artist.endsWith("VEVO", ignoreCase = true) && existing.artist != "MusicHub" && existing.artist != "<unknown>" -> existing.artist
+            existing.artist.isNotBlank() && existing.artist != "MusicHub" -> existing.artist
+            else -> candidate.artist
+        }
+        val bestTitle = if (existing.title.length <= candidate.title.length) existing.title else candidate.title
+        val bestUri = if (existing.uriString.isNotBlank() && (existing.uriString.startsWith("content://") || File(existing.uriString.removePrefix("file://")).exists())) {
+            existing.uriString
+        } else candidate.uriString
+
+        return existing.copy(
+            title = bestTitle,
+            artist = bestArtist,
+            artworkUrl = bestArtwork,
+            isFavorite = bestFavorite,
+            uriString = bestUri
+        )
+    }
 
     val sorted = resultList.sortedWith(
         compareByDescending<SongItem> { it.artworkUrl.isNotBlank() }
-            .thenByDescending { it.artist.isNotBlank() && it.artist != "<unknown>" && it.artist != "MusicHub" }
+            .thenByDescending { it.isFavorite }
+            .thenByDescending { it.artist.isNotBlank() && !it.artist.endsWith("VEVO", ignoreCase = true) && it.artist != "<unknown>" && it.artist != "MusicHub" }
     )
 
-    for (s in sorted) {
-        val uriKey = s.uriString.trim().lowercase()
-        // If exact same URI was already included, skip duplicate
-        if (uriKey.isNotBlank() && seenUris.contains(uriKey)) {
-            continue
+    val cleanedList = mutableListOf<SongItem>()
+    for (candidate in sorted) {
+        val existingIndex = cleanedList.indexOfFirst { areDuplicates(it, candidate) }
+        if (existingIndex != -1) {
+            cleanedList[existingIndex] = mergeDuplicates(cleanedList[existingIndex], candidate)
+        } else {
+            cleanedList.add(candidate)
         }
-
-        val artistNorm = s.artist.trim().lowercase()
-        val titleNorm = s.title.trim().lowercase()
-        val isKnownArtist = artistNorm.isNotBlank() && artistNorm != "<unknown>" && artistNorm != "musichub"
-
-        if (isKnownArtist && titleNorm.isNotBlank()) {
-            val trackKey = "$artistNorm - $titleNorm"
-            if (seenKnownTrackKeys.contains(trackKey)) {
-                // Duplicate track metadata already present with better artwork, skip duplicate
-                continue
-            }
-            seenKnownTrackKeys.add(trackKey)
-        }
-
-        if (uriKey.isNotBlank()) {
-            seenUris.add(uriKey)
-        }
-        cleanedList.add(s)
     }
 
     saveSongs(context, cleanedList)
@@ -1612,17 +1664,17 @@ fun MusicHubApp() {
     // Load track into ExoPlayer on selection with auto-resolving URI
     LaunchedEffect(currentSong?.id) {
         val song = currentSong ?: return@LaunchedEffect
-        if (song.uriString.isNotBlank()) {
-            val publicDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "MusicHub")
-            val resolvedUriStr = resolvePlayableUriInternal(context, song, publicDir)
-            if (resolvedUriStr != song.uriString) {
-                val updated = song.copy(uriString = resolvedUriStr)
+        val publicDir = MusicHubStorage.getBaseDir()
+        val playableUri = findExistingAudioUri(context, song, publicDir)
+        if (playableUri != null) {
+            if (playableUri != song.uriString) {
+                val updated = song.copy(uriString = playableUri)
                 currentSong = updated
                 songsList = songsList.map { if (it.id == song.id) updated else it }
                 saveSongs(context, songsList)
             }
             try {
-                val mediaItem = MediaItem.fromUri(Uri.parse(resolvedUriStr))
+                val mediaItem = MediaItem.fromUri(Uri.parse(playableUri))
                 exoPlayer.stop()
                 exoPlayer.setMediaItem(mediaItem)
                 exoPlayer.prepare()
@@ -1631,6 +1683,20 @@ fun MusicHubApp() {
             } catch (e: Exception) {
                 Toast.makeText(context, if (isKhmer) "មិនអាចចាក់បទនេះបានទេ" else "Cannot play track: ${e.message}", Toast.LENGTH_SHORT).show()
             }
+        } else {
+            // Track physical file is missing from storage, prune from library
+            songsList = songsList.filter { it.id != song.id }
+            saveSongs(context, songsList)
+            if (currentSong?.id == song.id) {
+                currentSong = null
+                isPlaying = false
+            }
+            Toast.makeText(
+                context,
+                if (isKhmer) "ឯកសារចម្រៀងនេះមិនទាន់មាន ឬខូច។ បានសម្អាតចេញពីបញ្ជី!"
+                else "Track file is missing or corrupted. Removed from library!",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
@@ -1667,17 +1733,60 @@ fun MusicHubApp() {
             currentSong = null
             isPlaying = false
         }
+        // 1. Blacklist signature permanently
+        addDeletedSongSignature(context, song)
+
+        // 2. Remove from active library and persist
         songsList = songsList.filter { it.id != song.id }
         saveSongs(context, songsList)
+
+        // 3. Remove from all playlists and persist
+        val updatedPlaylists = playlists.map { pl ->
+            if (pl.songIds.contains(song.id)) pl.copy(songIds = pl.songIds.filter { it != song.id }) else pl
+        }
+        if (updatedPlaylists != playlists) {
+            playlists = updatedPlaylists
+            savePlaylists(context, updatedPlaylists)
+        }
+
+        // 4. Physically delete underlying file from device storage
         try {
             if (song.uriString.startsWith("file://")) {
                 val f = File(Uri.parse(song.uriString).path ?: "")
                 if (f.exists()) f.delete()
             } else if (song.uriString.startsWith("content://")) {
-                context.contentResolver.delete(Uri.parse(song.uriString), null, null)
+                try {
+                    context.contentResolver.delete(Uri.parse(song.uriString), null, null)
+                } catch (e: Exception) {}
             }
         } catch (e: Exception) {}
-        Toast.makeText(context, if (isKhmer) "បានលុបបទចម្រៀងរួចរាល់" else "Track deleted", Toast.LENGTH_SHORT).show()
+
+        // Also search MusicHub/Songs and MusicHub root to remove any physical audio & cover files
+        try {
+            val songsDir = MusicHubStorage.getSongsDir()
+            val baseDir = MusicHubStorage.getBaseDir()
+            val coversDir = MusicHubStorage.getCoversDir()
+            val cleanArtist = song.artist.trim().replace(Regex("[/\\\\:*?\"<>|]"), " ").trim()
+            val cleanTitle = song.title.trim().replace(Regex("[/\\\\:*?\"<>|]"), " ").trim()
+
+            val candidateFiles = listOf(
+                File(songsDir, "$cleanArtist - $cleanTitle.${song.format.lowercase()}"),
+                File(songsDir, "$cleanArtist - $cleanTitle.mp3"),
+                File(songsDir, "$cleanArtist - $cleanTitle.m4a"),
+                File(songsDir, "$cleanArtist - $cleanTitle.mp4"),
+                File(baseDir, "$cleanArtist - $cleanTitle.${song.format.lowercase()}"),
+                File(baseDir, "$cleanArtist - $cleanTitle.mp3"),
+                File(baseDir, "$cleanArtist - $cleanTitle.m4a"),
+                File(baseDir, "$cleanArtist - $cleanTitle.mp4"),
+                File(coversDir, "$cleanArtist - $cleanTitle.jpg"),
+                File(baseDir, "$cleanArtist - $cleanTitle.jpg")
+            )
+            for (f in candidateFiles) {
+                if (f.exists()) f.delete()
+            }
+        } catch (e: Exception) {}
+
+        Toast.makeText(context, if (isKhmer) "បានលុបបទចម្រៀងចេញពីរហូត" else "Track permanently deleted", Toast.LENGTH_SHORT).show()
     }
 
     // Audio File Picker

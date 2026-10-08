@@ -298,6 +298,14 @@ The app requests only required permissions:
 - Added master studio artwork search via iTunes Search API (`searchHdCoverArt`) for lossless 1000x1000px cover resolution.
 - Updated `versionCode = 24` and `versionName = "1.0.24"` in `app/build.gradle.kts`.
 
+### Version 1.0.27
+- Strict App Memory and Physical Storage Synchronization: Ensured the library displays only real physical files present on the device. Replaced loose MediaStore scanning (`RELATIVE_PATH LIKE '%MusicHub%'`) which previously generated phantom duplicate entries with differing URI schemes for the same physical file.
+- Single Source of Truth Guarantee (1 Physical File = 1 Library Item): Implemented canonical file path normalization (`seenFilePaths`) in `restoreAndSyncLibrary`. A single file on disk can never appear as duplicate entries in the library.
+- Permanent Multi-Layer Deletion: When a song is deleted in the app, the physical audio file and companion cover art in `Music/MusicHub` and `Music/MusicHub/Songs` are immediately wiped from device storage (`File.delete()` and `ContentResolver.delete()`). The song is pruned from the library, all playlists, and `musichub_library.json`.
+- Persistent Deletion Tombstone Tracking: Added persistent blacklisting (`deleted_song_signatures`) in `SharedPreferences`. Deleted songs are permanently prevented from reappearing upon app restarts or storage rescans.
+- Broken / Ghost Song Pruning: `findExistingAudioUri` returns `null` if the physical audio file does not exist on disk. Missing or corrupted tracks are cleanly purged from the library with an informative user notification instead of triggering ExoPlayer playback crashes.
+- Bumped `versionCode = 27` and `versionName = "1.0.27"` in `app/build.gradle.kts`.
+
 ### Version 1.0.26
 - Fixed Playlist Auto-Advance & Skipping Bug: Resolved Jetpack Compose closure capturing inside long-lived ExoPlayer `Player.Listener` and `MediaPlaybackService.onActionReceived` by implementing dynamic `getCurrentPlaybackQueue()` resolution and `rememberUpdatedState` triggers. When playing a playlist, playback transition (track end or manual skipping) strictly stays within the playlist queue and loops according to the active loop mode.
 - Ensured queue reset to general library (`activePlaylistId = null`) when selecting individual tracks from Home, Search, or Library screens, or when deleting the active playlist.
