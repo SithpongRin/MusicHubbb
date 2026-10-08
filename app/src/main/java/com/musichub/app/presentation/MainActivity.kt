@@ -26,6 +26,9 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -1075,6 +1078,13 @@ fun MusicHubApp() {
         }
     }
 
+    var appVolume by remember {
+        mutableStateOf(
+            context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
+                .getFloat("app_volume", 0.60f)
+        )
+    }
+
     // ExoPlayer Instance
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
@@ -1084,7 +1094,14 @@ fun MusicHubApp() {
                 .build()
             setAudioAttributes(audioAttributes, true)
             setHandleAudioBecomingNoisy(true)
+            volume = appVolume
         }
+    }
+
+    LaunchedEffect(appVolume) {
+        exoPlayer.volume = appVolume
+        context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
+            .edit().putFloat("app_volume", appVolume).apply()
     }
 
     DisposableEffect(Unit) {
@@ -1699,7 +1716,9 @@ fun MusicHubApp() {
                         selectedPreset = selectedPreset,
                         onOpenEqualizer = { showEqualizerModal = true },
                         onCheckUpdate = { showUpdateModal = true },
-                        totalSongs = songsList.size
+                        totalSongs = songsList.size,
+                        appVolume = appVolume,
+                        onVolumeChange = { appVolume = it }
                     )
                 }
             }
@@ -1768,6 +1787,8 @@ fun MusicHubApp() {
                 },
                 onEditClick = { editingSong = currentSong },
                 onEqualizerClick = { showEqualizerModal = true },
+                appVolume = appVolume,
+                onVolumeChange = { appVolume = it },
                 onShareClick = { currentSong?.let { shareSongFile(context, it) } },
                 onDismiss = { showNowPlayingModal = false }
             )
@@ -2880,54 +2901,67 @@ fun PlaylistDetailDialog(
                                         )
                                     }
 
-                                    // Drag Handle for Reordering (drag to reorder song position)
+                                    var showReorderMenu by remember { mutableStateOf(false) }
+
+                                    // Drag Handle for Reordering (instant touch drag + 1-tap reorder menu)
                                     Box(
                                         modifier = Modifier
-                                            .size(36.dp)
-                                            .pointerInput(index, songsOrder) {
-                                                detectDragGestures(
-                                                    onDragStart = {
-                                                        draggingIndex = index
-                                                        dragOffsetY = 0f
-                                                    },
-                                                    onDragEnd = {
-                                                        val finalOrder = songsOrder
-                                                        draggingIndex = null
-                                                        dragOffsetY = 0f
-                                                        onSaveSongIds(finalOrder)
-                                                    },
-                                                    onDragCancel = {
-                                                        val finalOrder = songsOrder
-                                                        draggingIndex = null
-                                                        dragOffsetY = 0f
-                                                        onSaveSongIds(finalOrder)
-                                                    },
-                                                    onDrag = { change, dragAmount ->
-                                                        change.consume()
-                                                        dragOffsetY += dragAmount.y
-                                                        val curIdx = draggingIndex ?: return@detectDragGestures
-                                                        val step = 150f
-                                                        if (dragOffsetY > step * 0.5f && curIdx < songsOrder.size - 1) {
-                                                            val targetIdx = curIdx + 1
-                                                            val mutable = songsOrder.toMutableList()
-                                                            val item = mutable.removeAt(curIdx)
-                                                            mutable.add(targetIdx, item)
-                                                            songsOrder = mutable
-                                                            draggingIndex = targetIdx
-                                                            dragOffsetY -= step
-                                                            onSaveSongIds(mutable)
-                                                        } else if (dragOffsetY < -step * 0.5f && curIdx > 0) {
-                                                            val targetIdx = curIdx - 1
-                                                            val mutable = songsOrder.toMutableList()
-                                                            val item = mutable.removeAt(curIdx)
-                                                            mutable.add(targetIdx, item)
-                                                            songsOrder = mutable
-                                                            draggingIndex = targetIdx
-                                                            dragOffsetY += step
-                                                            onSaveSongIds(mutable)
+                                            .size(42.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .pointerInput(song.id) {
+                                                awaitEachGesture {
+                                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                                    val startIdx = songsOrder.indexOf(song.id)
+                                                    if (startIdx < 0) return@awaitEachGesture
+
+                                                    draggingIndex = startIdx
+                                                    dragOffsetY = 0f
+                                                    var hasDragged = false
+
+                                                    while (true) {
+                                                        val event = awaitPointerEvent()
+                                                        val drag = event.changes.firstOrNull { it.id == down.id } ?: break
+                                                        if (!drag.pressed) {
+                                                            break
+                                                        }
+                                                        val deltaY = drag.positionChange().y
+                                                        if (kotlin.math.abs(deltaY) > 0.5f) {
+                                                            hasDragged = true
+                                                            drag.consume()
+                                                            dragOffsetY += deltaY
+
+                                                            val curIdx = draggingIndex ?: startIdx
+                                                            val step = 140f
+                                                            if (dragOffsetY > step * 0.5f && curIdx < songsOrder.size - 1) {
+                                                                val targetIdx = curIdx + 1
+                                                                val mutable = songsOrder.toMutableList()
+                                                                val item = mutable.removeAt(curIdx)
+                                                                mutable.add(targetIdx, item)
+                                                                songsOrder = mutable
+                                                                draggingIndex = targetIdx
+                                                                dragOffsetY -= step
+                                                                onSaveSongIds(mutable)
+                                                            } else if (dragOffsetY < -step * 0.5f && curIdx > 0) {
+                                                                val targetIdx = curIdx - 1
+                                                                val mutable = songsOrder.toMutableList()
+                                                                val item = mutable.removeAt(curIdx)
+                                                                mutable.add(targetIdx, item)
+                                                                songsOrder = mutable
+                                                                draggingIndex = targetIdx
+                                                                dragOffsetY += step
+                                                                onSaveSongIds(mutable)
+                                                            }
                                                         }
                                                     }
-                                                )
+
+                                                    if (!hasDragged) {
+                                                        showReorderMenu = true
+                                                    } else {
+                                                        onSaveSongIds(songsOrder)
+                                                    }
+                                                    draggingIndex = null
+                                                    dragOffsetY = 0f
+                                                }
                                             },
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -2935,8 +2969,67 @@ fun PlaylistDetailDialog(
                                             imageVector = Icons.Default.DragHandle,
                                             contentDescription = "Drag to reorder",
                                             tint = if (isDragging) Color(0xFF14161D) else Color(0xFF94A3B8),
-                                            modifier = Modifier.size(20.dp)
+                                            modifier = Modifier.size(22.dp)
                                         )
+
+                                        // 1-Tap Quick Reorder Dropdown Menu
+                                        DropdownMenu(
+                                            expanded = showReorderMenu,
+                                            onDismissRequest = { showReorderMenu = false }
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text(if (isKhmer) "ឡើងលើ (Move Up)" else "Move Up") },
+                                                leadingIcon = { Icon(Icons.Default.ArrowUpward, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                                enabled = index > 0,
+                                                onClick = {
+                                                    val mutable = songsOrder.toMutableList()
+                                                    val item = mutable.removeAt(index)
+                                                    mutable.add(index - 1, item)
+                                                    songsOrder = mutable
+                                                    onSaveSongIds(mutable)
+                                                    showReorderMenu = false
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text(if (isKhmer) "ចុះក្រោម (Move Down)" else "Move Down") },
+                                                leadingIcon = { Icon(Icons.Default.ArrowDownward, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                                enabled = index < playlistSongs.size - 1,
+                                                onClick = {
+                                                    val mutable = songsOrder.toMutableList()
+                                                    val item = mutable.removeAt(index)
+                                                    mutable.add(index + 1, item)
+                                                    songsOrder = mutable
+                                                    onSaveSongIds(mutable)
+                                                    showReorderMenu = false
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text(if (isKhmer) "ឡើងលើគេបង្អស់ (To Top)" else "Move to Top") },
+                                                leadingIcon = { Icon(Icons.Default.VerticalAlignTop, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                                enabled = index > 0,
+                                                onClick = {
+                                                    val mutable = songsOrder.toMutableList()
+                                                    val item = mutable.removeAt(index)
+                                                    mutable.add(0, item)
+                                                    songsOrder = mutable
+                                                    onSaveSongIds(mutable)
+                                                    showReorderMenu = false
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text(if (isKhmer) "ចុះក្រោមគេបង្អស់ (To Bottom)" else "Move to Bottom") },
+                                                leadingIcon = { Icon(Icons.Default.VerticalAlignBottom, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                                enabled = index < playlistSongs.size - 1,
+                                                onClick = {
+                                                    val mutable = songsOrder.toMutableList()
+                                                    val item = mutable.removeAt(index)
+                                                    mutable.add(mutable.size, item)
+                                                    songsOrder = mutable
+                                                    onSaveSongIds(mutable)
+                                                    showReorderMenu = false
+                                                }
+                                            )
+                                        }
                                     }
 
                                     // Remove Song from Playlist
@@ -3923,14 +4016,16 @@ fun SettingsScreen(
     selectedPreset: String,
     onOpenEqualizer: () -> Unit,
     onCheckUpdate: () -> Unit,
-    totalSongs: Int
+    totalSongs: Int,
+    appVolume: Float = 0.60f,
+    onVolumeChange: (Float) -> Unit = {}
 ) {
     val context = LocalContext.current
     val currentAppVersion = remember {
         try {
-            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.21"
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.22"
         } catch (e: Exception) {
-            "1.0.21"
+            "1.0.22"
         }
     }
 
@@ -4032,6 +4127,73 @@ fun SettingsScreen(
             }
         }
 
+        // App Volume / Headphone Limiter Card (fine gain adjustment)
+        item {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(22.dp)),
+                color = Color.White
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .background(Color(0xFFECEEF2), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (appVolume <= 0.08f) Icons.Default.VolumeMute else if (appVolume < 0.5f) Icons.Default.VolumeDown else Icons.Default.VolumeUp,
+                                    contentDescription = "Volume",
+                                    tint = Color(0xFF14161D),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Column {
+                                Text(
+                                    text = if (isKhmer) "កម្រិតសំឡេង App / កាស" else "In-App / Headphone Volume",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    color = Color(0xFF14161D)
+                                )
+                                Text(
+                                    text = if (isKhmer) "កែសម្រួលកុំអោយលឺខ្លាំងពេកពេលដាក់កាស" else "Prevent loud audio when using headphones",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF8A909E)
+                                )
+                            }
+                        }
+                        Text(
+                            text = "${(appVolume * 100).toInt()}%",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF14161D)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Slider(
+                        value = appVolume,
+                        onValueChange = onVolumeChange,
+                        valueRange = 0.05f..1f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(0xFF14161D),
+                            activeTrackColor = Color(0xFF14161D),
+                            inactiveTrackColor = Color(0xFFECEEF2)
+                        )
+                    )
+                }
+            }
+        }
+
         // In-App Update Card
         item {
             Surface(
@@ -4112,6 +4274,8 @@ fun NowPlayingDialog(
     onFavoriteToggle: () -> Unit,
     onEditClick: () -> Unit,
     onEqualizerClick: () -> Unit,
+    appVolume: Float = 0.60f,
+    onVolumeChange: (Float) -> Unit = {},
     onShareClick: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
@@ -4235,22 +4399,22 @@ fun NowPlayingDialog(
                             .border(1.5.dp, Color(0x35000000), CircleShape)
                     )
 
-                    // Center Spindle Hub & Metallic Silver Ring (enlarged per user request)
+                    // Center Spindle Hub & Metallic Silver Ring (further enlarged per user request)
                     Box(
                         modifier = Modifier
-                            .size(54.dp)
-                            .shadow(6.dp, CircleShape)
+                            .size(76.dp)
+                            .shadow(8.dp, CircleShape)
                             .clip(CircleShape)
                             .background(Color(0xFF14161D))
-                            .border(3.dp, Color(0xFFE2E8F0), CircleShape),
+                            .border(3.5.dp, Color(0xFFE2E8F0), CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(24.dp)
+                                .size(34.dp)
                                 .clip(CircleShape)
                                 .background(Color(0xFF0B0D12))
-                                .border(1.dp, Color(0x60FFFFFF), CircleShape)
+                                .border(1.2.dp, Color(0x70FFFFFF), CircleShape)
                         )
                     }
                 }
@@ -4371,6 +4535,41 @@ fun NowPlayingDialog(
                             modifier = Modifier.size(24.dp)
                         )
                     }
+                }
+
+                // In-App Software Gain / Headphone Volume Control
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = if (appVolume <= 0.08f) Icons.Default.VolumeMute else if (appVolume < 0.5f) Icons.Default.VolumeDown else Icons.Default.VolumeUp,
+                        contentDescription = "Volume",
+                        tint = Color(0xFF8A909E),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Slider(
+                        value = appVolume,
+                        onValueChange = onVolumeChange,
+                        valueRange = 0.05f..1f,
+                        modifier = Modifier.weight(1f),
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(0xFF14161D),
+                            activeTrackColor = Color(0xFF14161D),
+                            inactiveTrackColor = Color(0xFFE2E8F0)
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "${(appVolume * 100).toInt()}%",
+                        fontSize = 11.sp,
+                        color = Color(0xFF8A909E),
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(32.dp)
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -4722,9 +4921,9 @@ fun AppUpdateDialog(
         delay(400)
         try {
             val currentVer = try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.21"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.22"
             } catch (e: Exception) {
-                "1.0.21"
+                "1.0.22"
             }
             val info = checker.checkLatestRelease(currentVer)
             updateInfo = info

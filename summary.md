@@ -282,10 +282,29 @@ The app requests only required permissions:
 - Add playlist export and import via standard M3U/M3U8 format.
 - Add sleep timer functionality with gentle volume fade-out.
 
+# Release History & Changelog
+
+### Version 1.0.22 (Current)
+- Fixed playlist song reordering: replaced standard touch slop gestures with unconsumed `awaitEachGesture` pointer tracking, enabling instant real-time drag-and-drop reordering without scroll interception from parent `LazyColumn`.
+- Added 1-Tap Quick Reorder Dropdown Menu to the drag handle (`≡`): users can either drag directly or tap to select Move Up, Move Down, Move to Top, or Move to Bottom.
+- Further enlarged vinyl record center spindle hub to 76.dp (with 34.dp inner hole and 3.5.dp metallic silver bevel border).
+- Added In-App Software Gain / Headphone Volume Control with real-time sliders in both Now Playing dialog and Settings screen, defaulting to 60% gain to protect users from sudden loud volume spikes when connecting headphones/earphones.
+- Updated `versionCode = 22` and `versionName = "1.0.22"` in `app/build.gradle.kts`.
+
+### Version 1.0.21
+- Full-bleed artwork scaling (`scale(1.40f)`) implemented across all cards (Hero card, track rows, mini player, playlist detail, library items) to completely push out baked-in 45px black letterbox bars from YouTube 4:3 thumbnails.
+- Added Playlist Cards horizontal row on the Home screen below the Hero card, with artwork collage, track count badge, and "+ New" creation shortcut.
+- Switched default YouTube thumbnail extraction from `hqdefault.jpg` to `mqdefault.jpg` (clean 16:9 widescreen without black borders).
+
+### Version 1.0.20
+- Dynamic app version resolution in Settings and UpdateDialog using Android `packageManager.getPackageInfo`.
+- Enlarged vinyl record center album artwork to fill the disc.
+
 # Development Instructions for Future AI Agents
 
 1. When adding new audio formats, ensure both the Media3 extractor dependencies and the import MIME-type filters in `AndroidManifest.xml` are updated.
 2. When altering Room database schema, always write an explicit `Migration(from, to)` in `AppDatabase.kt` and increment the database version number.
 3. Keep the 4 bottom navigation items strictly intact: Home, Library, Playlist, Settings.
 4. Maintain zero emojis across all strings, labels, and documentation.
-5. Verify changes with `compile_applet` before completing turns.
+5. Verify changes with `./gradlew compileDebugKotlin` before completing turns.
+
