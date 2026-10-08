@@ -613,18 +613,16 @@ suspend fun downloadAudioToStorage(
             }
         } catch (e: Exception) {}
 
-        onProgress(25, if (isKhmer) "កំពុងទាញយក Audio ពី YouTube..." else "Extracting audio from YouTube...")
+        onProgress(20, if (isKhmer) "កំពុងទាញយក Audio ពី YouTube..." else "Extracting audio from YouTube...")
         try {
+            val localStream = LocalMediaExtractor.extractStreamUrl(context, ytId, client, onProgress, isKhmer)
+            if (localStream != null && localStream.streamUrl.isNotBlank()) {
+                candidateUrls.add(0, localStream.streamUrl)
+            }
             val directStreams = LocalMediaExtractor.extractStreamDirect(ytId, client)
             for (st in directStreams) {
                 if (st.streamUrl.isNotBlank() && !candidateUrls.contains(st.streamUrl)) {
                     candidateUrls.add(st.streamUrl)
-                }
-            }
-            if (candidateUrls.isEmpty()) {
-                val localStream = LocalMediaExtractor.extractStreamUrl(context, ytId, client)
-                if (localStream != null && localStream.streamUrl.isNotBlank() && !candidateUrls.contains(localStream.streamUrl)) {
-                    candidateUrls.add(localStream.streamUrl)
                 }
             }
         } catch (e: Exception) {}
@@ -1766,6 +1764,10 @@ fun MusicHubApp() {
                             Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show()
                         }
                     }
+                },
+                onImportClick = {
+                    showDownloadModal = false
+                    audioPickerLauncher.launch("audio/*")
                 },
                 onDismiss = { showDownloadModal = false }
             )
@@ -3766,6 +3768,7 @@ fun MediaLinkDownloadDialog(
         onProgress: (Int, String) -> Unit,
         onError: (String) -> Unit
     ) -> Unit,
+    onImportClick: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var urlText by remember { mutableStateOf("") }
@@ -3878,17 +3881,33 @@ fun MediaLinkDownloadDialog(
                             shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Row(
-                                modifier = Modifier.padding(10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(imageVector = Icons.Default.Info, contentDescription = null, tint = Color(0xFFDC2626), modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = downloadErrorMessage ?: "",
-                                    color = Color(0xFFDC2626),
-                                    fontSize = 11.sp
-                                )
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(imageVector = Icons.Default.Info, contentDescription = null, tint = Color(0xFFDC2626), modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = downloadErrorMessage ?: "",
+                                        color = Color(0xFFDC2626),
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Button(
+                                    onClick = onImportClick,
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier.fillMaxWidth().height(34.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = if (isKhmer) "នាំចូលបទចម្រៀងពីទូរស័ព្ទ (Import)" else "Import Song from Phone",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                }
                             }
                         }
                     }
