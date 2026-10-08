@@ -10,8 +10,13 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Icon
+import android.media.MediaMetadata
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import coil.ImageLoader
@@ -30,10 +35,14 @@ class MediaPlaybackService : Service {
     constructor() : super()
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var mediaSession: MediaSession? = null
+
     private var lastTitle: String = ""
     private var lastArtist: String = ""
     private var lastArtworkUrl: String = ""
     private var lastIsPlaying: Boolean = false
+    private var lastPositionMs: Long = 0L
+    private var lastDurationMs: Long = 0L
     private var currentArtworkBitmap: Bitmap? = null
 
     companion object {
@@ -52,15 +61,20 @@ class MediaPlaybackService : Service {
         const val EXTRA_ARTIST = "extra_artist"
         const val EXTRA_ARTWORK_URL = "extra_artwork_url"
         const val EXTRA_IS_PLAYING = "extra_is_playing"
+        const val EXTRA_POSITION_MS = "extra_position_ms"
+        const val EXTRA_DURATION_MS = "extra_duration_ms"
 
         var onActionReceived: ((String) -> Unit)? = null
+        var onSeekReceived: ((Long) -> Unit)? = null
 
         fun updateNotification(
             context: Context,
             title: String,
             artist: String,
             artworkUrl: String,
-            isPlaying: Boolean
+            isPlaying: Boolean,
+            positionMs: Long = 0L,
+            durationMs: Long = 0L
         ) {
             val intent = Intent(context, MediaPlaybackService::class.java).apply {
                 action = ACTION_UPDATE
@@ -68,6 +82,8 @@ class MediaPlaybackService : Service {
                 putExtra(EXTRA_ARTIST, artist)
                 putExtra(EXTRA_ARTWORK_URL, artworkUrl)
                 putExtra(EXTRA_IS_PLAYING, isPlaying)
+                putExtra(EXTRA_POSITION_MS, positionMs)
+                putExtra(EXTRA_DURATION_MS, durationMs)
             }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -95,6 +111,42 @@ class MediaPlaybackService : Service {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        initMediaSession()
+    }
+
+    private fun initMediaSession() {
+        try {
+            mediaSession = MediaSession(this, "MusicHubSession").apply {
+                setCallback(object : MediaSession.Callback() {
+                    override fun onPlay() {
+                        onActionReceived?.invoke(ACTION_PLAY)
+                    }
+
+                    override fun onPause() {
+                        onActionReceived?.invoke(ACTION_PAUSE)
+                    }
+
+                    override fun onSkipToNext() {
+                        onActionReceived?.invoke(ACTION_NEXT)
+                    }
+
+                    override fun onSkipToPrevious() {
+                        onActionReceived?.invoke(ACTION_PREV)
+                    }
+
+                    override fun onStop() {
+                        onActionReceived?.invoke(ACTION_STOP)
+                    }
+
+                    override fun onSeekTo(pos: Long) {
+                        onSeekReceived?.invoke(pos)
+                    }
+                })
+                isActive = true
+            }
+        } catch (e: Exception) {
+            // Safety
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -108,17 +160,24 @@ class MediaPlaybackService : Service {
                 val artist = intent.getStringExtra(EXTRA_ARTIST) ?: lastArtist
                 val artworkUrl = intent.getStringExtra(EXTRA_ARTWORK_URL) ?: lastArtworkUrl
                 val isPlaying = intent.getBooleanExtra(EXTRA_IS_PLAYING, lastIsPlaying)
+                val positionMs = intent.getLongExtra(EXTRA_POSITION_MS, lastPositionMs)
+                val durationMs = intent.getLongExtra(EXTRA_DURATION_MS, lastDurationMs)
 
                 val artworkChanged = artworkUrl != lastArtworkUrl || currentArtworkBitmap == null
                 lastTitle = title
                 lastArtist = artist
                 lastArtworkUrl = artworkUrl
                 lastIsPlaying = isPlaying
+                lastPositionMs = positionMs
+                lastDurationMs = durationMs
+
+                updateMediaSessionState(title, artist, currentArtworkBitmap, isPlaying, positionMs, durationMs)
 
                 if (artworkChanged && artworkUrl.isNotBlank()) {
                     serviceScope.launch {
                         val loadedBitmap = loadArtworkBitmap(artworkUrl)
                         currentArtworkBitmap = loadedBitmap
+                        updateMediaSessionState(lastTitle, lastArtist, currentArtworkBitmap, lastIsPlaying, lastPositionMs, lastDurationMs)
                         postForegroundNotification(lastTitle, lastArtist, currentArtworkBitmap, lastIsPlaying)
                     }
                 } else {
@@ -136,6 +195,51 @@ class MediaPlaybackService : Service {
         }
 
         return START_NOT_STICKY
+    }
+
+    private fun updateMediaSessionState(
+        title: String,
+        artist: String,
+        artwork: Bitmap?,
+        isPlaying: Boolean,
+        positionMs: Long,
+        durationMs: Long
+    ) {
+        try {
+            val session = mediaSession ?: return
+            val stateActions = PlaybackState.ACTION_PLAY or
+                    PlaybackState.ACTION_PAUSE or
+                    PlaybackState.ACTION_PLAY_PAUSE or
+                    PlaybackState.ACTION_SKIP_TO_NEXT or
+                    PlaybackState.ACTION_SKIP_TO_PREVIOUS or
+                    PlaybackState.ACTION_SEEK_TO or
+                    PlaybackState.ACTION_STOP
+
+            val playbackState = PlaybackState.Builder()
+                .setActions(stateActions)
+                .setState(
+                    if (isPlaying) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
+                    positionMs,
+                    if (isPlaying) 1.0f else 0.0f,
+                    SystemClock.elapsedRealtime()
+                )
+                .build()
+            session.setPlaybackState(playbackState)
+
+            val metaBuilder = MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_TITLE, title.ifBlank { "MusicHub" })
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, artist.ifBlank { "MusicHub Artist" })
+                .putString(MediaMetadata.METADATA_KEY_ALBUM, "MusicHub")
+                .putLong(MediaMetadata.METADATA_KEY_DURATION, if (durationMs > 0) durationMs else -1L)
+
+            if (artwork != null) {
+                metaBuilder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, artwork)
+                metaBuilder.putBitmap(MediaMetadata.METADATA_KEY_ART, artwork)
+            }
+            session.setMetadata(metaBuilder.build())
+        } catch (e: Exception) {
+            // Safety
+        }
     }
 
     private fun postForegroundNotification(
@@ -197,24 +301,73 @@ class MediaPlaybackService : Service {
         val playPauseIcon = if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play
         val playPauseTitle = if (isPlaying) "Pause" else "Play"
 
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(title.ifBlank { "MusicHub" })
-            .setContentText(artist.ifBlank { "Playing" })
-            .setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentIntent(contentPendingIntent)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setOngoing(isPlaying)
-            .setOnlyAlertOnce(true)
-            .addAction(android.R.drawable.ic_media_previous, "Previous", prevPending)
-            .addAction(playPauseIcon, playPauseTitle, playPausePending)
-            .addAction(android.R.drawable.ic_media_next, "Next", nextPending)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Close", stopPending)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val mediaStyle = Notification.MediaStyle().apply {
+                mediaSession?.sessionToken?.let { token ->
+                    setMediaSession(token)
+                }
+                setShowActionsInCompactView(0, 1, 2)
+            }
 
-        if (artwork != null) {
-            builder.setLargeIcon(artwork)
+            Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle(title.ifBlank { "MusicHub" })
+                .setContentText(artist.ifBlank { "MusicHub Artist" })
+                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setContentIntent(contentPendingIntent)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setOngoing(isPlaying)
+                .setOnlyAlertOnce(true)
+                .setStyle(mediaStyle)
+                .addAction(
+                    Notification.Action.Builder(
+                        Icon.createWithResource(this, android.R.drawable.ic_media_previous),
+                        "Previous",
+                        prevPending
+                    ).build()
+                )
+                .addAction(
+                    Notification.Action.Builder(
+                        Icon.createWithResource(this, playPauseIcon),
+                        playPauseTitle,
+                        playPausePending
+                    ).build()
+                )
+                .addAction(
+                    Notification.Action.Builder(
+                        Icon.createWithResource(this, android.R.drawable.ic_media_next),
+                        "Next",
+                        nextPending
+                    ).build()
+                )
+                .addAction(
+                    Notification.Action.Builder(
+                        Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
+                        "Close",
+                        stopPending
+                    ).build()
+                )
+                .apply {
+                    if (artwork != null) setLargeIcon(artwork)
+                }
+                .build()
+        } else {
+            NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle(title.ifBlank { "MusicHub" })
+                .setContentText(artist.ifBlank { "MusicHub Artist" })
+                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setContentIntent(contentPendingIntent)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setOngoing(isPlaying)
+                .setOnlyAlertOnce(true)
+                .addAction(android.R.drawable.ic_media_previous, "Previous", prevPending)
+                .addAction(playPauseIcon, playPauseTitle, playPausePending)
+                .addAction(android.R.drawable.ic_media_next, "Next", nextPending)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Close", stopPending)
+                .apply {
+                    if (artwork != null) setLargeIcon(artwork)
+                }
+                .build()
         }
-
-        return builder.build()
     }
 
     private suspend fun loadArtworkBitmap(url: String): Bitmap? = withContext(Dispatchers.IO) {
@@ -253,6 +406,11 @@ class MediaPlaybackService : Service {
     }
 
     override fun onDestroy() {
+        try {
+            mediaSession?.isActive = false
+            mediaSession?.release()
+            mediaSession = null
+        } catch (e: Exception) {}
         serviceScope.cancel()
         super.onDestroy()
     }

@@ -22,6 +22,8 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -1012,6 +1014,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MusicHubApp() {
     val context = LocalContext.current
@@ -1090,7 +1093,7 @@ fun MusicHubApp() {
         }
     }
 
-    // Hook up MediaPlaybackService notification action listener
+    // Hook up MediaPlaybackService notification action and seek listener
     DisposableEffect(Unit) {
         MediaPlaybackService.onActionReceived = { action ->
             when (action) {
@@ -1130,8 +1133,16 @@ fun MusicHubApp() {
                 }
             }
         }
+        MediaPlaybackService.onSeekReceived = { seekPos ->
+            exoPlayer.seekTo(seekPos)
+            val dur = exoPlayer.duration
+            if (dur > 0) {
+                playbackProgress = (seekPos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
+            }
+        }
         onDispose {
             MediaPlaybackService.onActionReceived = null
+            MediaPlaybackService.onSeekReceived = null
         }
     }
 
@@ -1139,12 +1150,16 @@ fun MusicHubApp() {
     LaunchedEffect(currentSong, isPlaying) {
         val song = currentSong
         if (song != null) {
+            val dur = if (exoPlayer.duration > 0) exoPlayer.duration else (song.durationSec * 1000L)
+            val pos = exoPlayer.currentPosition
             MediaPlaybackService.updateNotification(
                 context = context,
                 title = song.title,
                 artist = song.artist,
                 artworkUrl = song.artworkUrl,
-                isPlaying = isPlaying
+                isPlaying = isPlaying,
+                positionMs = pos,
+                durationMs = dur
             )
         } else {
             MediaPlaybackService.stop(context)
@@ -1158,7 +1173,21 @@ fun MusicHubApp() {
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED) {
+                if (playbackState == Player.STATE_READY) {
+                    val song = currentSong
+                    if (song != null) {
+                        val dur = if (exoPlayer.duration > 0) exoPlayer.duration else (song.durationSec * 1000L)
+                        MediaPlaybackService.updateNotification(
+                            context = context,
+                            title = song.title,
+                            artist = song.artist,
+                            artworkUrl = song.artworkUrl,
+                            isPlaying = exoPlayer.isPlaying,
+                            positionMs = exoPlayer.currentPosition,
+                            durationMs = dur
+                        )
+                    }
+                } else if (playbackState == Player.STATE_ENDED) {
                     if (isRepeat) {
                         exoPlayer.seekTo(0)
                         exoPlayer.play()
@@ -1411,14 +1440,24 @@ fun MusicHubApp() {
                                             fontSize = 14.sp,
                                             color = Color.White,
                                             maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
+                                            modifier = Modifier.basicMarquee(
+                                                iterations = Int.MAX_VALUE,
+                                                delayMillis = 1200,
+                                                initialDelayMillis = 1500,
+                                                velocity = 35.dp
+                                            )
                                         )
                                         Text(
                                             text = song.artist,
                                             fontSize = 12.sp,
                                             color = Color(0xFF94A3B8),
                                             maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
+                                            modifier = Modifier.basicMarquee(
+                                                iterations = Int.MAX_VALUE,
+                                                delayMillis = 1200,
+                                                initialDelayMillis = 1500,
+                                                velocity = 35.dp
+                                            )
                                         )
                                     }
 
@@ -3399,7 +3438,7 @@ fun SettingsScreen(
                             color = Color(0xFF14161D)
                         )
                         Text(
-                            text = "Version: v1.0.13",
+                            text = "Version: v1.0.14",
                             fontSize = 13.sp,
                             color = Color(0xFF8A909E)
                         )
@@ -3437,6 +3476,7 @@ fun SettingsScreen(
 }
 
 // Now Playing Screen matching reference mockup
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NowPlayingDialog(
     isKhmer: Boolean,
@@ -3555,15 +3595,26 @@ fun NowPlayingDialog(
                             color = Color(0xFF14161D),
                             textAlign = TextAlign.Center,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            modifier = Modifier.basicMarquee(
+                                iterations = Int.MAX_VALUE,
+                                delayMillis = 1200,
+                                initialDelayMillis = 1500,
+                                velocity = 35.dp
+                            )
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = song.artist,
                             fontSize = 14.sp,
                             color = Color(0xFF8A909E),
+                            textAlign = TextAlign.Center,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            modifier = Modifier.basicMarquee(
+                                iterations = Int.MAX_VALUE,
+                                delayMillis = 1200,
+                                initialDelayMillis = 1500,
+                                velocity = 35.dp
+                            )
                         )
                     }
 
@@ -3966,9 +4017,9 @@ fun AppUpdateDialog(
         delay(400)
         try {
             val currentVer = try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.13"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.14"
             } catch (e: Exception) {
-                "1.0.13"
+                "1.0.14"
             }
             val info = checker.checkLatestRelease(currentVer)
             updateInfo = info
