@@ -119,6 +119,11 @@ data class PlaylistItem(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+enum class LoopMode {
+    OFF, ALL, ONE
+}
+
+
 private fun loadSavedPlaylists(context: Context): List<PlaylistItem> {
     val prefs = context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
     var json = prefs.getString("saved_playlists", null)
@@ -1017,8 +1022,20 @@ fun MusicHubApp() {
     var currentSong by remember { mutableStateOf<SongItem?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
     var isShuffle by remember { mutableStateOf(false) }
-    var isRepeat by remember { mutableStateOf(false) }
+    var loopMode by remember { mutableStateOf(LoopMode.ALL) }
+    var activePlaylistId by remember { mutableStateOf<String?>(null) }
     var playbackProgress by remember { mutableFloatStateOf(0.0f) }
+    var playbackPositionMs by remember { mutableLongStateOf(0L) }
+    var playbackDurationMs by remember { mutableLongStateOf(0L) }
+
+    val currentQueue: List<SongItem> = remember(activePlaylistId, playlists, songsList) {
+        if (activePlaylistId != null) {
+            val pl = playlists.find { it.id == activePlaylistId }
+            pl?.songIds?.mapNotNull { id -> songsList.find { it.id == id } }?.ifEmpty { songsList } ?: songsList
+        } else {
+            songsList
+        }
+    }
 
     var showNowPlayingModal by remember { mutableStateOf(false) }
     var showEqualizerModal by remember { mutableStateOf(false) }
@@ -1093,21 +1110,21 @@ fun MusicHubApp() {
                     }
                 }
                 MediaPlaybackService.ACTION_NEXT -> {
-                    if (songsList.isNotEmpty()) {
+                    if (currentQueue.isNotEmpty()) {
                         if (isShuffle) {
-                            currentSong = songsList.random()
+                            currentSong = currentQueue.random()
                         } else {
-                            val currIdx = songsList.indexOfFirst { it.id == currentSong?.id }
-                            val nextIdx = if (currIdx != -1) (currIdx + 1) % songsList.size else 0
-                            currentSong = songsList[nextIdx]
+                            val currIdx = currentQueue.indexOfFirst { it.id == currentSong?.id }
+                            val nextIdx = if (currIdx != -1) (currIdx + 1) % currentQueue.size else 0
+                            currentSong = currentQueue[nextIdx]
                         }
                     }
                 }
                 MediaPlaybackService.ACTION_PREV -> {
-                    if (songsList.isNotEmpty()) {
-                        val currIdx = songsList.indexOfFirst { it.id == currentSong?.id }
-                        val prevIdx = if (currIdx > 0) currIdx - 1 else songsList.size - 1
-                        currentSong = songsList[prevIdx]
+                    if (currentQueue.isNotEmpty()) {
+                        val currIdx = currentQueue.indexOfFirst { it.id == currentSong?.id }
+                        val prevIdx = if (currIdx > 0) currIdx - 1 else currentQueue.size - 1
+                        currentSong = currentQueue[prevIdx]
                     }
                 }
                 MediaPlaybackService.ACTION_STOP -> {
@@ -1118,8 +1135,10 @@ fun MusicHubApp() {
         }
         MediaPlaybackService.onSeekReceived = { seekPos ->
             exoPlayer.seekTo(seekPos)
-            val dur = exoPlayer.duration
+            playbackPositionMs = seekPos
+            val dur = if (exoPlayer.duration > 0) exoPlayer.duration else ((currentSong?.durationSec ?: 0) * 1000L)
             if (dur > 0) {
+                playbackDurationMs = dur
                 playbackProgress = (seekPos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
             }
         }
@@ -1153,6 +1172,15 @@ fun MusicHubApp() {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
+                if (playing) {
+                    val pos = exoPlayer.currentPosition
+                    val dur = if (exoPlayer.duration > 0) exoPlayer.duration else ((currentSong?.durationSec ?: 0) * 1000L)
+                    if (pos >= 0) playbackPositionMs = pos
+                    if (dur > 0) {
+                        playbackDurationMs = dur
+                        playbackProgress = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
+                    }
+                }
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -1160,6 +1188,8 @@ fun MusicHubApp() {
                     val song = currentSong
                     if (song != null) {
                         val dur = if (exoPlayer.duration > 0) exoPlayer.duration else (song.durationSec * 1000L)
+                        playbackDurationMs = dur
+                        playbackPositionMs = exoPlayer.currentPosition
                         MediaPlaybackService.updateNotification(
                             context = context,
                             title = song.title,
@@ -1171,17 +1201,24 @@ fun MusicHubApp() {
                         )
                     }
                 } else if (playbackState == Player.STATE_ENDED) {
-                    if (isRepeat) {
+                    if (loopMode == LoopMode.ONE) {
                         exoPlayer.seekTo(0)
                         exoPlayer.play()
-                    } else if (songsList.isNotEmpty()) {
+                    } else if (currentQueue.isNotEmpty()) {
                         if (isShuffle) {
-                            currentSong = songsList.random()
+                            currentSong = currentQueue.random()
                         } else {
-                            val currIdx = songsList.indexOfFirst { it.id == currentSong?.id }
+                            val currIdx = currentQueue.indexOfFirst { it.id == currentSong?.id }
                             if (currIdx != -1) {
-                                val nextIdx = (currIdx + 1) % songsList.size
-                                currentSong = songsList[nextIdx]
+                                if (currIdx + 1 < currentQueue.size) {
+                                    currentSong = currentQueue[currIdx + 1]
+                                } else if (loopMode == LoopMode.ALL) {
+                                    currentSong = currentQueue.first()
+                                } else {
+                                    isPlaying = false
+                                }
+                            } else {
+                                currentSong = currentQueue.first()
                             }
                         }
                     }
@@ -1204,15 +1241,20 @@ fun MusicHubApp() {
         }
     }
 
-    // Playback Progress Poller (100ms for ultra smooth scrubber motion)
-    LaunchedEffect(isPlaying, currentSong) {
-        while (isPlaying && exoPlayer.isPlaying) {
-            val dur = exoPlayer.duration
+    // Playback Progress & Live Position Poller (runs continuously while playing)
+    LaunchedEffect(isPlaying, currentSong?.id) {
+        if (!isPlaying) return@LaunchedEffect
+        while (isPlaying) {
+            val dur = if (exoPlayer.duration > 0) exoPlayer.duration else ((currentSong?.durationSec ?: 0) * 1000L)
             val pos = exoPlayer.currentPosition
+            if (pos >= 0) {
+                playbackPositionMs = pos
+            }
             if (dur > 0) {
+                playbackDurationMs = dur
                 playbackProgress = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
             }
-            delay(100)
+            delay(200)
         }
     }
 
@@ -1260,24 +1302,25 @@ fun MusicHubApp() {
     }
 
     fun playNextTrack() {
-        if (songsList.isNotEmpty()) {
+        if (currentQueue.isNotEmpty()) {
             if (isShuffle) {
-                currentSong = songsList.random()
+                currentSong = currentQueue.random()
             } else {
-                val currIdx = songsList.indexOfFirst { it.id == currentSong?.id }
-                val nextIdx = if (currIdx != -1) (currIdx + 1) % songsList.size else 0
-                currentSong = songsList[nextIdx]
+                val currIdx = currentQueue.indexOfFirst { it.id == currentSong?.id }
+                val nextIdx = if (currIdx != -1) (currIdx + 1) % currentQueue.size else 0
+                currentSong = currentQueue[nextIdx]
             }
         }
     }
 
     fun playPrevTrack() {
-        if (songsList.isNotEmpty()) {
-            val currIdx = songsList.indexOfFirst { it.id == currentSong?.id }
-            val prevIdx = if (currIdx > 0) currIdx - 1 else songsList.size - 1
-            currentSong = songsList[prevIdx]
+        if (currentQueue.isNotEmpty()) {
+            val currIdx = currentQueue.indexOfFirst { it.id == currentSong?.id }
+            val prevIdx = if (currIdx > 0) currIdx - 1 else currentQueue.size - 1
+            currentSong = currentQueue[prevIdx]
         }
     }
+
 
     fun shuffleAndPlay() {
         if (songsList.isNotEmpty()) {
@@ -1622,8 +1665,9 @@ fun MusicHubApp() {
                             Toast.makeText(context, if (isKhmer) "បានលុប Playlist" else "Playlist deleted", Toast.LENGTH_SHORT).show()
                         },
                         onPlayPlaylist = { playlist ->
-                            val pSongs = songsList.filter { playlist.songIds.contains(it.id) }
+                            val pSongs = playlist.songIds.mapNotNull { id -> songsList.find { it.id == id } }
                             if (pSongs.isNotEmpty()) {
+                                activePlaylistId = playlist.id
                                 currentSong = pSongs.first()
                                 isPlaying = true
                             }
@@ -1686,20 +1730,29 @@ fun MusicHubApp() {
                 song = currentSong!!,
                 isPlaying = isPlaying,
                 progress = playbackProgress,
+                positionMs = playbackPositionMs,
                 isShuffle = isShuffle,
-                isRepeat = isRepeat,
+                loopMode = loopMode,
                 onProgressChange = { frac ->
                     playbackProgress = frac
-                    val dur = exoPlayer.duration
+                    val dur = if (exoPlayer.duration > 0) exoPlayer.duration else ((currentSong?.durationSec ?: 0) * 1000L)
                     if (dur > 0) {
-                        exoPlayer.seekTo((frac * dur).toLong())
+                        val targetMs = (frac * dur).toLong()
+                        playbackPositionMs = targetMs
+                        exoPlayer.seekTo(targetMs)
                     }
                 },
                 onPlayPause = { togglePlayPause() },
                 onPrevious = { playPrevTrack() },
                 onNext = { playNextTrack() },
                 onShuffleToggle = { isShuffle = !isShuffle },
-                onRepeatToggle = { isRepeat = !isRepeat },
+                onLoopModeToggle = {
+                    loopMode = when (loopMode) {
+                        LoopMode.OFF -> LoopMode.ALL
+                        LoopMode.ALL -> LoopMode.ONE
+                        LoopMode.ONE -> LoopMode.OFF
+                    }
+                },
                 onFavoriteToggle = {
                     currentSong?.let { song ->
                         songsList = songsList.map {
@@ -1849,16 +1902,59 @@ fun MusicHubApp() {
                 allSongs = songsList,
                 currentSong = currentSong,
                 isPlaying = isPlaying,
+                loopMode = loopMode,
+                onLoopModeToggle = {
+                    loopMode = when (loopMode) {
+                        LoopMode.OFF -> LoopMode.ALL
+                        LoopMode.ALL -> LoopMode.ONE
+                        LoopMode.ONE -> LoopMode.OFF
+                    }
+                },
                 onSongClick = { song ->
+                    activePlaylistId = currentP.id
                     currentSong = song
                     isPlaying = true
                 },
                 onPlayAll = {
-                    val pSongs = songsList.filter { currentP.songIds.contains(it.id) }
+                    val pSongs = currentP.songIds.mapNotNull { id -> songsList.find { it.id == id } }
                     if (pSongs.isNotEmpty()) {
+                        activePlaylistId = currentP.id
                         currentSong = pSongs.first()
                         isPlaying = true
                     }
+                },
+                onMoveSongUp = { index ->
+                    if (index > 0 && index < currentP.songIds.size) {
+                        val mutable = currentP.songIds.toMutableList()
+                        val temp = mutable[index]
+                        mutable[index] = mutable[index - 1]
+                        mutable[index - 1] = temp
+                        val updatedPlaylists = playlists.map { p ->
+                            if (p.id == currentP.id) p.copy(songIds = mutable) else p
+                        }
+                        playlists = updatedPlaylists
+                        savePlaylists(context, updatedPlaylists)
+                    }
+                },
+                onMoveSongDown = { index ->
+                    if (index >= 0 && index < currentP.songIds.size - 1) {
+                        val mutable = currentP.songIds.toMutableList()
+                        val temp = mutable[index]
+                        mutable[index] = mutable[index + 1]
+                        mutable[index + 1] = temp
+                        val updatedPlaylists = playlists.map { p ->
+                            if (p.id == currentP.id) p.copy(songIds = mutable) else p
+                        }
+                        playlists = updatedPlaylists
+                        savePlaylists(context, updatedPlaylists)
+                    }
+                },
+                onSaveSongIds = { newSongIds ->
+                    val updatedPlaylists = playlists.map { p ->
+                        if (p.id == currentP.id) p.copy(songIds = newSongIds) else p
+                    }
+                    playlists = updatedPlaylists
+                    savePlaylists(context, updatedPlaylists)
                 },
                 onRemoveSong = { song ->
                     val updatedPlaylists = playlists.map { p ->
@@ -1943,6 +2039,7 @@ fun AnimatedEqualizerBars() {
 fun WaveformScrubber(
     progress: Float,
     durationSec: Int,
+    positionMs: Long = 0L,
     onSeek: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -2038,7 +2135,13 @@ fun WaveformScrubber(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            val currentSec = (durationSec * currentProgress).toInt().coerceAtLeast(0)
+            val currentSec = if (isDragging) {
+                (durationSec * dragProgress).toInt().coerceAtLeast(0)
+            } else if (positionMs > 0) {
+                (positionMs / 1000).toInt().coerceAtLeast(0)
+            } else {
+                (durationSec * currentProgress).toInt().coerceAtLeast(0)
+            }
             val currentStr = "${currentSec / 60}:${String.format("%02d", currentSec % 60)}"
             val totalStr = "${durationSec / 60}:${String.format("%02d", durationSec % 60)}"
             Text(
@@ -2312,6 +2415,201 @@ fun AddToPlaylistDialog(
     )
 }
 
+// Select and Order Songs for Playlist Dialog
+@Composable
+fun SelectPlaylistSongsDialog(
+    isKhmer: Boolean,
+    playlist: PlaylistItem,
+    allSongs: List<SongItem>,
+    onSaveSelection: (List<String>) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedIds by remember { mutableStateOf(playlist.songIds.filter { id -> allSongs.any { it.id == id } }) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = Color.White
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp)
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (isKhmer) "រៀបចំបទក្នុង Playlist (${selectedIds.size})" else "Select & Order Songs (${selectedIds.size})",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF14161D)
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = Color(0xFF64748B))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Search field
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text(if (isKhmer) "ស្វែងរកបទចម្រៀង..." else "Search tracks...", fontSize = 13.sp) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF94A3B8), modifier = Modifier.size(20.dp)) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color(0xFF14161D),
+                        unfocusedBorderColor = Color(0xFFE2E8F0)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Song list
+                val filtered = allSongs.filter {
+                    it.title.contains(searchQuery, ignoreCase = true) ||
+                    it.artist.contains(searchQuery, ignoreCase = true)
+                }
+
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(filtered) { song ->
+                        val isSelected = selectedIds.contains(song.id)
+                        val orderIndex = if (isSelected) selectedIds.indexOf(song.id) + 1 else null
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    selectedIds = if (isSelected) {
+                                        selectedIds.filter { it != song.id }
+                                    } else {
+                                        selectedIds + song.id
+                                    }
+                                },
+                            color = if (isSelected) Color(0xFFF1F5F9) else Color.White,
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                if (isSelected) Color(0xFF14161D) else Color(0xFFE2E8F0)
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Order Badge or Add Icon
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isSelected) Color(0xFF14161D) else Color(0xFFECEEF2)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isSelected && orderIndex != null) {
+                                        Text(
+                                            text = "$orderIndex",
+                                            color = Color.White,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    } else {
+                                        Icon(
+                                            Icons.Default.Add,
+                                            contentDescription = null,
+                                            tint = Color(0xFF94A3B8),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.width(12.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = song.title,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = Color(0xFF14161D),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "${song.artist} • ${song.duration}",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF8A909E),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+
+                                Checkbox(
+                                    checked = isSelected,
+                                    onCheckedChange = { checked ->
+                                        selectedIds = if (checked) {
+                                            if (!selectedIds.contains(song.id)) selectedIds + song.id else selectedIds
+                                        } else {
+                                            selectedIds.filter { it != song.id }
+                                        }
+                                    },
+                                    colors = CheckboxDefaults.colors(
+                                        checkedColor = Color(0xFF14161D)
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Bottom Buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text(if (isKhmer) "បោះបង់" else "Cancel")
+                    }
+                    Button(
+                        onClick = {
+                            onSaveSelection(selectedIds)
+                            onDismiss()
+                        },
+                        modifier = Modifier.weight(1.5f),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                    ) {
+                        Text(if (isKhmer) "រក្សាទុក (${selectedIds.size} បទ)" else "Save (${selectedIds.size})")
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Playlist Detail Dialog
 @Composable
 fun PlaylistDetailDialog(
@@ -2320,11 +2618,31 @@ fun PlaylistDetailDialog(
     allSongs: List<SongItem>,
     currentSong: SongItem?,
     isPlaying: Boolean,
+    loopMode: LoopMode,
+    onLoopModeToggle: () -> Unit,
     onSongClick: (SongItem) -> Unit,
     onPlayAll: () -> Unit,
+    onMoveSongUp: (Int) -> Unit,
+    onMoveSongDown: (Int) -> Unit,
+    onSaveSongIds: (List<String>) -> Unit,
     onRemoveSong: (SongItem) -> Unit,
     onDismiss: () -> Unit
 ) {
+    var showSelectSongsDialog by remember { mutableStateOf(false) }
+
+    if (showSelectSongsDialog) {
+        SelectPlaylistSongsDialog(
+            isKhmer = isKhmer,
+            playlist = playlist,
+            allSongs = allSongs,
+            onSaveSelection = { newIds ->
+                onSaveSongIds(newIds)
+                showSelectSongsDialog = false
+            },
+            onDismiss = { showSelectSongsDialog = false }
+        )
+    }
+
     val playlistSongs = remember(playlist.songIds, allSongs) {
         playlist.songIds.mapNotNull { id -> allSongs.find { it.id == id } }
     }
@@ -2342,6 +2660,7 @@ fun PlaylistDetailDialog(
                     .fillMaxSize()
                     .padding(20.dp)
             ) {
+                // Header row
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -2361,37 +2680,93 @@ fun PlaylistDetailDialog(
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF14161D),
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 12.dp),
+                        textAlign = TextAlign.Center
                     )
-                    Spacer(modifier = Modifier.size(40.dp))
+                    IconButton(
+                        onClick = { showSelectSongsDialog = true },
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(Color.White, CircleShape)
+                    ) {
+                        Icon(imageVector = Icons.Default.PlaylistAdd, contentDescription = "Select Songs", tint = Color(0xFF14161D))
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                if (playlistSongs.isNotEmpty()) {
+                // Action Bar: Tracks count, Loop Toggle, Play All
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (isKhmer) "${playlistSongs.size} បទចម្រៀង" else "${playlistSongs.size} tracks",
+                        fontSize = 13.sp,
+                        color = Color(0xFF8A909E),
+                        fontWeight = FontWeight.Medium
+                    )
+
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = if (isKhmer) "${playlistSongs.size} បទចម្រៀង" else "${playlistSongs.size} tracks",
-                            fontSize = 13.sp,
-                            color = Color(0xFF8A909E),
-                            fontWeight = FontWeight.Medium
-                        )
-                        Button(
-                            onClick = onPlayAll,
-                            shape = RoundedCornerShape(20.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                        // Loop Mode Toggle Button
+                        Surface(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .clickable { onLoopModeToggle() },
+                            color = if (loopMode != LoopMode.OFF) Color(0xFF14161D) else Color.White,
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                if (loopMode != LoopMode.OFF) Color(0xFF14161D) else Color(0xFFCBD5E1)
+                            )
                         ) {
-                            Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(text = if (isKhmer) "ចាក់ទាំងអស់" else "Play All")
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                                    contentDescription = "Loop",
+                                    tint = if (loopMode != LoopMode.OFF) Color.White else Color(0xFF64748B),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = when (loopMode) {
+                                        LoopMode.OFF -> if (isKhmer) "បិទ Loop" else "Loop Off"
+                                        LoopMode.ALL -> if (isKhmer) "Loop ទាំងអស់" else "Loop All"
+                                        LoopMode.ONE -> if (isKhmer) "Loop 1 បទ" else "Loop 1"
+                                    },
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (loopMode != LoopMode.OFF) Color.White else Color(0xFF64748B)
+                                )
+                            }
+                        }
+
+                        // Play All Button
+                        if (playlistSongs.isNotEmpty()) {
+                            Button(
+                                onClick = onPlayAll,
+                                shape = RoundedCornerShape(20.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D)),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)
+                            ) {
+                                Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(text = if (isKhmer) "ចាក់ទាំងអស់" else "Play All", fontSize = 12.sp)
+                            }
                         }
                     }
-                    Spacer(modifier = Modifier.height(12.dp))
                 }
+
+                Spacer(modifier = Modifier.height(14.dp))
 
                 if (playlistSongs.isEmpty()) {
                     Box(
@@ -2406,6 +2781,16 @@ fun PlaylistDetailDialog(
                                 fontSize = 14.sp,
                                 color = Color(0xFF8A909E)
                             )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Button(
+                                onClick = { showSelectSongsDialog = true },
+                                shape = RoundedCornerShape(20.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(text = if (isKhmer) "ជ្រើសរើសបទចម្រៀង" else "Add Songs")
+                            }
                         }
                     }
                 } else {
@@ -2424,7 +2809,7 @@ fun PlaylistDetailDialog(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
@@ -2432,7 +2817,7 @@ fun PlaylistDetailDialog(
                                         fontSize = 12.sp,
                                         color = Color(0xFF8A909E),
                                         fontWeight = FontWeight.Medium,
-                                        modifier = Modifier.width(26.dp)
+                                        modifier = Modifier.width(24.dp)
                                     )
 
                                     Box(
@@ -2454,7 +2839,7 @@ fun PlaylistDetailDialog(
                                         }
                                     }
 
-                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Spacer(modifier = Modifier.width(10.dp))
 
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
@@ -2474,9 +2859,38 @@ fun PlaylistDetailDialog(
                                         )
                                     }
 
+                                    // Move Up Button
+                                    IconButton(
+                                        onClick = { onMoveSongUp(index) },
+                                        enabled = index > 0,
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowUp,
+                                            contentDescription = "Move Up",
+                                            tint = if (index > 0) Color(0xFF14161D) else Color(0xFFCBD5E1),
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+
+                                    // Move Down Button
+                                    IconButton(
+                                        onClick = { onMoveSongDown(index) },
+                                        enabled = index < playlistSongs.size - 1,
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowDown,
+                                            contentDescription = "Move Down",
+                                            tint = if (index < playlistSongs.size - 1) Color(0xFF14161D) else Color(0xFFCBD5E1),
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+
+                                    // Remove Song from Playlist
                                     IconButton(
                                         onClick = { onRemoveSong(song) },
-                                        modifier = Modifier.size(32.dp)
+                                        modifier = Modifier.size(28.dp)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Close,
@@ -3483,14 +3897,15 @@ fun NowPlayingDialog(
     song: SongItem,
     isPlaying: Boolean,
     progress: Float,
+    positionMs: Long = 0L,
     isShuffle: Boolean,
-    isRepeat: Boolean,
+    loopMode: LoopMode,
     onProgressChange: (Float) -> Unit,
     onPlayPause: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onShuffleToggle: () -> Unit,
-    onRepeatToggle: () -> Unit,
+    onLoopModeToggle: () -> Unit,
     onFavoriteToggle: () -> Unit,
     onEditClick: () -> Unit,
     onEqualizerClick: () -> Unit,
@@ -3554,45 +3969,56 @@ fun NowPlayingDialog(
                     }
                 }
 
-                // Rotating Vinyl Record Disc with realistic grooves and center spindle hole
+                // Rotating Vinyl Record Disc with realistic grooves, glossy sweep sheen, and clean bevel label
                 Box(
                     modifier = Modifier
                         .size(285.dp)
                         .scale(artScale)
                         .shadow(24.dp, CircleShape)
                         .clip(CircleShape)
-                        .background(Color(0xFF101217))
+                        .background(Color(0xFF0F1116))
                         .graphicsLayer { rotationZ = discRotation },
                     contentAlignment = Alignment.Center
                 ) {
                     // Outer Vinyl Grooves (concentric realistic rings)
+                    Box(modifier = Modifier.size(272.dp).border(1.dp, Color(0x22FFFFFF), CircleShape))
+                    Box(modifier = Modifier.size(254.dp).border(1.dp, Color(0x14FFFFFF), CircleShape))
+                    Box(modifier = Modifier.size(236.dp).border(1.dp, Color(0x1CFFFFFF), CircleShape))
+                    Box(modifier = Modifier.size(218.dp).border(1.dp, Color(0x12FFFFFF), CircleShape))
+                    Box(modifier = Modifier.size(200.dp).border(1.dp, Color(0x18FFFFFF), CircleShape))
+                    Box(modifier = Modifier.size(182.dp).border(1.dp, Color(0x10FFFFFF), CircleShape))
+
+                    // Vinyl Radial Sheen Reflection (authentic vinyl gloss under light)
                     Box(
                         modifier = Modifier
-                            .size(272.dp)
-                            .border(1.dp, Color(0x1FFFFFFF), CircleShape)
-                    )
-                    Box(
-                        modifier = Modifier
-                            .size(248.dp)
-                            .border(1.dp, Color(0x14FFFFFF), CircleShape)
-                    )
-                    Box(
-                        modifier = Modifier
-                            .size(224.dp)
-                            .border(1.dp, Color(0x18FFFFFF), CircleShape)
-                    )
-                    Box(
-                        modifier = Modifier
-                            .size(200.dp)
-                            .border(1.dp, Color(0x12FFFFFF), CircleShape)
+                            .fillMaxSize()
+                            .background(
+                                Brush.sweepGradient(
+                                    listOf(
+                                        Color.Transparent,
+                                        Color.White.copy(alpha = 0.08f),
+                                        Color.Transparent,
+                                        Color.White.copy(alpha = 0.04f),
+                                        Color.Transparent,
+                                        Color.White.copy(alpha = 0.08f),
+                                        Color.Transparent
+                                    )
+                                )
+                            )
                     )
 
-                    // Center Vinyl Label / Album Artwork Sticker
+                    // Outer Metallic Bevel Ring around Center Label
                     Box(
                         modifier = Modifier
-                            .size(155.dp)
+                            .size(158.dp)
+                            .border(1.5.dp, Color(0x6094A3B8), CircleShape)
+                    )
+
+                    // Center Vinyl Label / Album Artwork Sticker (scaled 1.48f to remove letterbox cutoffs)
+                    Box(
+                        modifier = Modifier
+                            .size(152.dp)
                             .clip(CircleShape)
-                            .border(3.dp, Color(0xFF222632), CircleShape)
                             .background(Color(0xFF1E212D)),
                         contentAlignment = Alignment.Center
                     ) {
@@ -3603,7 +4029,7 @@ fun NowPlayingDialog(
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .scale(1.2f)
+                                    .scale(1.48f)
                             )
                         } else {
                             Icon(
@@ -3614,13 +4040,20 @@ fun NowPlayingDialog(
                             )
                         }
 
+                        // Inner Bevel Ring Overlay to give label depth
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .border(2.dp, Color(0x40000000), CircleShape)
+                        )
+
                         // Center Vinyl Spindle Hole & Metallic Silver Ring
                         Box(
                             modifier = Modifier
                                 .size(38.dp)
                                 .clip(CircleShape)
                                 .background(Color(0xFF101217))
-                                .border(2.dp, Color(0xFFCBD5E1), CircleShape),
+                                .border(2.5.dp, Color(0xFFE2E8F0), CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
                             Box(
@@ -3628,6 +4061,7 @@ fun NowPlayingDialog(
                                     .size(16.dp)
                                     .clip(CircleShape)
                                     .background(Color(0xFF0F172A))
+                                    .border(1.dp, Color(0x60000000), CircleShape)
                             )
                         }
                     }
@@ -3696,10 +4130,11 @@ fun NowPlayingDialog(
                 WaveformScrubber(
                     progress = progress,
                     durationSec = song.durationSec,
+                    positionMs = positionMs,
                     onSeek = onProgressChange
                 )
 
-                // Controls Row: Shuffle, Prev, Big Play/Pause, Next, Repeat
+                // Controls Row: Shuffle, Prev, Big Play/Pause, Next, Loop Mode
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -3740,11 +4175,12 @@ fun NowPlayingDialog(
                         Icon(imageVector = Icons.Default.SkipNext, contentDescription = "Next", tint = Color(0xFF14161D), modifier = Modifier.size(28.dp))
                     }
 
-                    IconButton(onClick = onRepeatToggle) {
+                    IconButton(onClick = onLoopModeToggle) {
                         Icon(
-                            imageVector = Icons.Default.Repeat,
-                            contentDescription = "Repeat",
-                            tint = if (isRepeat) Color(0xFF14161D) else Color(0xFFB0B5C0)
+                            imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                            contentDescription = "Loop Mode",
+                            tint = if (loopMode != LoopMode.OFF) Color(0xFF14161D) else Color(0xFFB0B5C0),
+                            modifier = Modifier.size(24.dp)
                         )
                     }
                 }
