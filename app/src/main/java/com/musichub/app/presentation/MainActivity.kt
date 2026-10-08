@@ -2,6 +2,7 @@ package com.musichub.app.presentation
 
 import android.content.ContentUris
 import android.content.Context
+import android.content.Intent
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Bundle
@@ -2751,7 +2752,7 @@ fun SettingsScreen(
                             color = Color(0xFF14161D)
                         )
                         Text(
-                            text = "Version: v1.0.8",
+                            text = "Version: v1.0.9",
                             fontSize = 13.sp,
                             color = Color(0xFF8A909E)
                         )
@@ -3261,9 +3262,9 @@ fun AppUpdateDialog(
         delay(400)
         try {
             val currentVer = try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.8"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.9"
             } catch (e: Exception) {
-                "1.0.8"
+                "1.0.9"
             }
             val info = checker.checkLatestRelease(currentVer)
             updateInfo = info

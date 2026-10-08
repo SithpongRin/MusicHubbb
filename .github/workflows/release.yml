@@ -41,16 +41,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build APK (Release or Debug Fallback)
-        run: |
-          ./gradlew assembleDebug --no-daemon --stacktrace > gradle.log 2>&1 || BUILD_STATUS=$?
-          if [ "${BUILD_STATUS:-0}" -ne 0 ]; then
-            echo "## Gradle Build Error Log" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            tail -n 60 gradle.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            cat gradle.log
-            exit $BUILD_STATUS
-          fi
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Prepare Release Artifacts
         run: |
