@@ -71,6 +71,14 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.UUID
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
+import com.musichub.app.player.MediaPlaybackService
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+
 enum class Screen(val kmTitle: String, val enTitle: String, val icon: ImageVector) {
     HOME("ទំព័រដើម", "Home", Icons.Default.Home),
     SEARCH("ស្វែងរក", "Search", Icons.Default.Search),
@@ -92,12 +100,63 @@ data class SongItem(
 )
 
 data class PlaylistItem(
-    val id: String,
+    val id: String = UUID.randomUUID().toString(),
     val title: String,
-    val description: String,
+    val description: String = "",
     val songIds: List<String> = emptyList(),
-    val color: Color
+    val color: Color = Color(0xFF14161D),
+    val createdAt: Long = System.currentTimeMillis()
 )
+
+private fun loadSavedPlaylists(context: Context): List<PlaylistItem> {
+    val prefs = context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
+    val json = prefs.getString("saved_playlists", null) ?: return emptyList()
+    return try {
+        val arr = JSONArray(json)
+        val list = mutableListOf<PlaylistItem>()
+        for (i in 0 until arr.length()) {
+            val obj = arr.getJSONObject(i)
+            val songsArr = obj.optJSONArray("songIds")
+            val songIds = mutableListOf<String>()
+            if (songsArr != null) {
+                for (j in 0 until songsArr.length()) {
+                    songIds.add(songsArr.getString(j))
+                }
+            }
+            list.add(
+                PlaylistItem(
+                    id = obj.optString("id", UUID.randomUUID().toString()),
+                    title = obj.getString("title"),
+                    description = obj.optString("description", ""),
+                    songIds = songIds,
+                    color = Color(0xFF14161D),
+                    createdAt = obj.optLong("createdAt", System.currentTimeMillis())
+                )
+            )
+        }
+        list
+    } catch (e: Exception) {
+        emptyList()
+    }
+}
+
+private fun savePlaylists(context: Context, list: List<PlaylistItem>) {
+    val prefs = context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
+    val arr = JSONArray()
+    for (p in list) {
+        val obj = JSONObject().apply {
+            put("id", p.id)
+            put("title", p.title)
+            put("description", p.description)
+            val songsArr = JSONArray()
+            p.songIds.forEach { songsArr.put(it) }
+            put("songIds", songsArr)
+            put("createdAt", p.createdAt)
+        }
+        arr.put(obj)
+    }
+    prefs.edit().putString("saved_playlists", arr.toString()).apply()
+}
 
 private fun loadSavedSongs(context: Context): List<SongItem> {
     val prefs = context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
@@ -235,106 +294,134 @@ suspend fun downloadAudioToStorage(
         .followSslRedirects(true)
         .build()
 
-    var streamUrl: String? = null
     val u = url.trim()
+    val candidateUrls = mutableListOf<String>()
 
-    onProgress(25, "Inspecting audio stream...")
+    onProgress(25, "Extracting audio stream...")
+
     if (u.endsWith(".mp3", true) || u.endsWith(".m4a", true) || u.endsWith(".wav", true) ||
-        u.endsWith(".ogg", true) || u.endsWith(".aac", true) || u.endsWith(".mp4", true)) {
-        streamUrl = u
-    } else if (u.contains("youtube.com") || u.contains("youtu.be")) {
-        val id = if (u.contains("youtu.be/")) u.substringAfter("youtu.be/").substringBefore("?").substringBefore("&")
-                 else if (u.contains("shorts/")) u.substringAfter("shorts/").substringBefore("?").substringBefore("&")
-                 else u.substringAfter("watch?v=").substringBefore("&")
+        u.endsWith(".ogg", true) || u.endsWith(".aac", true) || u.endsWith(".mp4", true) ||
+        u.endsWith(".flac", true)) {
+        candidateUrls.add(u)
+    }
 
-        val instances = listOf(
-            "https://invidious.f5.si",
-            "https://inv.nadeko.net",
-            "https://invidious.nerdvpn.de",
-            "https://yt.drgnz.club"
-        )
-        for (inst in instances) {
-            try {
-                val apiReq = Request.Builder()
-                    .url("$inst/api/v1/videos/$id")
-                    .header("User-Agent", "MusicHub/1.0")
-                    .build()
-                val apiResp = client.newCall(apiReq).execute()
-                if (apiResp.isSuccessful) {
-                    val body = apiResp.body?.string() ?: ""
-                    val json = JSONObject(body)
-                    val adapt = json.optJSONArray("adaptiveFormats")
-                    if (adapt != null) {
-                        for (i in 0 until adapt.length()) {
-                            val f = adapt.getJSONObject(i)
-                            val type = f.optString("type", "")
-                            if (type.contains("audio/mp4") || type.contains("audio/webm")) {
-                                streamUrl = f.optString("url", "")
-                                if (!streamUrl.isNullOrBlank()) break
+    if (u.contains("youtube.com") || u.contains("youtu.be")) {
+        val id = when {
+            u.contains("youtu.be/") -> u.substringAfter("youtu.be/").substringBefore("?").substringBefore("&")
+            u.contains("shorts/") -> u.substringAfter("shorts/").substringBefore("?").substringBefore("&")
+            u.contains("embed/") -> u.substringAfter("embed/").substringBefore("?").substringBefore("&")
+            u.contains("v=") -> u.substringAfter("v=").substringBefore("&")
+            else -> ""
+        }
+
+        if (id.isNotBlank()) {
+            val instances = listOf(
+                "https://invidious.f5.si",
+                "https://inv.nadeko.net",
+                "https://yt.chocolatemoo53.com",
+                "https://invidious.nerdvpn.de"
+            )
+
+            // Try Invidious API adaptive audio formats
+            for (inst in instances) {
+                try {
+                    val apiReq = Request.Builder()
+                        .url("$inst/api/v1/videos/$id")
+                        .header("User-Agent", "MusicHub/1.0")
+                        .build()
+                    val apiResp = client.newCall(apiReq).execute()
+                    if (apiResp.isSuccessful) {
+                        val body = apiResp.body?.string() ?: ""
+                        val json = JSONObject(body)
+                        val adapt = json.optJSONArray("adaptiveFormats")
+                        if (adapt != null) {
+                            for (i in 0 until adapt.length()) {
+                                val f = adapt.getJSONObject(i)
+                                val type = f.optString("type", "")
+                                if (type.contains("audio/mp4") || type.contains("audio/webm")) {
+                                    val streamUrl = f.optString("url", "")
+                                    if (streamUrl.isNotBlank()) {
+                                        candidateUrls.add(streamUrl)
+                                    }
+                                }
                             }
                         }
                     }
+                } catch (e: Exception) {
+                    // Try next instance
                 }
-                if (!streamUrl.isNullOrBlank()) break
-            } catch (e: Exception) {
-                // try next instance
+                if (candidateUrls.isNotEmpty()) break
+            }
+
+            // Also add Invidious direct stream proxy endpoints
+            for (inst in instances) {
+                candidateUrls.add("$inst/latest_version?id=$id&itag=140")
+                candidateUrls.add("$inst/latest_version?id=$id&itag=251")
+                candidateUrls.add("$inst/latest_version?id=$id&itag=18")
             }
         }
     }
 
-    if (streamUrl.isNullOrBlank()) {
-        streamUrl = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3"
+    if (candidateUrls.isEmpty()) {
+        candidateUrls.add(u)
     }
 
     onProgress(45, "Downloading audio data...")
-    try {
-        val req = Request.Builder()
-            .url(streamUrl)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-            .build()
-        val resp = client.newCall(req).execute()
-        if (resp.isSuccessful) {
-            val body = resp.body
-            if (body != null) {
-                val totalBytes = body.contentLength()
-                val inputStream = body.byteStream()
-                val outputStream = FileOutputStream(localFile)
-                val buffer = ByteArray(16384)
-                var downloadedBytes = 0L
-                var read: Int
-                while (inputStream.read(buffer).also { read = it } != -1) {
-                    outputStream.write(buffer, 0, read)
-                    downloadedBytes += read
-                    if (totalBytes > 0) {
-                        val p = 45 + ((downloadedBytes * 50) / totalBytes).toInt().coerceIn(0, 50)
-                        withContext(Dispatchers.Main) { onProgress(p, "Downloading: $p%") }
-                    }
-                }
-                outputStream.flush()
-                outputStream.close()
-                inputStream.close()
-            }
-        }
-    } catch (e: Exception) {
-        // Fallback safety
-    }
+    var downloadSucceeded = false
 
-    // Safety fallback: ensure file is non-empty and decodable
-    if (!localFile.exists() || localFile.length() < 10000L) {
+    for (targetUrl in candidateUrls) {
         try {
-            val fallbackReq = Request.Builder()
-                .url("https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112191.mp3")
-                .header("User-Agent", "Mozilla/5.0")
+            val req = Request.Builder()
+                .url(targetUrl)
+                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
                 .build()
-            val fallbackResp = client.newCall(fallbackReq).execute()
-            fallbackResp.body?.byteStream()?.use { input ->
-                FileOutputStream(localFile).use { output ->
-                    input.copyTo(output)
+            val resp = client.newCall(req).execute()
+            if (resp.isSuccessful) {
+                val body = resp.body
+                if (body != null) {
+                    val contentType = body.contentType()?.toString()?.lowercase() ?: ""
+                    // Reject html error / bot pages
+                    if (contentType.contains("text/html")) {
+                        body.close()
+                        continue
+                    }
+
+                    val totalBytes = body.contentLength()
+                    val inputStream = body.byteStream()
+                    val outputStream = FileOutputStream(localFile)
+                    val buffer = ByteArray(16384)
+                    var downloadedBytes = 0L
+                    var read: Int
+                    while (inputStream.read(buffer).also { read = it } != -1) {
+                        outputStream.write(buffer, 0, read)
+                        downloadedBytes += read
+                        if (totalBytes > 0) {
+                            val p = 45 + ((downloadedBytes * 50) / totalBytes).toInt().coerceIn(0, 50)
+                            withContext(Dispatchers.Main) { onProgress(p, "Downloading: $p%") }
+                        }
+                    }
+                    outputStream.flush()
+                    outputStream.close()
+                    inputStream.close()
+
+                    if (localFile.exists() && localFile.length() > 50000L) {
+                        downloadSucceeded = true
+                        break
+                    } else {
+                        localFile.delete()
+                    }
                 }
             }
         } catch (e: Exception) {
-            // retain existing file
+            localFile.delete()
         }
+    }
+
+    if (!downloadSucceeded || !localFile.exists() || localFile.length() < 50000L) {
+        if (localFile.exists()) localFile.delete()
+        throw IllegalStateException(
+            "Could not extract audio stream from this link. Please check the URL, use a direct MP3 link, or use the Import button to select songs from your device."
+        )
     }
 
     onProgress(95, "Finalizing track...")
@@ -384,13 +471,18 @@ class MainActivity : ComponentActivity() {
 fun MusicHubApp() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    // English as Default Language as requested!
+    // English as Default Language
     var isKhmer by remember { mutableStateOf(false) }
     var currentScreen by remember { mutableStateOf(Screen.HOME) }
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf("All") }
 
     var songsList by remember { mutableStateOf(loadSavedSongs(context)) }
+    var playlists by remember { mutableStateOf(loadSavedPlaylists(context)) }
+    var viewingPlaylist by remember { mutableStateOf<PlaylistItem?>(null) }
+    var playlistForAddSong by remember { mutableStateOf<SongItem?>(null) }
+    var showCreatePlaylistModal by remember { mutableStateOf(false) }
+
     var currentSong by remember { mutableStateOf<SongItem?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
     var isShuffle by remember { mutableStateOf(false) }
@@ -404,6 +496,19 @@ fun MusicHubApp() {
     var editingSong by remember { mutableStateOf<SongItem?>(null) }
     var selectedPreset by remember { mutableStateOf("Bass Boost") }
     var audioQuality by remember { mutableStateOf("High Quality (320 kbps)") }
+
+    // Android 13+ Notification Permission Launcher
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* Permission callback */ }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
 
     // ExoPlayer Instance
     val exoPlayer = remember {
@@ -420,6 +525,68 @@ fun MusicHubApp() {
     DisposableEffect(Unit) {
         onDispose {
             exoPlayer.release()
+            MediaPlaybackService.stop(context)
+        }
+    }
+
+    // Hook up MediaPlaybackService notification action listener
+    DisposableEffect(Unit) {
+        MediaPlaybackService.onActionReceived = { action ->
+            when (action) {
+                MediaPlaybackService.ACTION_PLAY -> {
+                    if (!exoPlayer.isPlaying) {
+                        exoPlayer.play()
+                        isPlaying = true
+                    }
+                }
+                MediaPlaybackService.ACTION_PAUSE -> {
+                    if (exoPlayer.isPlaying) {
+                        exoPlayer.pause()
+                        isPlaying = false
+                    }
+                }
+                MediaPlaybackService.ACTION_NEXT -> {
+                    if (songsList.isNotEmpty()) {
+                        if (isShuffle) {
+                            currentSong = songsList.random()
+                        } else {
+                            val currIdx = songsList.indexOfFirst { it.id == currentSong?.id }
+                            val nextIdx = if (currIdx != -1) (currIdx + 1) % songsList.size else 0
+                            currentSong = songsList[nextIdx]
+                        }
+                    }
+                }
+                MediaPlaybackService.ACTION_PREV -> {
+                    if (songsList.isNotEmpty()) {
+                        val currIdx = songsList.indexOfFirst { it.id == currentSong?.id }
+                        val prevIdx = if (currIdx > 0) currIdx - 1 else songsList.size - 1
+                        currentSong = songsList[prevIdx]
+                    }
+                }
+                MediaPlaybackService.ACTION_STOP -> {
+                    if (exoPlayer.isPlaying) exoPlayer.pause()
+                    isPlaying = false
+                }
+            }
+        }
+        onDispose {
+            MediaPlaybackService.onActionReceived = null
+        }
+    }
+
+    // Update Foreground Notification whenever track or playback state changes
+    LaunchedEffect(currentSong, isPlaying) {
+        val song = currentSong
+        if (song != null) {
+            MediaPlaybackService.updateNotification(
+                context = context,
+                title = song.title,
+                artist = song.artist,
+                artworkUrl = song.artworkUrl,
+                isPlaying = isPlaying
+            )
+        } else {
+            MediaPlaybackService.stop(context)
         }
     }
 
@@ -459,7 +626,7 @@ fun MusicHubApp() {
         }
     }
 
-    // Playback Progress Poller
+    // Playback Progress Poller (100ms for ultra smooth scrubber motion)
     LaunchedEffect(isPlaying, currentSong) {
         while (isPlaying && exoPlayer.isPlaying) {
             val dur = exoPlayer.duration
@@ -467,7 +634,7 @@ fun MusicHubApp() {
             if (dur > 0) {
                 playbackProgress = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
             }
-            delay(200)
+            delay(100)
         }
     }
 
@@ -806,7 +973,8 @@ fun MusicHubApp() {
                             saveSongs(context, songsList)
                         },
                         onEditSong = { song -> editingSong = song },
-                        onDeleteSong = { song -> deleteSong(song) }
+                        onDeleteSong = { song -> deleteSong(song) },
+                        onAddToPlaylist = { song -> playlistForAddSong = song }
                     )
                     Screen.SEARCH -> SearchScreen(
                         isKhmer = isKhmer,
@@ -830,11 +998,13 @@ fun MusicHubApp() {
                             saveSongs(context, songsList)
                         },
                         onEditSong = { song -> editingSong = song },
-                        onDeleteSong = { song -> deleteSong(song) }
+                        onDeleteSong = { song -> deleteSong(song) },
+                        onAddToPlaylist = { song -> playlistForAddSong = song }
                     )
                     Screen.LIBRARY -> LibraryScreen(
                         isKhmer = isKhmer,
                         songs = songsList,
+                        playlists = playlists,
                         currentSong = currentSong,
                         isPlaying = isPlaying,
                         selectedCategory = selectedCategory,
@@ -844,6 +1014,20 @@ fun MusicHubApp() {
                             isPlaying = true
                         },
                         onImportClick = { audioPickerLauncher.launch("audio/*") },
+                        onCreatePlaylistClick = { showCreatePlaylistModal = true },
+                        onPlaylistClick = { playlist -> viewingPlaylist = playlist },
+                        onDeletePlaylist = { playlist ->
+                            playlists = playlists.filter { it.id != playlist.id }
+                            savePlaylists(context, playlists)
+                            Toast.makeText(context, if (isKhmer) "បានលុប Playlist" else "Playlist deleted", Toast.LENGTH_SHORT).show()
+                        },
+                        onPlayPlaylist = { playlist ->
+                            val pSongs = songsList.filter { playlist.songIds.contains(it.id) }
+                            if (pSongs.isNotEmpty()) {
+                                currentSong = pSongs.first()
+                                isPlaying = true
+                            }
+                        },
                         onFavoriteToggle = { song ->
                             songsList = songsList.map {
                                 if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
@@ -851,7 +1035,8 @@ fun MusicHubApp() {
                             saveSongs(context, songsList)
                         },
                         onEditSong = { song -> editingSong = song },
-                        onDeleteSong = { song -> deleteSong(song) }
+                        onDeleteSong = { song -> deleteSong(song) },
+                        onAddToPlaylist = { song -> playlistForAddSong = song }
                     )
                     Screen.SETTINGS -> SettingsScreen(
                         isKhmer = isKhmer,
@@ -983,6 +1168,98 @@ fun MusicHubApp() {
                 onDismiss = { showUpdateModal = false }
             )
         }
+
+        // Create Playlist Dialog
+        if (showCreatePlaylistModal) {
+            CreatePlaylistDialog(
+                isKhmer = isKhmer,
+                onCreate = { title ->
+                    val newPlaylist = PlaylistItem(
+                        id = UUID.randomUUID().toString(),
+                        title = title,
+                        songIds = emptyList()
+                    )
+                    playlists = playlists + newPlaylist
+                    savePlaylists(context, playlists)
+                    showCreatePlaylistModal = false
+                    Toast.makeText(context, if (isKhmer) "បានបង្កើត Playlist: $title" else "Created playlist: $title", Toast.LENGTH_SHORT).show()
+                },
+                onDismiss = { showCreatePlaylistModal = false }
+            )
+        }
+
+        // Add Song to Playlist Dialog
+        if (playlistForAddSong != null) {
+            val songToAdd = playlistForAddSong!!
+            AddToPlaylistDialog(
+                isKhmer = isKhmer,
+                song = songToAdd,
+                playlists = playlists,
+                onAddToPlaylist = { playlist ->
+                    val updatedPlaylists = playlists.map { p ->
+                        if (p.id == playlist.id) {
+                            val newSongIds = if (p.songIds.contains(songToAdd.id)) {
+                                p.songIds.filter { it != songToAdd.id }
+                            } else {
+                                p.songIds + songToAdd.id
+                            }
+                            p.copy(songIds = newSongIds)
+                        } else p
+                    }
+                    playlists = updatedPlaylists
+                    savePlaylists(context, updatedPlaylists)
+                    val isNowIn = updatedPlaylists.find { it.id == playlist.id }?.songIds?.contains(songToAdd.id) == true
+                    Toast.makeText(
+                        context,
+                        if (isNowIn) {
+                            if (isKhmer) "បានបញ្ចូលទៅក្នុង ${playlist.title}" else "Added to ${playlist.title}"
+                        } else {
+                            if (isKhmer) "បានដកចេញពី ${playlist.title}" else "Removed from ${playlist.title}"
+                        },
+                        Toast.LENGTH_SHORT
+                    ).show()
+                },
+                onCreateNewPlaylist = {
+                    playlistForAddSong = null
+                    showCreatePlaylistModal = true
+                },
+                onDismiss = { playlistForAddSong = null }
+            )
+        }
+
+        // Playlist Detail Dialog
+        if (viewingPlaylist != null) {
+            val vp = viewingPlaylist!!
+            val currentP = playlists.find { it.id == vp.id } ?: vp
+            PlaylistDetailDialog(
+                isKhmer = isKhmer,
+                playlist = currentP,
+                allSongs = songsList,
+                currentSong = currentSong,
+                isPlaying = isPlaying,
+                onSongClick = { song ->
+                    currentSong = song
+                    isPlaying = true
+                },
+                onPlayAll = {
+                    val pSongs = songsList.filter { currentP.songIds.contains(it.id) }
+                    if (pSongs.isNotEmpty()) {
+                        currentSong = pSongs.first()
+                        isPlaying = true
+                    }
+                },
+                onRemoveSong = { song ->
+                    val updatedPlaylists = playlists.map { p ->
+                        if (p.id == currentP.id) {
+                            p.copy(songIds = p.songIds.filter { it != song.id })
+                        } else p
+                    }
+                    playlists = updatedPlaylists
+                    savePlaylists(context, updatedPlaylists)
+                },
+                onDismiss = { viewingPlaylist = null }
+            )
+        }
     }
 }
 
@@ -1067,26 +1344,46 @@ fun WaveformScrubber(
         )
     }
 
+    var isDragging by remember { mutableStateOf(false) }
+    var dragProgress by remember { mutableFloatStateOf(0f) }
+
+    val currentProgress = if (isDragging) dragProgress else progress.coerceIn(0f, 1f)
+
     Column(modifier = modifier.fillMaxWidth()) {
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(48.dp)
+                .height(52.dp)
                 .pointerInput(Unit) {
-                    detectTapGestures { offset ->
-                        val newProgress = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
-                        onSeek(newProgress)
-                    }
-                }
-                .pointerInput(Unit) {
-                    detectDragGestures { change, _ ->
-                        change.consume()
-                        val newProgress = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
-                        onSeek(newProgress)
+                    awaitEachGesture {
+                        val down = awaitFirstDown()
+                        down.consume()
+                        isDragging = true
+                        val widthPx = size.width.toFloat()
+                        if (widthPx > 0) {
+                            dragProgress = (down.position.x / widthPx).coerceIn(0f, 1f)
+                        }
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull() ?: break
+                            if (change.pressed) {
+                                change.consume()
+                                if (widthPx > 0) {
+                                    dragProgress = (change.position.x / widthPx).coerceIn(0f, 1f)
+                                }
+                            } else {
+                                onSeek(dragProgress)
+                                isDragging = false
+                                break
+                            }
+                        }
                     }
                 },
-            contentAlignment = Alignment.Center
+            contentAlignment = Alignment.CenterStart
         ) {
+            val totalWidth = maxWidth
+
+            // Waveform Bars
             Row(
                 modifier = Modifier.fillMaxSize(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1094,19 +1391,14 @@ fun WaveformScrubber(
             ) {
                 for (i in 0 until barCount) {
                     val barThreshold = i.toFloat() / barCount.toFloat()
-                    val isPlayed = barThreshold <= progress
+                    val isPlayed = barThreshold <= currentProgress
                     val heightRatio = heights[i % heights.size]
-
-                    val barHeight by animateDpAsState(
-                        targetValue = (42.dp * heightRatio),
-                        animationSpec = spring(stiffness = Spring.StiffnessLow),
-                        label = "waveform_bar"
-                    )
+                    val targetHeight = 42.dp * heightRatio
 
                     Box(
                         modifier = Modifier
                             .width(3.5.dp)
-                            .height(barHeight)
+                            .height(targetHeight)
                             .clip(RoundedCornerShape(3.dp))
                             .background(
                                 if (isPlayed) Color(0xFF14161D) else Color(0xFFDCE0E8)
@@ -1114,15 +1406,27 @@ fun WaveformScrubber(
                     )
                 }
             }
+
+            // Visible Playhead / Thumb Line
+            val thumbOffset = totalWidth * currentProgress
+            Box(
+                modifier = Modifier
+                    .offset(x = (thumbOffset - 2.dp).coerceAtLeast(0.dp))
+                    .width(4.dp)
+                    .height(48.dp)
+                    .shadow(3.dp, RoundedCornerShape(2.dp))
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(Color(0xFF14161D))
+            )
         }
 
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            val currentSec = (durationSec * progress).toInt()
+            val currentSec = (durationSec * currentProgress).toInt().coerceAtLeast(0)
             val currentStr = "${currentSec / 60}:${String.format("%02d", currentSec % 60)}"
             val totalStr = "${durationSec / 60}:${String.format("%02d", durationSec % 60)}"
             Text(
@@ -1211,6 +1515,374 @@ fun EditSongDialog(
     )
 }
 
+// Create Playlist Dialog
+@Composable
+fun CreatePlaylistDialog(
+    isKhmer: Boolean,
+    onCreate: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var title by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color.White,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = Color(0xFF14161D))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (isKhmer) "បង្កើត Playlist ថ្មី" else "Create New Playlist",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp,
+                    color = Color(0xFF14161D)
+                )
+            }
+        },
+        text = {
+            OutlinedTextField(
+                value = title,
+                onValueChange = { title = it },
+                label = { Text(if (isKhmer) "ឈ្មោះ Playlist" else "Playlist Name", fontSize = 11.sp) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (title.isNotBlank()) {
+                        onCreate(title.trim())
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+            ) {
+                Text(if (isKhmer) "បង្កើត" else "Create")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(if (isKhmer) "បោះបង់" else "Cancel", color = Color(0xFF8A909E))
+            }
+        }
+    )
+}
+
+// Add Song to Playlist Dialog
+@Composable
+fun AddToPlaylistDialog(
+    isKhmer: Boolean,
+    song: SongItem,
+    playlists: List<PlaylistItem>,
+    onAddToPlaylist: (PlaylistItem) -> Unit,
+    onCreateNewPlaylist: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color.White,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(imageVector = Icons.Default.PlaylistAdd, contentDescription = null, tint = Color(0xFF14161D))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (isKhmer) "បញ្ចូលក្នុង Playlist" else "Add to Playlist",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp,
+                    color = Color(0xFF14161D)
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = song.title,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color(0xFF8A909E),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable {
+                            onDismiss()
+                            onCreateNewPlaylist()
+                        },
+                    color = Color(0xFFF5F6F9)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(imageVector = Icons.Default.Add, contentDescription = null, tint = Color(0xFF14161D), modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isKhmer) "+ បង្កើត Playlist ថ្មី" else "+ Create New Playlist",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = Color(0xFF14161D)
+                        )
+                    }
+                }
+
+                if (playlists.isEmpty()) {
+                    Text(
+                        text = if (isKhmer) "មិនទាន់មាន Playlist ណាមួយទេ" else "No playlists created yet",
+                        fontSize = 12.sp,
+                        color = Color(0xFF8A909E),
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 240.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(playlists) { playlist ->
+                            val alreadyIn = playlist.songIds.contains(song.id)
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        onAddToPlaylist(playlist)
+                                    },
+                                color = if (alreadyIn) Color(0xFFF1F5F9) else Color(0xFFECEEF2)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = playlist.title,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp,
+                                            color = Color(0xFF14161D),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = if (isKhmer) "${playlist.songIds.size} បទ" else "${playlist.songIds.size} tracks",
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF8A909E)
+                                        )
+                                    }
+                                    if (alreadyIn) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = "Added",
+                                            tint = Color(0xFF10B981),
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(if (isKhmer) "បិទ" else "Close", color = Color(0xFF14161D))
+            }
+        }
+    )
+}
+
+// Playlist Detail Dialog
+@Composable
+fun PlaylistDetailDialog(
+    isKhmer: Boolean,
+    playlist: PlaylistItem,
+    allSongs: List<SongItem>,
+    currentSong: SongItem?,
+    isPlaying: Boolean,
+    onSongClick: (SongItem) -> Unit,
+    onPlayAll: () -> Unit,
+    onRemoveSong: (SongItem) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val playlistSongs = remember(playlist.songIds, allSongs) {
+        playlist.songIds.mapNotNull { id -> allSongs.find { it.id == id } }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = Color(0xFFF5F6F9)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(Color.White, CircleShape)
+                    ) {
+                        Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = Color(0xFF14161D))
+                    }
+                    Text(
+                        text = playlist.title,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF14161D),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.size(40.dp))
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                if (playlistSongs.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isKhmer) "${playlistSongs.size} បទចម្រៀង" else "${playlistSongs.size} tracks",
+                            fontSize = 13.sp,
+                            color = Color(0xFF8A909E),
+                            fontWeight = FontWeight.Medium
+                        )
+                        Button(
+                            onClick = onPlayAll,
+                            shape = RoundedCornerShape(20.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                        ) {
+                            Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(text = if (isKhmer) "ចាក់ទាំងអស់" else "Play All")
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+
+                if (playlistSongs.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = Color(0xFF94A3B8), modifier = Modifier.size(48.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = if (isKhmer) "មិនទាន់មានចម្រៀងក្នុង Playlist នេះទេ" else "No songs in this playlist yet",
+                                fontSize = 14.sp,
+                                color = Color(0xFF8A909E)
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        itemsIndexed(playlistSongs) { index, song ->
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickable { onSongClick(song) },
+                                color = if (currentSong?.id == song.id) Color.White else Color.Transparent
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = String.format("%02d", index + 1),
+                                        fontSize = 12.sp,
+                                        color = Color(0xFF8A909E),
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.width(26.dp)
+                                    )
+
+                                    Box(
+                                        modifier = Modifier
+                                            .size(42.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(Color(0xFFECEEF2)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (song.artworkUrl.isNotBlank()) {
+                                            AsyncImage(
+                                                model = song.artworkUrl,
+                                                contentDescription = song.title,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        } else {
+                                            Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = Color(0xFF64748B), modifier = Modifier.size(20.dp))
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.width(12.dp))
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = song.title,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp,
+                                            color = Color(0xFF14161D),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = "${song.artist} • ${song.duration}",
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF8A909E),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = { onRemoveSong(song) },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Remove",
+                                            tint = Color(0xFF94A3B8),
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Home Screen
 @Composable
 fun HomeScreen(
@@ -1226,7 +1898,8 @@ fun HomeScreen(
     onLanguageToggle: () -> Unit,
     onFavoriteToggle: (SongItem) -> Unit,
     onEditSong: (SongItem) -> Unit,
-    onDeleteSong: (SongItem) -> Unit
+    onDeleteSong: (SongItem) -> Unit,
+    onAddToPlaylist: (SongItem) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier
@@ -1234,7 +1907,7 @@ fun HomeScreen(
             .padding(horizontal = 20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Top Bar
+        // Polished Header Row
         item {
             Spacer(modifier = Modifier.height(14.dp))
             Row(
@@ -1242,39 +1915,72 @@ fun HomeScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Language Switcher
-                Surface(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .clickable { onLanguageToggle() },
-                    color = Color.White
-                ) {
+                Column {
                     Text(
-                        text = if (isKhmer) "KM" else "EN",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
+                        text = "MusicHub",
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Black,
                         color = Color(0xFF14161D),
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                        letterSpacing = (-0.5).sp
+                    )
+                    Text(
+                        text = if (isKhmer) "តន្ត្រីរបស់អ្នក គ្រប់ពេលវេលា" else "Listen Offline Everywhere",
+                        fontSize = 12.sp,
+                        color = Color(0xFF8A909E),
+                        fontWeight = FontWeight.Medium
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Language Switcher Pill
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(18.dp))
+                            .clickable { onLanguageToggle() },
+                        color = Color.White,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFECEEF2))
+                    ) {
+                        Text(
+                            text = if (isKhmer) "ខ្មែរ" else "EN",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF14161D),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+
+                    // Import Button
                     IconButton(
                         onClick = onImportClick,
                         modifier = Modifier
                             .size(38.dp)
                             .background(Color.White, CircleShape)
+                            .border(1.dp, Color(0xFFECEEF2), CircleShape)
                     ) {
-                        Icon(imageVector = Icons.Default.Add, contentDescription = "Import", tint = Color(0xFF14161D), modifier = Modifier.size(18.dp))
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Import",
+                            tint = Color(0xFF14161D),
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
 
+                    // Download by Link Button
                     IconButton(
                         onClick = onDownloadClick,
                         modifier = Modifier
                             .size(38.dp)
                             .background(Color(0xFF14161D), CircleShape)
                     ) {
-                        Icon(imageVector = Icons.Default.Download, contentDescription = "Download", tint = Color.White, modifier = Modifier.size(18.dp))
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = "Download",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
             }
@@ -1418,7 +2124,7 @@ fun HomeScreen(
                 }
             }
         } else {
-            // Numbered Track List with Live Animated Equalizer
+            // Numbered Track List with Live Animated Equalizer and Song Artwork
             itemsIndexed(songs) { index, song ->
                 NumberedTrackRowItem(
                     index = index + 1,
@@ -1429,7 +2135,8 @@ fun HomeScreen(
                     onClick = { onSongClick(song) },
                     onFavoriteToggle = { onFavoriteToggle(song) },
                     onEditSong = { onEditSong(song) },
-                    onDeleteSong = { onDeleteSong(song) }
+                    onDeleteSong = { onDeleteSong(song) },
+                    onAddToPlaylist = { onAddToPlaylist(song) }
                 )
             }
         }
@@ -1438,7 +2145,7 @@ fun HomeScreen(
     }
 }
 
-// Track Row
+// Track Row with Artwork Thumbnail
 @Composable
 fun NumberedTrackRowItem(
     index: Int,
@@ -1449,7 +2156,8 @@ fun NumberedTrackRowItem(
     onClick: () -> Unit,
     onFavoriteToggle: () -> Unit,
     onEditSong: () -> Unit,
-    onDeleteSong: () -> Unit
+    onDeleteSong: () -> Unit,
+    onAddToPlaylist: () -> Unit = {}
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -1463,12 +2171,12 @@ fun NumberedTrackRowItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Track index or live animated equalizer bars
             Box(
-                modifier = Modifier.width(32.dp),
+                modifier = Modifier.width(28.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
                 if (isPlaying) {
@@ -1476,14 +2184,43 @@ fun NumberedTrackRowItem(
                 } else {
                     Text(
                         text = String.format("%02d", index),
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
                         color = if (isCurrent) Color(0xFF14161D) else Color(0xFF94A3B8)
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+
+            // Song Artwork Thumbnail (48x48 rounded squircle)
+            Box(
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFFECEEF2)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (song.artworkUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = song.artworkUrl,
+                        contentDescription = song.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .scale(1.12f)
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.MusicNote,
+                        contentDescription = null,
+                        tint = Color(0xFF64748B),
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -1528,6 +2265,13 @@ fun NumberedTrackRowItem(
                     modifier = Modifier.background(Color.White)
                 ) {
                     DropdownMenuItem(
+                        text = { Text(if (isKhmer) "បញ្ចូលក្នុង Playlist" else "Add to Playlist", color = Color(0xFF14161D)) },
+                        onClick = {
+                            showMenu = false
+                            onAddToPlaylist()
+                        }
+                    )
+                    DropdownMenuItem(
                         text = { Text(if (isKhmer) "កែសម្រួលព័ត៌មាន" else "Edit Info", color = Color(0xFF14161D)) },
                         onClick = {
                             showMenu = false
@@ -1559,7 +2303,8 @@ fun SearchScreen(
     onSongClick: (SongItem) -> Unit,
     onFavoriteToggle: (SongItem) -> Unit,
     onEditSong: (SongItem) -> Unit,
-    onDeleteSong: (SongItem) -> Unit
+    onDeleteSong: (SongItem) -> Unit,
+    onAddToPlaylist: (SongItem) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier
@@ -1603,7 +2348,8 @@ fun SearchScreen(
                 onClick = { onSongClick(song) },
                 onFavoriteToggle = { onFavoriteToggle(song) },
                 onEditSong = { onEditSong(song) },
-                onDeleteSong = { onDeleteSong(song) }
+                onDeleteSong = { onDeleteSong(song) },
+                onAddToPlaylist = { onAddToPlaylist(song) }
             )
         }
 
@@ -1611,22 +2357,31 @@ fun SearchScreen(
     }
 }
 
-// Library Screen
+// Library Screen with Playlist Creation & Organization
 @Composable
 fun LibraryScreen(
     isKhmer: Boolean,
     songs: List<SongItem>,
+    playlists: List<PlaylistItem>,
     currentSong: SongItem?,
     isPlaying: Boolean,
     selectedCategory: String,
     onCategorySelect: (String) -> Unit,
     onSongClick: (SongItem) -> Unit,
     onImportClick: () -> Unit,
+    onCreatePlaylistClick: () -> Unit,
+    onPlaylistClick: (PlaylistItem) -> Unit,
+    onDeletePlaylist: (PlaylistItem) -> Unit,
+    onPlayPlaylist: (PlaylistItem) -> Unit,
     onFavoriteToggle: (SongItem) -> Unit,
     onEditSong: (SongItem) -> Unit,
-    onDeleteSong: (SongItem) -> Unit
+    onDeleteSong: (SongItem) -> Unit,
+    onAddToPlaylist: (SongItem) -> Unit
 ) {
-    val categories = if (isKhmer) listOf("ចម្រៀងទាំងអស់", "ចូលចិត្ត", "បានទាញយក") else listOf("All", "Favorites", "Downloaded")
+    val categories = if (isKhmer) listOf("ចម្រៀងទាំងអស់", "បញ្ជីចម្រៀង", "ចូលចិត្ត", "បានទាញយក")
+                     else listOf("All", "Playlists", "Favorites", "Downloaded")
+
+    val isPlaylistsTab = selectedCategory.contains("បញ្ជីចម្រៀង") || selectedCategory == "Playlists"
 
     val displayedSongs = remember(songs, selectedCategory, isKhmer) {
         when {
@@ -1657,26 +2412,50 @@ fun LibraryScreen(
                         color = Color(0xFF14161D)
                     )
                     Text(
-                        text = if (isKhmer) "${displayedSongs.size} បទក្នុងឧបករណ៍" else "${displayedSongs.size} tracks available",
+                        text = if (isPlaylistsTab) {
+                            if (isKhmer) "${playlists.size} បញ្ជីចម្រៀង" else "${playlists.size} playlists available"
+                        } else {
+                            if (isKhmer) "${displayedSongs.size} បទក្នុងឧបករណ៍" else "${displayedSongs.size} tracks available"
+                        },
                         fontSize = 12.sp,
                         color = Color(0xFF8A909E)
                     )
                 }
 
-                // Clean Styled Import Pill Button
-                Surface(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(20.dp))
-                        .clickable { onImportClick() },
-                    color = Color(0xFF14161D)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    // Create Playlist Button
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable { onCreatePlaylistClick() },
+                        color = Color.White,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFECEEF2))
                     ) {
-                        Icon(imageVector = Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(text = if (isKhmer) "នាំចូល" else "Import", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = Color(0xFF14161D), modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(text = if (isKhmer) "Playlist" else "+ Playlist", color = Color(0xFF14161D), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    // Import Audio Button
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable { onImportClick() },
+                        color = Color(0xFF14161D)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(imageVector = Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(text = if (isKhmer) "នាំចូល" else "Import", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
@@ -1701,18 +2480,138 @@ fun LibraryScreen(
             }
         }
 
-        itemsIndexed(displayedSongs) { index, song ->
-            NumberedTrackRowItem(
-                index = index + 1,
-                isKhmer = isKhmer,
-                song = song,
-                isCurrent = currentSong?.id == song.id,
-                isPlaying = isPlaying && currentSong?.id == song.id,
-                onClick = { onSongClick(song) },
-                onFavoriteToggle = { onFavoriteToggle(song) },
-                onEditSong = { onEditSong(song) },
-                onDeleteSong = { onDeleteSong(song) }
-            )
+        if (isPlaylistsTab) {
+            // Playlists List
+            if (playlists.isEmpty()) {
+                item {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(22.dp)),
+                        color = Color.White
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = Color(0xFF94A3B8), modifier = Modifier.size(44.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = if (isKhmer) "មិនទាន់មាន Playlist ទេ" else "No Playlists Yet",
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF14161D)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (isKhmer) "បង្កើត Playlist ផ្ទាល់ខ្លួនដើម្បីចាត់ចែងចម្រៀងតាមចំណូលចិត្ត" else "Create your first playlist to organize your favorite songs",
+                                fontSize = 12.sp,
+                                color = Color(0xFF8A909E),
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Button(
+                                onClick = onCreatePlaylistClick,
+                                shape = RoundedCornerShape(20.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                            ) {
+                                Text(if (isKhmer) "បង្កើត Playlist ថ្មី" else "+ Create Playlist")
+                            }
+                        }
+                    }
+                }
+            } else {
+                items(playlists) { playlist ->
+                    val firstSong = songs.find { it.id == playlist.songIds.firstOrNull() }
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(18.dp))
+                            .clickable { onPlaylistClick(playlist) },
+                        color = Color.White
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(Color(0xFF1E212D)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (firstSong != null && firstSong.artworkUrl.isNotBlank()) {
+                                    AsyncImage(
+                                        model = firstSong.artworkUrl,
+                                        contentDescription = playlist.title,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = Color.White, modifier = Modifier.size(24.dp))
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(14.dp))
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = playlist.title,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    color = Color(0xFF14161D),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = if (isKhmer) "${playlist.songIds.size} បទ" else "${playlist.songIds.size} tracks",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF8A909E)
+                                )
+                            }
+
+                            if (playlist.songIds.isNotEmpty()) {
+                                IconButton(
+                                    onClick = { onPlayPlaylist(playlist) },
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .background(Color(0xFFECEEF2), CircleShape)
+                                ) {
+                                    Icon(imageVector = Icons.Default.PlayArrow, contentDescription = "Play", tint = Color(0xFF14161D), modifier = Modifier.size(18.dp))
+                                }
+                            }
+
+                            IconButton(
+                                onClick = { onDeletePlaylist(playlist) },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete", tint = Color(0xFF94A3B8), modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            itemsIndexed(displayedSongs) { index, song ->
+                NumberedTrackRowItem(
+                    index = index + 1,
+                    isKhmer = isKhmer,
+                    song = song,
+                    isCurrent = currentSong?.id == song.id,
+                    isPlaying = isPlaying && currentSong?.id == song.id,
+                    onClick = { onSongClick(song) },
+                    onFavoriteToggle = { onFavoriteToggle(song) },
+                    onEditSong = { onEditSong(song) },
+                    onDeleteSong = { onDeleteSong(song) },
+                    onAddToPlaylist = { onAddToPlaylist(song) }
+                )
+            }
         }
 
         item { Spacer(modifier = Modifier.height(60.dp)) }
@@ -1844,7 +2743,7 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "MusicHub App Update",
                             fontWeight = FontWeight.Bold,
@@ -1852,11 +2751,13 @@ fun SettingsScreen(
                             color = Color(0xFF14161D)
                         )
                         Text(
-                            text = "Version: v1.0.6",
+                            text = "Version: v1.0.7",
                             fontSize = 13.sp,
                             color = Color(0xFF8A909E)
                         )
                     }
+
+                    Spacer(modifier = Modifier.width(12.dp))
 
                     Surface(
                         modifier = Modifier
@@ -1870,7 +2771,13 @@ fun SettingsScreen(
                         ) {
                             Icon(imageVector = Icons.Default.Refresh, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(text = if (isKhmer) "ពិនិត្យមើល" else "Check Updates", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                text = if (isKhmer) "ពិនិត្យមើល" else "Check Updates",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1
+                            )
                         }
                     }
                 }
@@ -2354,9 +3261,9 @@ fun AppUpdateDialog(
         delay(400)
         try {
             val currentVer = try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.6"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.7"
             } catch (e: Exception) {
-                "1.0.6"
+                "1.0.7"
             }
             val info = checker.checkLatestRelease(currentVer)
             updateInfo = info
