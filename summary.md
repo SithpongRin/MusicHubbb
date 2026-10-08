@@ -298,6 +298,11 @@ The app requests only required permissions:
 - Added master studio artwork search via iTunes Search API (`searchHdCoverArt`) for lossless 1000x1000px cover resolution.
 - Updated `versionCode = 24` and `versionName = "1.0.24"` in `app/build.gradle.kts`.
 
+### Version 1.0.29
+- Fixed Compose Compilation Error in HomeScreen: Moved `remember(songs)` artist grouping outside `LazyColumn` LazyListScope to the top-level `@Composable` function scope, resolving GitHub Actions build failure `e: @Composable invocations can only happen from the context of a @Composable function`.
+- Preserved full Artists & Channels grouping functionality on Home and Library screens, with high-definition artist covers and dedicated `ArtistDetailDialog`.
+- Bumped `versionCode = 29` and `versionName = "1.0.29"` in `app/build.gradle.kts`.
+
 ### Version 1.0.28
 - Home Screen "Artists & Channels" Carousel: Introduced a dedicated horizontal row showcasing artists and channels with circular avatars, track counts, and interactive detail view.
 - Library "Artists" Tab: Added "សិល្បករ" / "Artists" filter chip in the Library tab. Automatically groups songs by artist/channel, displaying total track count and artist avatar.

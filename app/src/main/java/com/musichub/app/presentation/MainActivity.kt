@@ -3805,6 +3805,13 @@ fun HomeScreen(
     onAddToPlaylist: (SongItem) -> Unit,
     onShareSong: (SongItem) -> Unit = {}
 ) {
+    val artistGroups = remember(songs) {
+        songs.filter { it.artist.isNotBlank() && it.artist != "MusicHub" && it.artist != "<unknown>" }
+            .groupBy { it.artist.trim() }
+            .toList()
+            .sortedByDescending { it.second.size }
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -4128,13 +4135,6 @@ fun HomeScreen(
         }
 
         // Artists & Channels Horizontal Carousel Section
-        val artistGroups = remember(songs) {
-            songs.filter { it.artist.isNotBlank() && it.artist != "MusicHub" && it.artist != "<unknown>" }
-                .groupBy { it.artist.trim() }
-                .toList()
-                .sortedByDescending { it.second.size }
-        }
-
         if (artistGroups.isNotEmpty()) {
             item {
                 Column {
