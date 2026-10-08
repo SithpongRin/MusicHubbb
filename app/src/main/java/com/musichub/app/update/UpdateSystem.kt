@@ -2,6 +2,9 @@ package com.musichub.app.update
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -10,6 +13,7 @@ import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.TimeUnit
 
 data class UpdateInfo(
     val hasUpdate: Boolean,
@@ -22,15 +26,23 @@ data class UpdateInfo(
 
 class GitHubUpdateChecker(
     private val repoOwner: String = "SithpongRin",
-    private val repoName: String = "MusicHubbb",
-    private val client: OkHttpClient = OkHttpClient()
+    private val repoName: String = "MusicHubbb"
 ) {
+    private val client: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(180, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .retryOnConnectionFailure(true)
+        .build()
+
     suspend fun checkLatestRelease(currentVersion: String): UpdateInfo = withContext(Dispatchers.IO) {
         val url = "https://api.github.com/repos/$repoOwner/$repoName/releases/latest"
         val request = Request.Builder()
             .url(url)
             .addHeader("Accept", "application/vnd.github.v3+json")
-            .addHeader("User-Agent", "MusicHub-Android-App")
+            .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 14) MusicHub-Android-App")
             .build()
 
         try {
@@ -106,38 +118,80 @@ class GitHubUpdateChecker(
         context: Context,
         apkUrl: String,
         onProgress: (percent: Int, downloadedBytes: Long, totalBytes: Long) -> Unit
-    ): File? = withContext(Dispatchers.IO) {
-        val destFile = File(context.cacheDir, "MusicHub-update.apk")
+    ): Result<File> = withContext(Dispatchers.IO) {
+        val cacheFolder = context.externalCacheDir ?: context.cacheDir
+        val destFile = File(cacheFolder, "MusicHub-update.apk")
         if (destFile.exists()) destFile.delete()
 
-        val req = Request.Builder()
-            .url(apkUrl)
-            .addHeader("User-Agent", "MusicHub-Android-Updater")
-            .build()
         try {
-            val resp = client.newCall(req).execute()
-            if (!resp.isSuccessful) return@withContext null
-            val body = resp.body ?: return@withContext null
+            var currentUrl = apkUrl
+            var redirectCount = 0
+            var finalResp: okhttp3.Response? = null
+
+            while (redirectCount < 6) {
+                val req = Request.Builder()
+                    .url(currentUrl)
+                    .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                    .header("Accept", "*/*")
+                    .build()
+                val resp = client.newCall(req).execute()
+                if (resp.isRedirect || resp.code in 300..399) {
+                    val loc = resp.header("Location")
+                    resp.close()
+                    if (!loc.isNullOrBlank()) {
+                        currentUrl = loc
+                        redirectCount++
+                        continue
+                    }
+                }
+                finalResp = resp
+                break
+            }
+
+            if (finalResp == null || !finalResp.isSuccessful) {
+                val code = finalResp?.code ?: 0
+                finalResp?.close()
+                return@withContext Result.failure(Exception("HTTP Error: $code"))
+            }
+
+            val body = finalResp.body ?: run {
+                finalResp.close()
+                return@withContext Result.failure(Exception("Empty response body"))
+            }
+
             val total = body.contentLength()
             val input = body.byteStream()
             val output = FileOutputStream(destFile)
-            val buffer = ByteArray(16384)
+            val buffer = ByteArray(32768)
             var downloaded = 0L
             var read: Int
+            var lastUpdateMs = 0L
+
             while (input.read(buffer).also { read = it } != -1) {
                 output.write(buffer, 0, read)
                 downloaded += read
-                val p = if (total > 0) ((downloaded * 100) / total).toInt().coerceIn(0, 100) else 0
-                withContext(Dispatchers.Main) {
-                    onProgress(p, downloaded, total)
+                val now = System.currentTimeMillis()
+                if (now - lastUpdateMs > 150 || (total > 0 && downloaded == total)) {
+                    lastUpdateMs = now
+                    val p = if (total > 0) ((downloaded * 100) / total).toInt().coerceIn(0, 100) else 0
+                    withContext(Dispatchers.Main) {
+                        onProgress(p, downloaded, total)
+                    }
                 }
             }
+
             output.flush()
             output.close()
             input.close()
-            destFile
+            finalResp.close()
+
+            if (!destFile.exists() || destFile.length() < 500000L) {
+                return@withContext Result.failure(Exception("Incomplete download (${destFile.length()} bytes)"))
+            }
+
+            Result.success(destFile)
         } catch (e: Exception) {
-            null
+            Result.failure(e)
         }
     }
 }
@@ -150,17 +204,32 @@ object ApkInstaller {
     fun installApk(context: Context, apkFile: File) {
         if (!apkFile.exists()) return
 
-        val apkUri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            apkFile
-        )
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (!context.packageManager.canRequestPackageInstalls()) {
+                    val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    }
+                    context.startActivity(settingsIntent)
+                    return
+                }
+            }
 
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(apkUri, "application/vnd.android.package-archive")
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+            val apkUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                apkFile
+            )
+
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+            }
+
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            // Safety
         }
-
-        context.startActivity(intent)
     }
 }

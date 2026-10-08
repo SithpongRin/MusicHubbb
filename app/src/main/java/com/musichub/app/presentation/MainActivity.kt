@@ -2751,7 +2751,7 @@ fun SettingsScreen(
                             color = Color(0xFF14161D)
                         )
                         Text(
-                            text = "Version: v1.0.7",
+                            text = "Version: v1.0.8",
                             fontSize = 13.sp,
                             color = Color(0xFF8A909E)
                         )
@@ -3261,9 +3261,9 @@ fun AppUpdateDialog(
         delay(400)
         try {
             val currentVer = try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.7"
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "1.0.8"
             } catch (e: Exception) {
-                "1.0.7"
+                "1.0.8"
             }
             val info = checker.checkLatestRelease(currentVer)
             updateInfo = info
@@ -3343,8 +3343,6 @@ fun AppUpdateDialog(
                             color = Color(0xFF8A909E)
                         )
                     }
-                } else if (errorText.isNotBlank()) {
-                    Text(text = "Error: $errorText", color = Color(0xFFEF4444), fontSize = 13.sp)
                 } else if (updateInfo != null) {
                     val info = updateInfo!!
                     if (info.hasUpdate) {
@@ -3373,6 +3371,45 @@ fun AppUpdateDialog(
                                 }
                             }
                         }
+
+                        if (errorText.isNotBlank()) {
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp)),
+                                color = Color(0xFFFEF2F2)
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Text(
+                                        text = if (isKhmer) "ការទាញយកមានបញ្ហា: $errorText" else "Download error: $errorText",
+                                        color = Color(0xFFEF4444),
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+
+                        // Direct Browser Download Button as instant reliable fallback
+                        OutlinedButton(
+                            onClick = {
+                                val apkUrl = info.apkUrl.ifBlank { "https://github.com/SithpongRin/MusicHubbb/releases/latest" }
+                                try {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(apkUrl)).apply {
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                    }
+                                    context.startActivity(intent)
+                                    onDismiss()
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, e.message, Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.Public, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(if (isKhmer) "ទាញយកតាម Browser (Chrome)" else "Download via Browser")
+                        }
                     } else {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -3389,6 +3426,8 @@ fun AppUpdateDialog(
                             )
                         }
                     }
+                } else if (errorText.isNotBlank()) {
+                    Text(text = "Error: $errorText", color = Color(0xFFEF4444), fontSize = 13.sp)
                 }
             }
         },
@@ -3399,19 +3438,20 @@ fun AppUpdateDialog(
                         val apkUrl = updateInfo?.apkUrl ?: ""
                         if (apkUrl.isNotBlank()) {
                             isDownloadingApk = true
+                            errorText = ""
                             scope.launch {
-                                val file = checker.downloadApk(context, apkUrl) { pct, dl, tot ->
+                                val result = checker.downloadApk(context, apkUrl) { pct, dl, tot ->
                                     apkProgress = pct
                                     val dlMb = dl / (1024 * 1024f)
                                     val totMb = tot / (1024 * 1024f)
                                     downloadedBytesText = String.format("%.1f MB / %.1f MB", dlMb, totMb)
                                 }
                                 isDownloadingApk = false
-                                if (file != null && file.exists()) {
+                                result.onSuccess { file ->
                                     ApkInstaller.installApk(context, file)
                                     onDismiss()
-                                } else {
-                                    errorText = "Download APK failed"
+                                }.onFailure { e ->
+                                    errorText = e.message ?: "Download APK failed"
                                 }
                             }
                         }
