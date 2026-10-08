@@ -86,6 +86,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import com.musichub.app.player.MediaPlaybackService
+import com.musichub.app.domain.downloader.LocalMediaExtractor
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 
@@ -471,30 +472,21 @@ suspend fun fetchMediaMetadata(url: String): Triple<String, String, String> = wi
     val u = url.trim()
     val client = OkHttpClient()
 
-    if (u.contains("youtube.com") || u.contains("youtu.be")) {
-        val id = if (u.contains("youtu.be/")) u.substringAfter("youtu.be/").substringBefore("?").substringBefore("&")
-                 else if (u.contains("shorts/")) u.substringAfter("shorts/").substringBefore("?").substringBefore("&")
-                 else u.substringAfter("watch?v=").substringBefore("&")
-        if (id.isNotBlank()) {
-            thumbnail = "https://img.youtube.com/vi/$id/maxresdefault.jpg"
-        }
-
+    val ytId = LocalMediaExtractor.extractYouTubeId(u)
+    if (ytId != null) {
+        thumbnail = "https://i.ytimg.com/vi/$ytId/hqdefault.jpg"
         try {
-            val cleanUrl = if (id.isNotBlank()) "https://www.youtube.com/watch?v=$id" else u
-            val oembedUrl = "https://www.youtube.com/oembed?url=${URLEncoder.encode(cleanUrl, "UTF-8")}&format=json"
-            val req = Request.Builder().url(oembedUrl).build()
-            val resp = client.newCall(req).execute()
-            if (resp.isSuccessful) {
-                val jsonStr = resp.body?.string() ?: ""
-                val json = JSONObject(jsonStr)
-                title = json.optString("title", "")
-                artist = json.optString("author_name", "")
-                val t = json.optString("thumbnail_url", "")
-                if (t.isNotBlank() && thumbnail.isBlank()) thumbnail = t
+            val meta = LocalMediaExtractor.fetchMetadata(ytId, client)
+            if (meta != null) {
+                title = meta.title
+                artist = meta.artist
+                if (meta.thumbnailUrl.isNotBlank()) {
+                    thumbnail = meta.thumbnailUrl
+                }
             }
         } catch (e: Exception) {
-            if (title.isBlank() && id.isNotBlank()) {
-                title = "YouTube Track (${id.take(8)})"
+            if (title.isBlank()) {
+                title = "YouTube Track (${ytId.take(8)})"
                 artist = "YouTube"
             }
         }
@@ -590,8 +582,11 @@ suspend fun downloadAudioToStorage(
     val u = url.trim()
     val candidateUrls = mutableListOf<String>()
     var extractedNameFromCobalt = ""
+    var resolvedTitle = title.trim()
+    var resolvedArtist = artist.trim()
+    var resolvedArtworkUrl = artworkUrl.trim()
 
-    onProgress(20, if (isKhmer) "កំពុងស្វែងរក Audio Stream..." else "Extracting audio stream...")
+    onProgress(15, if (isKhmer) "កំពុងស្វែងរក Audio Stream..." else "Extracting audio stream...")
 
     if (u.endsWith(".mp3", true) || u.endsWith(".m4a", true) || u.endsWith(".wav", true) ||
         u.endsWith(".ogg", true) || u.endsWith(".aac", true) || u.endsWith(".mp4", true) ||
@@ -599,88 +594,39 @@ suspend fun downloadAudioToStorage(
         candidateUrls.add(u)
     }
 
-    // YouTube stream extraction
-    val isYoutube = u.contains("youtube.com") || u.contains("youtu.be")
-    if (isYoutube) {
-        val id = when {
-            u.contains("youtu.be/") -> u.substringAfter("youtu.be/").substringBefore("?").substringBefore("&")
-            u.contains("shorts/") -> u.substringAfter("shorts/").substringBefore("?").substringBefore("&")
-            u.contains("embed/") -> u.substringAfter("embed/").substringBefore("?").substringBefore("&")
-            u.contains("v=") -> u.substringAfter("v=").substringBefore("&")
-            else -> ""
-        }
-
-        if (id.isNotBlank()) {
-            val invidiousInstances = mutableListOf(
-                "https://invidious.f5.si",
-                "https://invidious.protokolla.fi",
-                "https://inv.nadeko.net",
-                "https://invidious.nerdvpn.de"
-            )
-
-            // Dynamically discover healthiest Invidious instances
-            try {
-                val listReq = Request.Builder()
-                    .url("https://api.invidious.io/instances.json?sort_by=health")
-                    .header("User-Agent", "Mozilla/5.0")
-                    .build()
-                val listResp = client.newCall(listReq).execute()
-                if (listResp.isSuccessful) {
-                    val arr = JSONArray(listResp.body?.string() ?: "[]")
-                    for (i in 0 until arr.length()) {
-                        val item = arr.getJSONArray(i)
-                        val meta = item.getJSONObject(1)
-                        if (meta.optString("type") == "https") {
-                            val uri = meta.optString("uri")
-                            if (uri.isNotBlank() && !invidiousInstances.contains(uri)) {
-                                invidiousInstances.add(uri)
-                            }
-                        }
-                        if (invidiousInstances.size >= 8) break
-                    }
+    // YouTube stream extraction (100% On-Device, Local Chromium Interception)
+    val ytId = LocalMediaExtractor.extractYouTubeId(u)
+    if (ytId != null) {
+        onProgress(20, if (isKhmer) "កំពុងទាញយកព័ត៌មានពី YouTube..." else "Fetching YouTube info...")
+        try {
+            val ytMeta = LocalMediaExtractor.fetchMetadata(ytId, client)
+            if (ytMeta != null) {
+                if (resolvedTitle.isBlank() || resolvedTitle.startsWith("Track ") || resolvedTitle == "YouTube Video") {
+                    resolvedTitle = ytMeta.title
                 }
-            } catch (e: Exception) {}
-
-            for (inst in invidiousInstances) {
-                try {
-                    val apiReq = Request.Builder()
-                        .url("$inst/api/v1/videos/$id")
-                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
-                        .build()
-                    val apiResp = client.newCall(apiReq).execute()
-                    if (apiResp.isSuccessful) {
-                        val body = apiResp.body?.string() ?: ""
-                        val json = JSONObject(body)
-                        val adapt = json.optJSONArray("adaptiveFormats")
-                        if (adapt != null) {
-                            for (i in 0 until adapt.length()) {
-                                val f = adapt.getJSONObject(i)
-                                val type = f.optString("type", "")
-                                if (type.contains("audio/mp4") || type.contains("audio/webm")) {
-                                    val streamUrl = f.optString("url", "")
-                                    if (streamUrl.isNotBlank() && !candidateUrls.contains(streamUrl)) {
-                                        candidateUrls.add(streamUrl)
-                                    }
-                                }
-                            }
-                        }
-                        if (candidateUrls.isNotEmpty()) break
-                    }
-                } catch (e: Exception) {}
+                if (resolvedArtist.isBlank() || resolvedArtist == "MusicHub" || resolvedArtist == "Web Source") {
+                    resolvedArtist = ytMeta.artist
+                }
+                if (resolvedArtworkUrl.isBlank()) {
+                    resolvedArtworkUrl = ytMeta.thumbnailUrl
+                }
             }
+        } catch (e: Exception) {}
 
-            for (inst in invidiousInstances) {
-                candidateUrls.add("$inst/latest_version?id=$id&itag=140")
-                candidateUrls.add("$inst/latest_version?id=$id&itag=18")
+        onProgress(25, if (isKhmer) "កំពុងដំណើរការ On-Device Audio Engine..." else "Extracting on-device stream...")
+        try {
+            val localStream = LocalMediaExtractor.extractStreamUrl(context, ytId)
+            if (localStream != null && localStream.streamUrl.isNotBlank()) {
+                candidateUrls.add(localStream.streamUrl)
             }
-        }
+        } catch (e: Exception) {}
     }
 
-    // Try high-speed Cobalt API instances as supplementary/social media fallback
-    val isSocialOrYt = isYoutube || u.contains("tiktok.com") || u.contains("facebook.com") || u.contains("fb.watch") ||
+    // Supplementary fallback for social media or if on-device extractor missed
+    val isSocialOrYt = (ytId != null && candidateUrls.isEmpty()) || u.contains("tiktok.com") || u.contains("facebook.com") || u.contains("fb.watch") ||
             u.contains("instagram.com") || u.contains("soundcloud.com") || u.contains("twitter.com") || u.contains("x.com")
 
-    if (isSocialOrYt) {
+    if (isSocialOrYt && candidateUrls.isEmpty()) {
         val cobaltInstances = listOf(
             "https://rue-cobalt.xenon.zone/",
             "https://cobaltapi.cjs.nz/"
@@ -716,9 +662,7 @@ suspend fun downloadAudioToStorage(
                         break
                     }
                 }
-            } catch (e: Exception) {
-                // Try next cobalt instance
-            }
+            } catch (e: Exception) {}
         }
     }
 
@@ -809,7 +753,9 @@ suspend fun downloadAudioToStorage(
 
             val req = Request.Builder()
                 .url(targetUrl)
-                .header("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                .header("User-Agent", LocalMediaExtractor.USER_AGENT)
+                .header("Referer", "https://www.youtube.com/")
+                .header("Origin", "https://www.youtube.com")
                 .build()
             val resp = client.newCall(req).execute()
             if (resp.isSuccessful) {
@@ -887,9 +833,6 @@ suspend fun downloadAudioToStorage(
 
     onProgress(90, if (isKhmer) "កំពុងរក្សាទុកក្នុង Music..." else "Saving to Music folder...")
 
-    var resolvedTitle = title.trim()
-    var resolvedArtist = artist.trim()
-
     if ((resolvedTitle.isBlank() || resolvedTitle.startsWith("Track ")) && extractedNameFromCobalt.isNotBlank()) {
         val nameWithoutExt = extractedNameFromCobalt.substringBeforeLast(".")
         if (nameWithoutExt.contains(" - ")) {
@@ -916,9 +859,12 @@ suspend fun downloadAudioToStorage(
     val coversDir = MusicHubStorage.getCoversDir()
 
     var savedArtworkUriString = ""
-    if (artworkUrl.isNotBlank() && (artworkUrl.startsWith("http://") || artworkUrl.startsWith("https://"))) {
+    if (resolvedArtworkUrl.isNotBlank() && (resolvedArtworkUrl.startsWith("http://") || resolvedArtworkUrl.startsWith("https://"))) {
         try {
-            val artReq = Request.Builder().url(artworkUrl).build()
+            val artReq = Request.Builder()
+                .url(resolvedArtworkUrl)
+                .header("User-Agent", LocalMediaExtractor.USER_AGENT)
+                .build()
             val artResp = client.newCall(artReq).execute()
             if (artResp.isSuccessful) {
                 val artBytes = artResp.body?.bytes()
@@ -1026,7 +972,7 @@ suspend fun downloadAudioToStorage(
     onProgress(100, if (isKhmer) "បានទាញយកជោគជ័យ!" else "Download complete!")
     delay(150)
 
-    val finalArtwork = savedArtworkUriString.ifBlank { artworkUrl }
+    val finalArtwork = savedArtworkUriString.ifBlank { resolvedArtworkUrl }
 
     SongItem(
         id = songId,
