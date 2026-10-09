@@ -1539,6 +1539,7 @@ fun MusicHubApp() {
     var isShuffle by remember { mutableStateOf(false) }
     var loopMode by remember { mutableStateOf(LoopMode.ALL) }
     var activePlaylistId by remember { mutableStateOf<String?>(null) }
+    var activeArtistName by remember { mutableStateOf<String?>(null) }
     var playbackProgress by remember { mutableFloatStateOf(0.0f) }
     var playbackPositionMs by remember { mutableLongStateOf(0L) }
     var playbackDurationMs by remember { mutableLongStateOf(0L) }
@@ -1557,6 +1558,13 @@ fun MusicHubApp() {
     }
 
     fun getCurrentPlaybackQueue(): List<SongItem> {
+        val artist = activeArtistName
+        if (artist != null) {
+            val aSongs = songsList.filter { it.artist.trim().equals(artist.trim(), ignoreCase = true) }
+            if (aSongs.isNotEmpty()) {
+                return aSongs
+            }
+        }
         val pid = activePlaylistId
         if (pid != null) {
             val pl = playlists.find { it.id == pid }
@@ -1570,7 +1578,7 @@ fun MusicHubApp() {
         return songsList
     }
 
-    val currentQueue: List<SongItem> = remember(activePlaylistId, playlists, songsList) {
+    val currentQueue: List<SongItem> = remember(activeArtistName, activePlaylistId, playlists, songsList) {
         getCurrentPlaybackQueue()
     }
 
@@ -2113,6 +2121,7 @@ fun MusicHubApp() {
 
     fun shuffleAndPlay() {
         activePlaylistId = null
+        activeArtistName = null
         if (songsList.isNotEmpty()) {
             val shuffled = songsList.shuffled()
             currentSong = shuffled.first()
@@ -2460,6 +2469,7 @@ fun MusicHubApp() {
                                     isFavorite = false
                                 )
                                 activePlaylistId = null
+                                activeArtistName = null
                                 currentSong = streamSong
                                 isPlaying = true
                                 Toast.makeText(context, if (isKhmer) "កំពុងចាក់សាកល្បង៖ ${track.title}" else "Preview playing: ${track.title}", Toast.LENGTH_SHORT).show()
@@ -2491,11 +2501,13 @@ fun MusicHubApp() {
                         onArtistClick = { artistName, aSongs -> viewingArtist = Pair(artistName, aSongs) },
                         onSongClick = { song ->
                             activePlaylistId = null
+                            activeArtistName = null
                             currentSong = song
                             isPlaying = true
                         },
                         onPlayAll = {
                             activePlaylistId = null
+                            activeArtistName = null
                             if (songsList.isNotEmpty()) {
                                 currentSong = songsList.first()
                                 isPlaying = true
@@ -2520,10 +2532,14 @@ fun MusicHubApp() {
                         isKhmer = isKhmer,
                         query = searchQuery,
                         onQueryChange = { searchQuery = it },
-                        songs = songsList.filter {
-                            it.title.contains(searchQuery, ignoreCase = true) ||
-                            it.artist.contains(searchQuery, ignoreCase = true) ||
-                            it.album.contains(searchQuery, ignoreCase = true)
+                        songs = remember(searchQuery, songsList) {
+                            if (searchQuery.isBlank()) songsList else {
+                                songsList.filter {
+                                    it.title.contains(searchQuery, ignoreCase = true) ||
+                                    it.artist.contains(searchQuery, ignoreCase = true) ||
+                                    it.album.contains(searchQuery, ignoreCase = true)
+                                }
+                            }
                         },
                         allSongs = songsList,
                         recommendedTracks = recommendedTracks,
@@ -2531,6 +2547,7 @@ fun MusicHubApp() {
                         isPlaying = isPlaying,
                         onSongClick = { song ->
                             activePlaylistId = null
+                            activeArtistName = null
                             currentSong = song
                             isPlaying = true
                         },
@@ -2541,6 +2558,7 @@ fun MusicHubApp() {
                                     togglePlayPause()
                                 } else {
                                     activePlaylistId = null
+                                    activeArtistName = null
                                     currentSong = localMatch
                                     isPlaying = true
                                 }
@@ -2564,6 +2582,7 @@ fun MusicHubApp() {
                                             isFavorite = false
                                         )
                                         activePlaylistId = null
+                                        activeArtistName = null
                                         currentSong = streamSong
                                         isPlaying = true
                                         Toast.makeText(
@@ -2648,6 +2667,7 @@ fun MusicHubApp() {
                         onArtistClick = { artistName, aSongs -> viewingArtist = Pair(artistName, aSongs) },
                         onSongClick = { song ->
                             activePlaylistId = null
+                            activeArtistName = null
                             currentSong = song
                             isPlaying = true
                         },
@@ -2666,6 +2686,7 @@ fun MusicHubApp() {
                             val pSongs = playlist.songIds.mapNotNull { id -> songsList.find { it.id == id } }
                             if (pSongs.isNotEmpty()) {
                                 activePlaylistId = playlist.id
+                                activeArtistName = null
                                 currentSong = pSongs.first()
                                 isPlaying = true
                             }
@@ -3112,6 +3133,10 @@ fun MusicHubApp() {
         if (viewingArtist != null) {
             val (aName, _) = viewingArtist!!
             val aSongs = songsList.filter { it.artist.trim().equals(aName.trim(), ignoreCase = true) }
+            val isThisArtistPlaying = isPlaying && currentSong?.let {
+                it.artist.trim().equals(aName.trim(), ignoreCase = true)
+            } ?: false
+
             ArtistDetailDialog(
                 isKhmer = isKhmer,
                 artistName = aName,
@@ -3120,19 +3145,31 @@ fun MusicHubApp() {
                 isPlaying = isPlaying,
                 onSongClick = { song ->
                     activePlaylistId = null
-                    currentSong = song
-                    isPlaying = true
+                    activeArtistName = aName
+                    if (currentSong?.id == song.id) {
+                        togglePlayPause()
+                    } else {
+                        currentSong = song
+                        isPlaying = true
+                    }
                 },
                 onPlayAll = {
                     activePlaylistId = null
+                    activeArtistName = aName
                     if (aSongs.isNotEmpty()) {
-                        currentSong = aSongs.first()
-                        isPlaying = true
+                        if (isThisArtistPlaying) {
+                            togglePlayPause()
+                        } else {
+                            currentSong = aSongs.first()
+                            isPlaying = true
+                        }
                     }
                 },
                 onShufflePlay = {
                     activePlaylistId = null
+                    activeArtistName = aName
                     if (aSongs.isNotEmpty()) {
+                        isShuffle = true
                         currentSong = aSongs.shuffled().first()
                         isPlaying = true
                     }
@@ -4261,6 +4298,30 @@ fun ArtistDetailDialog(
         artistSongs.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
     }
 
+    val isThisArtistPlaying = isPlaying && currentSong?.let {
+        it.artist.trim().equals(artistName.trim(), ignoreCase = true)
+    } ?: false
+
+    val infiniteTransition = rememberInfiniteTransition(label = "artist_header_anim")
+    val avatarRotation by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(12000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "avatarRotation"
+    )
+    val pulseGlow by infiniteTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseGlow"
+    )
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -4313,12 +4374,17 @@ fun ArtistDetailDialog(
                             .padding(16.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Circular Artist Avatar
+                        // Circular Artist Avatar with Playing Animation
                         Box(
                             modifier = Modifier
                                 .size(76.dp)
                                 .clip(CircleShape)
-                                .background(if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2)),
+                                .background(if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2))
+                                .border(
+                                    width = if (isThisArtistPlaying) 2.5.dp else 0.dp,
+                                    color = if (isThisArtistPlaying) Color(0xFF818CF8).copy(alpha = pulseGlow) else Color.Transparent,
+                                    shape = CircleShape
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             if (artistCover.isNotBlank()) {
@@ -4326,7 +4392,9 @@ fun ArtistDetailDialog(
                                     artworkUrl = artistCover,
                                     contentDescription = artistName,
                                     contentScale = ContentScale.Crop,
-                                    modifier = Modifier.fillMaxSize()
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .then(if (isThisArtistPlaying) Modifier.graphicsLayer { rotationZ = avatarRotation } else Modifier)
                                 )
                             } else {
                                 Icon(
@@ -4336,19 +4404,62 @@ fun ArtistDetailDialog(
                                     modifier = Modifier.size(36.dp)
                                 )
                             }
+
+                            if (isThisArtistPlaying) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(Color.Black.copy(alpha = 0.45f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    AnimatedEqualizer(
+                                        barColor = Color(0xFF818CF8),
+                                        isPlaying = true
+                                    )
+                                }
+                            }
                         }
 
                         Spacer(modifier = Modifier.width(16.dp))
 
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = artistName,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp,
-                                color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = artistName,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 18.sp,
+                                    color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                if (isThisArtistPlaying) {
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = Color(0xFF818CF8).copy(alpha = 0.2f)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(6.dp)
+                                                    .clip(CircleShape)
+                                                    .background(Color(0xFF818CF8))
+                                            )
+                                            Text(
+                                                text = if (isKhmer) "កំពុងចាក់" else "Playing",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFF818CF8)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                             Spacer(modifier = Modifier.height(3.dp))
                             Text(
                                 text = if (isKhmer) "${artistSongs.size} បទចម្រៀង" else "${artistSongs.size} tracks available",
@@ -4372,11 +4483,21 @@ fun ArtistDetailDialog(
                             .weight(1f)
                             .height(44.dp),
                         shape = RoundedCornerShape(22.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D))
+                        colors = ButtonDefaults.buttonColors(containerColor = if (isThisArtistPlaying) Color(0xFF4F46E5) else (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)))
                     ) {
-                        Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                        Icon(
+                            imageVector = if (isThisArtistPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text(text = if (isKhmer) "ចាក់ទាំងអស់" else "Play", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text(
+                            text = if (isThisArtistPlaying) (if (isKhmer) "ផ្អាក" else "Pause") else (if (isKhmer) "ចាក់ទាំងអស់" else "Play"),
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
                     }
 
                     Button(
@@ -5237,6 +5358,9 @@ fun HomeScreen(
                     ) {
                         items(artistGroups) { (artistName, aSongs) ->
                             val artistCover = aSongs.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
+                            val isThisArtistPlaying = isPlaying && currentSong?.let {
+                                it.artist.trim().equals(artistName.trim(), ignoreCase = true)
+                            } ?: false
 
                             Surface(
                                 modifier = Modifier
@@ -5250,7 +5374,7 @@ fun HomeScreen(
                                     modifier = Modifier.padding(10.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    // Circular Artist Avatar
+                                    // Circular Artist Avatar with Playing Animation
                                     Box(
                                         modifier = Modifier
                                             .size(72.dp)
@@ -5259,6 +5383,9 @@ fun HomeScreen(
                                                 Brush.linearGradient(
                                                     listOf(Color(0xFF232733), Color(0xFF14161D))
                                                 )
+                                            )
+                                            .then(
+                                                if (isThisArtistPlaying) Modifier.border(2.5.dp, Color(0xFF818CF8), CircleShape) else Modifier
                                             ),
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -5277,6 +5404,20 @@ fun HomeScreen(
                                                 modifier = Modifier.size(32.dp)
                                             )
                                         }
+
+                                        if (isThisArtistPlaying) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(Color.Black.copy(alpha = 0.45f)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                AnimatedEqualizer(
+                                                    barColor = Color(0xFF818CF8),
+                                                    isPlaying = true
+                                                )
+                                            }
+                                        }
                                     }
 
                                     Spacer(modifier = Modifier.height(8.dp))
@@ -5285,7 +5426,7 @@ fun HomeScreen(
                                         text = artistName,
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface,
+                                        color = if (isThisArtistPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                         textAlign = TextAlign.Center
@@ -5442,6 +5583,20 @@ fun NumberedTrackRowItem(
                         modifier = Modifier.size(22.dp)
                     )
                 }
+
+                if (isPlaying) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.45f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        AnimatedEqualizer(
+                            barColor = Color(0xFF818CF8),
+                            isPlaying = true
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.width(12.dp))
@@ -5451,7 +5606,7 @@ fun NumberedTrackRowItem(
                     text = song.title,
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -5527,13 +5682,15 @@ enum class SearchTab {
     ONLINE
 }
 
+private val CLEAN_ALPHANUM_REGEX = Regex("[^\\p{L}\\p{M}\\p{Nd}]")
+
 fun findMatchingLocalSong(onlineResult: OnlineSearchResult, localSongs: List<SongItem>): SongItem? {
-    val cleanOnlineTitle = sanitizeTitle(onlineResult.title, onlineResult.artist).lowercase().replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
-    val cleanOnlineArtist = sanitizeArtist(onlineResult.artist).lowercase().replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+    val cleanOnlineTitle = sanitizeTitle(onlineResult.title, onlineResult.artist).lowercase().replace(CLEAN_ALPHANUM_REGEX, "")
+    val cleanOnlineArtist = sanitizeArtist(onlineResult.artist).lowercase().replace(CLEAN_ALPHANUM_REGEX, "")
     if (cleanOnlineTitle.isBlank()) return null
     return localSongs.find { local ->
-        val cleanLocalTitle = local.title.lowercase().replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
-        val cleanLocalArtist = local.artist.lowercase().replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+        val cleanLocalTitle = local.title.lowercase().replace(CLEAN_ALPHANUM_REGEX, "")
+        val cleanLocalArtist = local.artist.lowercase().replace(CLEAN_ALPHANUM_REGEX, "")
         if (cleanLocalTitle.isNotBlank()) {
             val titleMatches = cleanLocalTitle == cleanOnlineTitle ||
                     (cleanLocalTitle.length >= 4 && cleanOnlineTitle.contains(cleanLocalTitle)) ||
@@ -5719,9 +5876,17 @@ fun SearchScreen(
         }
     }
 
-    val recLocalMatchesMap = remember(recOnlineResults, allSongs) {
-        recOnlineResults.associate { item ->
-            item.id to findMatchingLocalSong(item, allSongs)
+    var recLocalMatchesMap by remember { mutableStateOf<Map<String, SongItem?>>(emptyMap()) }
+    LaunchedEffect(recOnlineResults, allSongs) {
+        if (recOnlineResults.isNotEmpty() && allSongs.isNotEmpty()) {
+            withContext(Dispatchers.Default) {
+                val matches = recOnlineResults.associate { item ->
+                    item.id to findMatchingLocalSong(item, allSongs)
+                }
+                withContext(Dispatchers.Main) {
+                    recLocalMatchesMap = matches
+                }
+            }
         }
     }
 
@@ -5750,9 +5915,19 @@ fun SearchScreen(
         }
     }
 
-    val localMatchesMap = remember(onlineResults, allSongs) {
-        onlineResults.associate { item ->
-            item.id to findMatchingLocalSong(item, allSongs)
+    var localMatchesMap by remember { mutableStateOf<Map<String, SongItem?>>(emptyMap()) }
+    LaunchedEffect(onlineResults, allSongs) {
+        if (onlineResults.isNotEmpty() && allSongs.isNotEmpty()) {
+            withContext(Dispatchers.Default) {
+                val matches = onlineResults.associate { item ->
+                    item.id to findMatchingLocalSong(item, allSongs)
+                }
+                withContext(Dispatchers.Main) {
+                    localMatchesMap = matches
+                }
+            }
+        } else {
+            localMatchesMap = emptyMap()
         }
     }
 
@@ -6465,6 +6640,10 @@ fun LibraryScreen(
             } else {
                 items(artistGroups) { (artistName, aSongs) ->
                     val artistCover = aSongs.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
+                    val isThisArtistPlaying = isPlaying && currentSong?.let {
+                        it.artist.trim().equals(artistName.trim(), ignoreCase = true)
+                    } ?: false
+
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -6478,12 +6657,15 @@ fun LibraryScreen(
                                 .padding(14.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // Circular Artist Avatar
+                            // Circular Artist Avatar with Playing Animation
                             Box(
                                 modifier = Modifier
                                     .size(56.dp)
                                     .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                                    .then(
+                                        if (isThisArtistPlaying) Modifier.border(2.dp, Color(0xFF818CF8), CircleShape) else Modifier
+                                    ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 if (artistCover.isNotBlank()) {
@@ -6501,6 +6683,20 @@ fun LibraryScreen(
                                         modifier = Modifier.size(28.dp)
                                     )
                                 }
+
+                                if (isThisArtistPlaying) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(Color.Black.copy(alpha = 0.45f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        AnimatedEqualizer(
+                                            barColor = Color(0xFF818CF8),
+                                            isPlaying = true
+                                        )
+                                    }
+                                }
                             }
 
                             Spacer(modifier = Modifier.width(14.dp))
@@ -6510,7 +6706,7 @@ fun LibraryScreen(
                                     text = artistName,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 15.sp,
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                    color = if (isThisArtistPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
