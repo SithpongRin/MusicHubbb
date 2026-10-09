@@ -56,6 +56,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import com.musichub.app.domain.downloader.OnlineSearchResult
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -1483,33 +1487,9 @@ suspend fun downloadAudioToStorage(
         }
     }
 
-    // 2. Also register into MediaStore if Android 10+
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        try {
-            val resolver = context.contentResolver
-            val contentValues = ContentValues().apply {
-                put(MediaStore.Audio.Media.DISPLAY_NAME, fileName)
-                put(MediaStore.Audio.Media.TITLE, cleanTitle)
-                put(MediaStore.Audio.Media.ARTIST, cleanArtist)
-                put(MediaStore.Audio.Media.ALBUM, "MusicHub")
-                put(MediaStore.Audio.Media.MIME_TYPE, if (ext == "mp4") "audio/mp4" else "audio/mpeg")
-                put(MediaStore.Audio.Media.RELATIVE_PATH, "Music/MusicHub/Songs")
-                put(MediaStore.Audio.Media.IS_PENDING, 0)
-            }
-            val mediaUri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, contentValues)
-            if (mediaUri != null && targetFile != null) {
-                resolver.openOutputStream(mediaUri)?.use { outStream ->
-                    targetFile.inputStream().use { inStream ->
-                        inStream.copyTo(outStream)
-                    }
-                }
-            }
-        } catch (e: Exception) {}
-    }
-
     try { tempFile.delete() } catch (e: Exception) {}
 
-    onProgress(90, if (isKhmer) "ជំហានទី ២៖ កំពុងផ្ទៀងផ្ទាត់រលកសំឡេង..." else "Step 2: Analyzing audio wave...")
+    onProgress(90, if (isKhmer) "ជំហានទី ២៖ កំពុងផ្ទៀងផ្ទាត់ឯកសារចម្រៀង..." else "Step 2: Verifying audio file...")
     var durSec = 210
     var durStr = "3:30"
     try {
@@ -1527,11 +1507,6 @@ suspend fun downloadAudioToStorage(
         }
         mmr.release()
     } catch (e: Exception) {}
-
-    // Extract lightweight waveform fingerprint for future instant matching
-    try {
-        AudioWaveformFingerprinter.getWaveformFingerprint(context, savedUriString, durSec)
-    } catch (_: Exception) {}
 
     onProgress(100, if (isKhmer) "ជំហានទី ៣៖ បានទាញយកជោគជ័យ!" else "Step 3: Download complete!")
     delay(150)
@@ -2584,12 +2559,76 @@ fun MusicHubApp() {
                             it.artist.contains(searchQuery, ignoreCase = true) ||
                             it.album.contains(searchQuery, ignoreCase = true)
                         },
+                        allSongs = songsList,
                         currentSong = currentSong,
                         isPlaying = isPlaying,
                         onSongClick = { song ->
                             activePlaylistId = null
                             currentSong = song
                             isPlaying = true
+                        },
+                        onPlayOnlineTrack = { onlineTrack ->
+                            val localMatch = findMatchingLocalSong(onlineTrack, songsList)
+                            if (localMatch != null) {
+                                activePlaylistId = null
+                                currentSong = localMatch
+                                isPlaying = true
+                            } else {
+                                scope.launch {
+                                    Toast.makeText(
+                                        context,
+                                        if (isKhmer) "កំពុងតភ្ជាប់សំឡេង៖ ${onlineTrack.title}" else "Connecting audio: ${onlineTrack.title}",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    try {
+                                        val stream = LocalMediaExtractor.extractStreamUrl(context, onlineTrack.webUrl, OkHttpClient())
+                                        if (stream != null && stream.streamUrl.isNotBlank()) {
+                                            val streamSong = SongItem(
+                                                id = "yt_" + onlineTrack.id,
+                                                title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
+                                                artist = sanitizeArtist(onlineTrack.artist),
+                                                album = "Online Stream",
+                                                duration = onlineTrack.duration,
+                                                durationSec = 210,
+                                                artworkUrl = onlineTrack.artworkUrl,
+                                                uriString = stream.streamUrl,
+                                                format = "M4A",
+                                                isFavorite = false
+                                            )
+                                            activePlaylistId = null
+                                            currentSong = streamSong
+                                            isPlaying = true
+                                        } else {
+                                            downloadPrefill = DownloadPrefill(
+                                                url = onlineTrack.webUrl,
+                                                title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
+                                                artist = sanitizeArtist(onlineTrack.artist),
+                                                thumbnail = onlineTrack.artworkUrl,
+                                                fallbackAudioUrl = "",
+                                                autoStart = true
+                                            )
+                                            showDownloadModal = true
+                                        }
+                                    } catch (e: Exception) {
+                                        Toast.makeText(
+                                            context,
+                                            if (isKhmer) "មិនអាចចាក់បទនេះបានទេ" else "Cannot stream track",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                            }
+                        },
+                        onDownloadOnlineTrack = { onlineTrack ->
+                            downloadPrefill = DownloadPrefill(
+                                url = onlineTrack.webUrl,
+                                title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
+                                artist = sanitizeArtist(onlineTrack.artist),
+                                thumbnail = onlineTrack.artworkUrl,
+                                fallbackAudioUrl = "",
+                                autoStart = true
+                            )
+                            showDownloadModal = true
                         },
                         onFavoriteToggle = { song ->
                             songsList = songsList.map {
@@ -2791,13 +2830,17 @@ fun MusicHubApp() {
                                 downloadPrefill = null
                                 duplicateConflictSong = Pair(existingDup, newSong)
                             } else {
-                                saveSongs(context, listOf(newSong) + songsList.filter { it.id != newSong.id })
-                                songsList = restoreAndSyncLibrary(context)
-                                currentSong = songsList.find { it.id == newSong.id } ?: newSong
-                                isPlaying = true
-                                delay(300)
                                 showDownloadModal = false
                                 downloadPrefill = null
+                                val updatedList = listOf(newSong) + songsList.filter { it.id != newSong.id }
+                                songsList = updatedList
+                                currentSong = newSong
+                                isPlaying = true
+                                withContext(Dispatchers.IO) {
+                                    try {
+                                        saveSongs(context, updatedList)
+                                    } catch (_: Exception) {}
+                                }
                                 Toast.makeText(
                                     context,
                                     if (isKhmer) "បានទាញយក និងកំពុងចាក់" else "Downloaded & playing",
@@ -2858,11 +2901,16 @@ fun MusicHubApp() {
                             scope.launch {
                                 try {
                                     val distinctCandidate = candidate.copy(id = UUID.randomUUID().toString())
-                                    saveSongs(context, listOf(distinctCandidate) + songsList)
-                                    songsList = restoreAndSyncLibrary(context)
+                                    val updated = listOf(distinctCandidate) + songsList
+                                    songsList = updated
+                                    duplicateConflictSong = null
                                     currentSong = distinctCandidate
                                     isPlaying = true
-                                    duplicateConflictSong = null
+                                    withContext(Dispatchers.IO) {
+                                        try {
+                                            saveSongs(context, updated)
+                                        } catch (_: Exception) {}
+                                    }
                                     Toast.makeText(context, if (isKhmer) "បានរក្សាទុកទាំងពីរ" else "Kept both tracks", Toast.LENGTH_SHORT).show()
                                 } catch (e: Exception) {
                                     duplicateConflictSong = null
@@ -2880,36 +2928,34 @@ fun MusicHubApp() {
                             scope.launch {
                                 try {
                                     if (currentSong?.id == existing.id) {
-                                        exoPlayer.stop()
+                                        try { exoPlayer.stop() } catch (_: Exception) {}
                                     }
                                     if (existing.uriString.isNotBlank() && existing.uriString != candidate.uriString) {
                                         try {
                                             if (existing.uriString.startsWith("file://")) {
                                                 val oldFile = File(Uri.parse(existing.uriString).path ?: "")
                                                 if (oldFile.exists()) oldFile.delete()
+                                            } else if (!existing.uriString.startsWith("content://") && !existing.uriString.startsWith("http")) {
+                                                val oldFile = File(existing.uriString)
+                                                if (oldFile.exists()) oldFile.delete()
                                             }
                                         } catch (_: Exception) {}
                                     }
-                                    val replacedCandidate = candidate.copy(id = existing.id)
+                                    val newUniqueId = UUID.randomUUID().toString()
+                                    val replacedCandidate = candidate.copy(id = newUniqueId)
                                     val updated = songsList.map { if (it.id == existing.id) replacedCandidate else it }
-                                    saveSongs(context, updated)
-                                    songsList = restoreAndSyncLibrary(context)
+                                    songsList = updated
+                                    duplicateConflictSong = null
                                     currentSong = replacedCandidate
-                                    val playUri = findExistingAudioUri(context, replacedCandidate, MusicHubStorage.getBaseDir()) ?: replacedCandidate.uriString
-                                    if (playUri.isNotBlank()) {
+                                    isPlaying = true
+                                    withContext(Dispatchers.IO) {
                                         try {
-                                            exoPlayer.stop()
-                                            exoPlayer.setMediaItem(MediaItem.fromUri(Uri.parse(playUri)))
-                                            exoPlayer.prepare()
-                                            exoPlayer.play()
-                                            isPlaying = true
+                                            saveSongs(context, updated)
                                         } catch (_: Exception) {}
                                     }
-                                    duplicateConflictSong = null
                                     Toast.makeText(context, if (isKhmer) "បានជំនួសបទចាស់ដោយជោគជ័យ" else "Replaced old track successfully", Toast.LENGTH_SHORT).show()
                                 } catch (e: Exception) {
                                     duplicateConflictSong = null
-                                    Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
                                 }
                             }
                         }
@@ -5502,22 +5548,213 @@ fun NumberedTrackRowItem(
     }
 }
 
-// Search Screen
+enum class SearchTab {
+    OFFLINE,
+    ONLINE
+}
+
+fun findMatchingLocalSong(onlineResult: OnlineSearchResult, localSongs: List<SongItem>): SongItem? {
+    val cleanOnlineTitle = sanitizeTitle(onlineResult.title, onlineResult.artist).lowercase().replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+    val cleanOnlineArtist = sanitizeArtist(onlineResult.artist).lowercase().replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+    if (cleanOnlineTitle.isBlank()) return null
+    return localSongs.find { local ->
+        val cleanLocalTitle = local.title.lowercase().replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+        val cleanLocalArtist = local.artist.lowercase().replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+        if (cleanLocalTitle.isNotBlank()) {
+            val titleMatches = cleanLocalTitle == cleanOnlineTitle ||
+                    (cleanLocalTitle.length >= 4 && cleanOnlineTitle.contains(cleanLocalTitle)) ||
+                    (cleanOnlineTitle.length >= 4 && cleanLocalTitle.contains(cleanOnlineTitle))
+            val artistMatches = cleanLocalArtist.isBlank() || cleanOnlineArtist.isBlank() ||
+                    cleanLocalArtist == cleanOnlineArtist ||
+                    cleanLocalArtist.contains(cleanOnlineArtist) ||
+                    cleanOnlineArtist.contains(cleanLocalArtist)
+            titleMatches && artistMatches
+        } else {
+            false
+        }
+    }
+}
+
+@Composable
+fun OnlineTrackRowItem(
+    isKhmer: Boolean,
+    item: OnlineSearchResult,
+    localMatch: SongItem?,
+    isPlaying: Boolean,
+    isCurrent: Boolean,
+    onPlayClick: () -> Unit,
+    onDownloadClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable { onPlayClick() },
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 1.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(54.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF232733)),
+                contentAlignment = Alignment.Center
+            ) {
+                SmartArtworkImage(
+                    artworkUrl = item.artworkUrl,
+                    contentDescription = item.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                if (isCurrent && isPlaying) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.5f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        AnimatedEqualizer(
+                            barColor = Color(0xFF818CF8),
+                            isPlaying = true
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = sanitizeTitle(item.title, item.artist),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    lineHeight = 18.sp,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Spacer(modifier = Modifier.height(2.dp))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "${sanitizeArtist(item.artist)} • ${item.duration}",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+
+                    if (localMatch != null) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Color(0xFF10B981).copy(alpha = 0.15f)
+                        ) {
+                            Text(
+                                text = if (isKhmer) "បានទាញយក" else "Downloaded",
+                                color = Color(0xFF10B981),
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            IconButton(
+                onClick = onPlayClick,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    imageVector = if (isCurrent && isPlaying) Icons.Default.PauseCircle else Icons.Default.PlayCircle,
+                    contentDescription = "Play",
+                    tint = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(26.dp)
+                )
+            }
+
+            IconButton(
+                onClick = onDownloadClick,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    imageVector = if (localMatch != null) Icons.Default.CheckCircle else Icons.Default.Download,
+                    contentDescription = "Download",
+                    tint = if (localMatch != null) Color(0xFF10B981) else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+        }
+    }
+}
+
+// Search Screen with Segmented Mode (Offline / Online)
 @Composable
 fun SearchScreen(
     isKhmer: Boolean,
     query: String,
     onQueryChange: (String) -> Unit,
     songs: List<SongItem>,
+    allSongs: List<SongItem>,
     currentSong: SongItem?,
     isPlaying: Boolean,
     onSongClick: (SongItem) -> Unit,
+    onPlayOnlineTrack: (OnlineSearchResult) -> Unit,
+    onDownloadOnlineTrack: (OnlineSearchResult) -> Unit,
     onFavoriteToggle: (SongItem) -> Unit,
     onEditSong: (SongItem) -> Unit,
     onDeleteSong: (SongItem) -> Unit,
     onAddToPlaylist: (SongItem) -> Unit,
     onShareSong: (SongItem) -> Unit = {}
 ) {
+    val scope = rememberCoroutineScope()
+    var currentTab by remember { mutableStateOf(SearchTab.OFFLINE) }
+    var onlineQuery by remember { mutableStateOf("") }
+    var onlineResults by remember { mutableStateOf<List<OnlineSearchResult>>(emptyList()) }
+    var isOnlineLoading by remember { mutableStateOf(false) }
+    var hasSearchedOnline by remember { mutableStateOf(false) }
+    var onlineErrorMessage by remember { mutableStateOf<String?>(null) }
+    val client = remember { OkHttpClient() }
+
+    val executeOnlineSearch: (String) -> Unit = remember {
+        { targetQuery ->
+            val clean = targetQuery.trim()
+            if (clean.isNotBlank()) {
+                onlineQuery = clean
+                scope.launch {
+                    isOnlineLoading = true
+                    hasSearchedOnline = true
+                    onlineErrorMessage = null
+                    try {
+                        val fetched = LocalMediaExtractor.searchYouTubeTracks(clean, client, limit = 25)
+                        onlineResults = fetched
+                        if (fetched.isEmpty()) {
+                            onlineErrorMessage = if (isKhmer) "រកមិនឃើញបទចម្រៀងណាដែលត្រូវគ្នាទេ" else "No matching songs found"
+                        }
+                    } catch (e: Exception) {
+                        onlineErrorMessage = if (isKhmer) "មានបញ្ហាតភ្ជាប់អ៊ីនធឺណិត សូមព្យាយាមម្តងទៀត" else "Network error, please try again"
+                    } finally {
+                        isOnlineLoading = false
+                    }
+                }
+            }
+        }
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -5532,20 +5769,151 @@ fun SearchScreen(
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
             )
-            Spacer(modifier = Modifier.height(10.dp))
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Tab Switcher (Segmented Control)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (LocalDarkMode.current) Color(0xFF1E212B) else Color(0xFFE5E7EB))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                // Offline Tab
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .clickable { currentTab = SearchTab.OFFLINE },
+                    color = if (currentTab == SearchTab.OFFLINE) MaterialTheme.colorScheme.primary else Color.Transparent,
+                    shape = RoundedCornerShape(11.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Folder,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = if (currentTab == SearchTab.OFFLINE) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = if (isKhmer) "ក្នុងម៉ាស៊ីន (Offline)" else "Offline Tracks",
+                                fontSize = 13.sp,
+                                fontWeight = if (currentTab == SearchTab.OFFLINE) FontWeight.Bold else FontWeight.Medium,
+                                color = if (currentTab == SearchTab.OFFLINE) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                // Online Tab
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .clickable {
+                            currentTab = SearchTab.ONLINE
+                            if (onlineQuery.isBlank() && query.isNotBlank()) {
+                                onlineQuery = query
+                                executeOnlineSearch(query)
+                            }
+                        },
+                    color = if (currentTab == SearchTab.ONLINE) MaterialTheme.colorScheme.primary else Color.Transparent,
+                    shape = RoundedCornerShape(11.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Public,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = if (currentTab == SearchTab.ONLINE) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = if (isKhmer) "លើអ៊ីនធឺណិត (Online)" else "Search Online",
+                                fontSize = 13.sp,
+                                fontWeight = if (currentTab == SearchTab.ONLINE) FontWeight.Bold else FontWeight.Medium,
+                                color = if (currentTab == SearchTab.ONLINE) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Search Text Field
             OutlinedTextField(
-                value = query,
-                onValueChange = onQueryChange,
+                value = if (currentTab == SearchTab.OFFLINE) query else onlineQuery,
+                onValueChange = { newText ->
+                    if (currentTab == SearchTab.OFFLINE) {
+                        onQueryChange(newText)
+                    } else {
+                        onlineQuery = newText
+                    }
+                },
                 placeholder = {
                     Text(
-                        if (isKhmer) "ស្វែងរកតាមចំណងជើង ឬអ្នកចម្រៀង..." else "Search by title or artist...",
+                        text = if (currentTab == SearchTab.OFFLINE) {
+                            if (isKhmer) "ស្វែងរកតាមចំណងជើង ឬអ្នកចម្រៀងក្នុងម៉ាស៊ីន..." else "Search title or artist in offline library..."
+                        } else {
+                            if (isKhmer) "វាយចំណងជើង ឬអ្នកចម្រៀងដើម្បីស្វែងរកលើ internet..." else "Search songs or artists online..."
+                        },
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 },
-                leadingIcon = { Icon(imageVector = Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                trailingIcon = {
+                    val activeText = if (currentTab == SearchTab.OFFLINE) query else onlineQuery
+                    if (activeText.isNotBlank()) {
+                        IconButton(
+                            onClick = {
+                                if (currentTab == SearchTab.OFFLINE) {
+                                    onQueryChange("")
+                                } else {
+                                    onlineQuery = ""
+                                    onlineResults = emptyList()
+                                    hasSearchedOnline = false
+                                    onlineErrorMessage = null
+                                }
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Clear",
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(
+                    onSearch = {
+                        if (currentTab == SearchTab.ONLINE && onlineQuery.isNotBlank()) {
+                            executeOnlineSearch(onlineQuery)
+                        }
+                    }
+                ),
                 singleLine = true,
-                shape = RoundedCornerShape(20.dp),
+                shape = RoundedCornerShape(18.dp),
                 modifier = Modifier.fillMaxWidth(),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = MaterialTheme.colorScheme.onSurface,
@@ -5556,22 +5924,264 @@ fun SearchScreen(
                     unfocusedBorderColor = MaterialTheme.colorScheme.outline
                 )
             )
+
+            if (currentTab == SearchTab.ONLINE && onlineQuery.isNotBlank()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Button(
+                    onClick = { executeOnlineSearch(onlineQuery) },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (isKhmer) "ស្វែងរកលើអ៊ីនធឺណិតឥឡូវនេះ" else "Search Online Now",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
         }
 
-        itemsIndexed(songs) { index, song ->
-            NumberedTrackRowItem(
-                index = index + 1,
-                isKhmer = isKhmer,
-                song = song,
-                isCurrent = currentSong?.id == song.id,
-                isPlaying = isPlaying && currentSong?.id == song.id,
-                onClick = { onSongClick(song) },
-                onFavoriteToggle = { onFavoriteToggle(song) },
-                onEditSong = { onEditSong(song) },
-                onDeleteSong = { onDeleteSong(song) },
-                onAddToPlaylist = { onAddToPlaylist(song) },
-                onShareSong = { onShareSong(song) }
-            )
+        // CONTENT: OFFLINE TAB
+        if (currentTab == SearchTab.OFFLINE) {
+            if (songs.isNotEmpty()) {
+                itemsIndexed(songs) { index, song ->
+                    NumberedTrackRowItem(
+                        index = index + 1,
+                        isKhmer = isKhmer,
+                        song = song,
+                        isCurrent = currentSong?.id == song.id,
+                        isPlaying = isPlaying && currentSong?.id == song.id,
+                        onClick = { onSongClick(song) },
+                        onFavoriteToggle = { onFavoriteToggle(song) },
+                        onEditSong = { onEditSong(song) },
+                        onDeleteSong = { onDeleteSong(song) },
+                        onAddToPlaylist = { onAddToPlaylist(song) },
+                        onShareSong = { onShareSong(song) }
+                    )
+                }
+            } else if (query.isNotBlank()) {
+                item {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 16.dp),
+                        shape = RoundedCornerShape(18.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SearchOff,
+                                contentDescription = null,
+                                modifier = Modifier.size(38.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = if (isKhmer) "រកមិនឃើញក្នុងម៉ាស៊ីនទេ" else "No local tracks found",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (isKhmer) "តើអ្នកចង់ស្វែងរក «$query» លើ Internet ទេ?" else "Would you like to search '$query' online?",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Button(
+                                onClick = {
+                                    currentTab = SearchTab.ONLINE
+                                    onlineQuery = query
+                                    executeOnlineSearch(query)
+                                },
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Public,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isKhmer) "ស្វែងរកលើអ៊ីនធឺណិត" else "Search Online",
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // CONTENT: ONLINE TAB
+        if (currentTab == SearchTab.ONLINE) {
+            if (isOnlineLoading) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 40.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(
+                                color = MaterialTheme.colorScheme.primary,
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(36.dp)
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = if (isKhmer) "កំពុងស្វែងរកចម្រៀងពី Internet..." else "Searching songs online...",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            } else if (onlineResults.isNotEmpty()) {
+                item {
+                    Text(
+                        text = if (isKhmer) "លទ្ធផលស្វែងរក (${onlineResults.size} បទ)" else "Search Results (${onlineResults.size} tracks)",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+
+                items(onlineResults) { item ->
+                    val localMatch = findMatchingLocalSong(item, allSongs)
+                    val isCurrent = currentSong?.let {
+                        it.id == "yt_" + item.id || (localMatch != null && it.id == localMatch.id)
+                    } ?: false
+
+                    OnlineTrackRowItem(
+                        isKhmer = isKhmer,
+                        item = item,
+                        localMatch = localMatch,
+                        isPlaying = isPlaying,
+                        isCurrent = isCurrent,
+                        onPlayClick = { onPlayOnlineTrack(item) },
+                        onDownloadClick = { onDownloadOnlineTrack(item) }
+                    )
+                }
+            } else if (onlineErrorMessage != null) {
+                item {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 20.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = onlineErrorMessage ?: "",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Button(
+                                onClick = { executeOnlineSearch(onlineQuery) },
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(if (isKhmer) "ព្យាយាមម្តងទៀត" else "Retry")
+                            }
+                        }
+                    }
+                }
+            } else if (!hasSearchedOnline) {
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = if (isKhmer) "ពាក្យគន្លឹះពេញនិយម" else "Popular Searches",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        val suggestions = listOf("Trending", "YOASOBI", "Vannda", "Remix", "Acoustic", "Lofi")
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            suggestions.take(3).forEach { tag ->
+                                Surface(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable {
+                                            onlineQuery = tag
+                                            executeOnlineSearch(tag)
+                                        },
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text(
+                                        text = tag,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(vertical = 10.dp)
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            suggestions.drop(3).take(3).forEach { tag ->
+                                Surface(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable {
+                                            onlineQuery = tag
+                                            executeOnlineSearch(tag)
+                                        },
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text(
+                                        text = tag,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(vertical = 10.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         item { Spacer(modifier = Modifier.height(60.dp)) }

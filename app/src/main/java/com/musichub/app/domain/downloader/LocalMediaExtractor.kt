@@ -29,6 +29,15 @@ data class YouTubeMetadata(
     val thumbnailUrl: String
 )
 
+data class OnlineSearchResult(
+    val id: String,
+    val title: String,
+    val artist: String,
+    val duration: String,
+    val artworkUrl: String,
+    val webUrl: String = "https://www.youtube.com/watch?v=$id"
+)
+
 data class ExtractedMediaStream(
     val streamUrl: String,
     val userAgent: String,
@@ -133,6 +142,152 @@ object LocalMediaExtractor {
             }
         } catch (_: Exception) {}
         null
+    }
+
+    /**
+     * Searches YouTube directly and returns structured list of tracks with title, artist, duration and thumbnail.
+     */
+    suspend fun searchYouTubeTracks(
+        query: String,
+        client: OkHttpClient = OkHttpClient(),
+        limit: Int = 20
+    ): List<OnlineSearchResult> = withContext(Dispatchers.IO) {
+        if (query.isBlank()) return@withContext emptyList()
+        val results = mutableListOf<OnlineSearchResult>()
+        val seenIds = mutableSetOf<String>()
+
+        // 1. Android Innertube Protocol (Fastest, zero captcha/cookies needed)
+        try {
+            val payload = JSONObject().apply {
+                val contextObj = JSONObject().apply {
+                    val clientObj = JSONObject().apply {
+                        put("clientName", "ANDROID")
+                        put("clientVersion", "20.10.38")
+                        put("androidSdkVersion", 34)
+                        put("hl", "en")
+                        put("gl", "US")
+                    }
+                    put("client", clientObj)
+                }
+                put("context", contextObj)
+                put("query", query.trim())
+            }
+
+            val req = Request.Builder()
+                .url("https://www.youtube.com/youtubei/v1/search")
+                .header("Content-Type", "application/json")
+                .header("User-Agent", ANDROID_YT_USER_AGENT)
+                .header("X-YouTube-Client-Name", "3")
+                .header("X-YouTube-Client-Version", "20.10.38")
+                .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            val resp = client.newCall(req).execute()
+            if (resp.isSuccessful) {
+                val bodyStr = resp.body?.string() ?: ""
+                val rootJson = JSONObject(bodyStr)
+
+                fun inspect(obj: JSONObject) {
+                    val vr = obj.optJSONObject("videoRenderer") ?: obj.optJSONObject("compactVideoRenderer")
+                    if (vr != null) {
+                        val vid = vr.optString("videoId")
+                        if (vid.isNotBlank() && vid.length == 11 && seenIds.add(vid)) {
+                            val titleRuns = vr.optJSONObject("title")?.optJSONArray("runs")
+                            val rawTitle = if (titleRuns != null && titleRuns.length() > 0) {
+                                titleRuns.getJSONObject(0).optString("text")
+                            } else {
+                                vr.optJSONObject("title")?.optString("simpleText", "") ?: ""
+                            }
+
+                            val artistRuns = (vr.optJSONObject("longBylineText")
+                                ?: vr.optJSONObject("ownerText")
+                                ?: vr.optJSONObject("shortBylineText"))?.optJSONArray("runs")
+                            val rawArtist = if (artistRuns != null && artistRuns.length() > 0) {
+                                artistRuns.getJSONObject(0).optString("text")
+                            } else {
+                                "YouTube"
+                            }
+
+                            val dur = vr.optJSONObject("lengthText")?.optString("simpleText") ?: "3:30"
+
+                            val thumbs = vr.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+                            val thumbUrl = if (thumbs != null && thumbs.length() > 0) {
+                                thumbs.getJSONObject(thumbs.length() - 1).optString("url")
+                            } else {
+                                "https://i.ytimg.com/vi/$vid/hqdefault.jpg"
+                            }
+
+                            if (rawTitle.isNotBlank()) {
+                                results.add(
+                                    OnlineSearchResult(
+                                        id = vid,
+                                        title = rawTitle.trim(),
+                                        artist = rawArtist.trim(),
+                                        duration = dur,
+                                        artworkUrl = thumbUrl
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
+                fun scan(item: Any?) {
+                    if (results.size >= limit) return
+                    when (item) {
+                        is JSONObject -> {
+                            inspect(item)
+                            val it = item.keys()
+                            while (it.hasNext()) {
+                                val k = it.next()
+                                scan(item.opt(k))
+                            }
+                        }
+                        is org.json.JSONArray -> {
+                            for (i in 0 until item.length()) {
+                                scan(item.opt(i))
+                            }
+                        }
+                    }
+                }
+
+                scan(rootJson)
+            }
+        } catch (_: Exception) {}
+
+        // 2. Web Search Fallback if empty
+        if (results.isEmpty()) {
+            try {
+                val clean = URLEncoder.encode(query.trim(), "UTF-8")
+                val searchUrl = "https://www.youtube.com/results?search_query=$clean"
+                val req = Request.Builder()
+                    .url(searchUrl)
+                    .header("User-Agent", USER_AGENT)
+                    .build()
+                val resp = client.newCall(req).execute()
+                if (resp.isSuccessful) {
+                    val html = resp.body?.string() ?: ""
+                    val pattern = Pattern.compile("\"videoId\"\\s*:\\s*\"([a-zA-Z0-9_-]{11})\"")
+                    val matcher = pattern.matcher(html)
+                    while (matcher.find() && results.size < limit) {
+                        val vid = matcher.group(1)
+                        if (vid != null && seenIds.add(vid)) {
+                            results.add(
+                                OnlineSearchResult(
+                                    id = vid,
+                                    title = "Audio ($vid)",
+                                    artist = "YouTube",
+                                    duration = "3:30",
+                                    artworkUrl = "https://i.ytimg.com/vi/$vid/hqdefault.jpg"
+                                )
+                            )
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        results.take(limit)
     }
 
     /**
