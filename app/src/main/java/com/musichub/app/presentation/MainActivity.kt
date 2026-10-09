@@ -1522,7 +1522,7 @@ suspend fun downloadAudioToStorage(
         durationSec = durSec,
         artworkUrl = finalArtwork,
         uriString = savedUriString,
-        format = format,
+        format = if (format.equals("MP4", true)) "MP4" else "MP3",
         isFavorite = false
     )
 }
@@ -2490,7 +2490,7 @@ fun MusicHubApp() {
                                     durationSec = 30,
                                     artworkUrl = track.artworkUrl,
                                     uriString = preview,
-                                    format = "M4A",
+                                    format = "MP3",
                                     isFavorite = false
                                 )
                                 activePlaylistId = null
@@ -2504,7 +2504,7 @@ fun MusicHubApp() {
                                     artist = track.artist,
                                     thumbnail = track.artworkUrl,
                                     fallbackAudioUrl = "",
-                                    autoStart = true
+                                    autoStart = false
                                 )
                                 showDownloadModal = true
                             }
@@ -2516,7 +2516,7 @@ fun MusicHubApp() {
                                 artist = track.artist,
                                 thumbnail = track.artworkUrl,
                                 fallbackAudioUrl = track.previewUrl ?: "",
-                                autoStart = true
+                                autoStart = false
                             )
                             showDownloadModal = true
                         },
@@ -2578,47 +2578,71 @@ fun MusicHubApp() {
                                     isPlaying = true
                                 }
                             } else {
-                                if (currentSong?.id == "yt_" + onlineTrack.id) {
+                                val trackStreamId = "stream_" + onlineTrack.id
+                                if (currentSong?.id == trackStreamId) {
                                     togglePlayPause()
                                 } else {
-                                    scope.launch {
+                                    val preview = onlineTrack.previewUrl
+                                    if (!preview.isNullOrBlank()) {
+                                        val streamSong = SongItem(
+                                            id = trackStreamId,
+                                            title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
+                                            artist = sanitizeArtist(onlineTrack.artist),
+                                            album = "Sample Preview",
+                                            duration = "0:30",
+                                            durationSec = 30,
+                                            artworkUrl = onlineTrack.artworkUrl,
+                                            uriString = preview,
+                                            format = "MP3",
+                                            isFavorite = false
+                                        )
+                                        activePlaylistId = null
+                                        currentSong = streamSong
+                                        isPlaying = true
                                         Toast.makeText(
                                             context,
-                                            if (isKhmer) "កំពុងតភ្ជាប់សំឡេង៖ ${onlineTrack.title}" else "Connecting audio: ${onlineTrack.title}",
+                                            if (isKhmer) "កំពុងចាក់សាកល្បង៖ ${onlineTrack.title}" else "Preview playing: ${onlineTrack.title}",
                                             Toast.LENGTH_SHORT
                                         ).show()
-                                        try {
-                                            val stream = LocalMediaExtractor.extractStreamDirect(onlineTrack.id, OkHttpClient()).firstOrNull()
-                                                ?: LocalMediaExtractor.extractStreamUrl(context, onlineTrack.id, OkHttpClient())
-                                            if (stream != null && stream.streamUrl.isNotBlank()) {
-                                                val streamSong = SongItem(
-                                                    id = "yt_" + onlineTrack.id,
-                                                    title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
-                                                    artist = sanitizeArtist(onlineTrack.artist),
-                                                    album = "Online Stream",
-                                                    duration = onlineTrack.duration,
-                                                    durationSec = 210,
-                                                    artworkUrl = onlineTrack.artworkUrl,
-                                                    uriString = stream.streamUrl,
-                                                    format = "M4A",
-                                                    isFavorite = false
-                                                )
-                                                activePlaylistId = null
-                                                currentSong = streamSong
-                                                isPlaying = true
-                                            } else {
+                                    } else {
+                                        scope.launch {
+                                            Toast.makeText(
+                                                context,
+                                                if (isKhmer) "កំពុងតភ្ជាប់សំឡេងសាកល្បង៖ ${onlineTrack.title}" else "Loading preview: ${onlineTrack.title}",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                            try {
+                                                val resolvedPreview = LocalMediaExtractor.fetchPreviewUrl(onlineTrack.title, onlineTrack.artist)
+                                                if (!resolvedPreview.isNullOrBlank()) {
+                                                    val streamSong = SongItem(
+                                                        id = trackStreamId,
+                                                        title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
+                                                        artist = sanitizeArtist(onlineTrack.artist),
+                                                        album = "Sample Preview",
+                                                        duration = "0:30",
+                                                        durationSec = 30,
+                                                        artworkUrl = onlineTrack.artworkUrl,
+                                                        uriString = resolvedPreview,
+                                                        format = "MP3",
+                                                        isFavorite = false
+                                                    )
+                                                    activePlaylistId = null
+                                                    currentSong = streamSong
+                                                    isPlaying = true
+                                                } else {
+                                                    Toast.makeText(
+                                                        context,
+                                                        if (isKhmer) "មិនមានសំឡេងសាកល្បងទេ សូមចុច Download ដើម្បីទាញយកស្ដាប់" else "No preview available, please tap Download",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
+                                            } catch (e: Exception) {
                                                 Toast.makeText(
                                                     context,
-                                                    if (isKhmer) "មិនអាចចាក់បទនេះបានទេ សូមសាកល្បងម្ដងទៀត" else "Cannot stream track, please try again",
+                                                    if (isKhmer) "មិនអាចចាក់បទនេះបានទេ" else "Cannot stream track",
                                                     Toast.LENGTH_SHORT
                                                 ).show()
                                             }
-                                        } catch (e: Exception) {
-                                            Toast.makeText(
-                                                context,
-                                                if (isKhmer) "មិនអាចចាក់បទនេះបានទេ" else "Cannot stream track",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
                                         }
                                     }
                                 }
@@ -2626,12 +2650,12 @@ fun MusicHubApp() {
                         },
                         onDownloadOnlineTrack = { onlineTrack ->
                             downloadPrefill = DownloadPrefill(
-                                url = onlineTrack.webUrl,
+                                url = if (onlineTrack.webUrl.startsWith("http")) onlineTrack.webUrl else "${onlineTrack.artist} - ${onlineTrack.title}",
                                 title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
                                 artist = sanitizeArtist(onlineTrack.artist),
                                 thumbnail = onlineTrack.artworkUrl,
-                                fallbackAudioUrl = "",
-                                autoStart = true
+                                fallbackAudioUrl = onlineTrack.previewUrl ?: "",
+                                autoStart = false
                             )
                             showDownloadModal = true
                         },
@@ -5723,7 +5747,7 @@ fun SearchScreen(
                     hasSearchedOnline = true
                     onlineErrorMessage = null
                     try {
-                        val fetched = LocalMediaExtractor.searchYouTubeTracks(clean, client, limit = 25)
+                        val fetched = LocalMediaExtractor.searchOnlineTracks(clean, client, limit = 25)
                         onlineResults = fetched
                         if (fetched.isEmpty()) {
                             onlineErrorMessage = if (isKhmer) "រកមិនឃើញបទចម្រៀងណាដែលត្រូវគ្នាទេ" else "No matching songs found"
@@ -7688,12 +7712,13 @@ fun MediaLinkDownloadDialog(
             if (!isDownloading) {
                 Button(
                     onClick = {
-                        if (urlText.isNotBlank()) {
+                        val finalUrl = urlText.ifBlank { "$customArtist - $customTitle" }.trim()
+                        if (finalUrl.isNotBlank()) {
                             isDownloading = true
                             downloadPercentage = 5
                             downloadErrorMessage = null
                             onDownloadSubmit(
-                                urlText,
+                                finalUrl,
                                 selectedFormat,
                                 customTitle.ifBlank { "Track ${System.currentTimeMillis() % 1000}" },
                                 customArtist.ifBlank { "Web Media" },

@@ -35,7 +35,8 @@ data class OnlineSearchResult(
     val artist: String,
     val duration: String,
     val artworkUrl: String,
-    val webUrl: String = "https://www.youtube.com/watch?v=$id"
+    val webUrl: String = "https://www.youtube.com/watch?v=$id",
+    val previewUrl: String? = null
 )
 
 data class ExtractedMediaStream(
@@ -288,6 +289,100 @@ object LocalMediaExtractor {
         }
 
         results.take(limit)
+    }
+
+    /**
+     * Comprehensive online track search combining iTunes (crystal-clear 30s studio preview like Recommend)
+     * and YouTube tracks, ensuring every track can be previewed seamlessly and downloaded as MP3.
+     */
+    suspend fun searchOnlineTracks(
+        query: String,
+        client: OkHttpClient = OkHttpClient(),
+        limit: Int = 25
+    ): List<OnlineSearchResult> = withContext(Dispatchers.IO) {
+        val clean = query.trim()
+        if (clean.isBlank()) return@withContext emptyList()
+        val results = mutableListOf<OnlineSearchResult>()
+        val seenSignatures = mutableSetOf<String>()
+
+        // 1. Search iTunes for official studio tracks with crystal-clear 30s preview snippet (like Recommend!)
+        try {
+            val itunesUrl = "https://itunes.apple.com/search?term=${URLEncoder.encode(clean, "UTF-8")}&entity=song&limit=15"
+            val req = Request.Builder()
+                .url(itunesUrl)
+                .header("User-Agent", USER_AGENT)
+                .build()
+            val resp = client.newCall(req).execute()
+            if (resp.isSuccessful) {
+                val body = resp.body?.string() ?: ""
+                val json = JSONObject(body)
+                val array = json.optJSONArray("results") ?: org.json.JSONArray()
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    val title = obj.optString("trackName", "")
+                    val artist = obj.optString("artistName", "")
+                    val preview = obj.optString("previewUrl", "")
+                    val art100 = obj.optString("artworkUrl100", "")
+                    val artHd = art100.replace("100x100bb.jpg", "600x600bb.jpg")
+                    val durMs = obj.optLong("trackTimeMillis", 0L)
+                    val durSec = durMs / 1000
+                    val durStr = if (durSec > 0) "%d:%02d".format(durSec / 60, durSec % 60) else "3:30"
+                    val sig = (title + artist).lowercase().replace(Regex("[^\\p{L}\\p{Nd}]"), "")
+
+                    if (title.isNotBlank() && seenSignatures.add(sig)) {
+                        results.add(
+                            OnlineSearchResult(
+                                id = "itunes_" + obj.optLong("trackId", System.currentTimeMillis()),
+                                title = title,
+                                artist = artist,
+                                duration = durStr,
+                                artworkUrl = artHd,
+                                webUrl = "$artist - $title",
+                                previewUrl = preview.ifBlank { null }
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 2. Also search YouTube for tracks (remixes, live, acoustic)
+        try {
+            val ytTracks = searchYouTubeTracks(clean, client, limit = 15)
+            for (yt in ytTracks) {
+                val sig = (yt.title + yt.artist).lowercase().replace(Regex("[^\\p{L}\\p{Nd}]"), "")
+                if (seenSignatures.add(sig)) {
+                    results.add(yt)
+                }
+            }
+        } catch (_: Exception) {}
+
+        results.take(limit)
+    }
+
+    /**
+     * Resolves a fast 30s studio audio preview for any track title and artist.
+     */
+    suspend fun fetchPreviewUrl(title: String, artist: String, client: OkHttpClient = OkHttpClient()): String? = withContext(Dispatchers.IO) {
+        try {
+            val q = "$artist $title".trim()
+            val itunesUrl = "https://itunes.apple.com/search?term=${URLEncoder.encode(q, "UTF-8")}&entity=song&limit=1"
+            val req = Request.Builder()
+                .url(itunesUrl)
+                .header("User-Agent", USER_AGENT)
+                .build()
+            val resp = client.newCall(req).execute()
+            if (resp.isSuccessful) {
+                val body = resp.body?.string() ?: ""
+                val json = JSONObject(body)
+                val array = json.optJSONArray("results")
+                if (array != null && array.length() > 0) {
+                    val p = array.getJSONObject(0).optString("previewUrl", "")
+                    if (p.isNotBlank()) return@withContext p
+                }
+            }
+        } catch (_: Exception) {}
+        null
     }
 
     /**
