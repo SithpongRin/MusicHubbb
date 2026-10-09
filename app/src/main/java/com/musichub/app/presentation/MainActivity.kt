@@ -847,18 +847,13 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
             }
         }
 
-        // 3. Acoustic Waveform Fingerprint Verification (Acoustic Wave Matching)
-        // If durations are close (within 28s) and titles share keywords or artists match, verify PCM waveforms
-        val durDiff = if (a.durationSec > 0 && b.durationSec > 0) kotlin.math.abs(a.durationSec - b.durationSec) else 0
-        if (durDiff <= 28 && (aTitleClean.contains(bTitleClean) || bTitleClean.contains(aTitleClean) || aTitleClean.take(4) == bTitleClean.take(4) || artistsMatch)) {
-            val isWaveMatch = AudioWaveformFingerprinter.areAudioWaveformsMatching(
-                context,
-                a.uriString,
-                a.durationSec,
-                b.uriString,
-                b.durationSec
-            )
-            if (isWaveMatch) return true
+        // 3. One artist is unknown / MusicHub, and title is contained in the other with close duration (within 15s)
+        if ((aArtClean.isBlank() || aArtClean == "musichub" || bArtClean.isBlank() || bArtClean == "musichub") &&
+            (aTitleClean == bTitleClean || aTitleClean.contains(bTitleClean) || bTitleClean.contains(aTitleClean))) {
+            if (a.durationSec > 0 && b.durationSec > 0) {
+                return kotlin.math.abs(a.durationSec - b.durationSec) <= 15
+            }
+            return true
         }
 
         return false
@@ -1524,7 +1519,7 @@ fun MusicHubApp() {
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf("All") }
 
-    var songsList by remember { mutableStateOf(restoreAndSyncLibrary(context)) }
+    var songsList by remember { mutableStateOf(loadSavedSongs(context)) }
     var playlists by remember { mutableStateOf(loadSavedPlaylists(context)) }
     var viewingPlaylist by remember { mutableStateOf<PlaylistItem?>(null) }
     var viewingArtist by remember { mutableStateOf<Pair<String, List<SongItem>>?>(null) }
@@ -1575,10 +1570,26 @@ fun MusicHubApp() {
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
-        songsList = restoreAndSyncLibrary(context)
+        scope.launch(Dispatchers.IO) {
+            try {
+                val synced = restoreAndSyncLibrary(context)
+                withContext(Dispatchers.Main) {
+                    songsList = synced
+                }
+            } catch (e: Exception) {}
+        }
     }
 
     LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            try {
+                val synced = restoreAndSyncLibrary(context)
+                withContext(Dispatchers.Main) {
+                    songsList = synced
+                }
+            } catch (e: Exception) {}
+        }
+
         val perms = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -2484,8 +2495,13 @@ fun MusicHubApp() {
                         onAddToPlaylist = { song -> playlistForAddSong = song },
                         onShareSong = { song -> shareSongFile(context, song) },
                         onRescanLibrary = {
-                            songsList = restoreAndSyncLibrary(context)
-                            Toast.makeText(context, if (isKhmer) "បានស្កេន និងផ្គូផ្គង Waveform បណ្ណាល័យ (${songsList.size} បទ)" else "Library updated via Waveform Scan (${songsList.size} tracks)", Toast.LENGTH_SHORT).show()
+                            scope.launch(Dispatchers.IO) {
+                                val synced = restoreAndSyncLibrary(context)
+                                withContext(Dispatchers.Main) {
+                                    songsList = synced
+                                    Toast.makeText(context, if (isKhmer) "បានធ្វើបច្ចុប្បន្នភាពបណ្ណាល័យ (${songsList.size} បទ)" else "Library updated (${songsList.size} tracks)", Toast.LENGTH_SHORT).show()
+                                }
+                            }
                         }
                     )
                     Screen.SETTINGS -> SettingsScreen(
