@@ -91,11 +91,34 @@ object LocalMediaExtractor {
                     val cleanArt = author
                         .replace(Regex("(?i)\\s*-\\s*topic$"), "")
                         .replace(Regex("(?i)\\s*topic$"), "")
+                        .replace(Regex("(?i)\\b(vevo|official channel|official)\\b"), "")
                         .trim()
+                        .trim('-', ' ', ':')
                         .ifBlank { "YouTube" }
-                    val cleanTit = rawTitle
+                    var cleanTit = rawTitle
                         .replace(Regex("(?i)^topic\\s*[-:]\\s*"), "")
+                        .replace(Regex("(?i)\\s*-\\s*topic$"), "")
+                        .replace(Regex("(?i)\\s*\\(official(\\s+music)?\\s+(video|audio)\\)"), "")
+                        .replace(Regex("(?i)\\s*\\[official(\\s+music)?\\s+(video|audio)\\]"), "")
+                        .replace(Regex("(?i)\\s*\\(audio\\)"), "")
+                        .replace(Regex("(?i)\\s*\\[audio\\]"), "")
+                        .replace(Regex("(?i)\\s*\\(video\\)"), "")
+                        .replace(Regex("(?i)\\s*\\[video\\]"), "")
+                        .replace(Regex("(?i)\\s*\\(visualizer\\)"), "")
+                        .replace(Regex("(?i)\\s*\\[visualizer\\]"), "")
+                        .replace(Regex("(?i)\\s*\\(mv\\)"), "")
+                        .replace(Regex("(?i)\\s*\\[mv\\]"), "")
+                        .replace(Regex("(?i)\\s*\\(lyrics?\\)"), "")
+                        .replace(Regex("(?i)\\s*\\[lyrics?\\]"), "")
                         .trim()
+
+                    if (cleanArt != "YouTube" && cleanTit.startsWith("$cleanArt - ", ignoreCase = true)) {
+                        cleanTit = cleanTit.substring("$cleanArt - ".length).trim()
+                    } else if (cleanArt != "YouTube" && cleanTit.startsWith("$cleanArt: ", ignoreCase = true)) {
+                        cleanTit = cleanTit.substring("$cleanArt: ".length).trim()
+                    }
+
+                    cleanTit = cleanTit.trim('-', ' ', ':').ifBlank { rawTitle }
 
                     return@withContext YouTubeMetadata(
                         title = cleanTit,

@@ -307,35 +307,59 @@ fun findExistingAudioUri(context: Context, song: SongItem, publicDir: File): Str
     // 1. Check existing URI
     if (song.uriString.isNotBlank()) {
         try {
-            val u = Uri.parse(song.uriString)
             if (song.uriString.startsWith("content://")) {
                 return song.uriString
             } else if (song.uriString.startsWith("file://")) {
-                val f = File(u.path ?: "")
+                val f = File(Uri.parse(song.uriString).path ?: "")
                 if (f.exists() && f.length() > 512) return song.uriString
+            } else {
+                val f = File(song.uriString)
+                if (f.exists() && f.length() > 512) return Uri.fromFile(f).toString()
             }
         } catch (e: Exception) {}
     }
 
-    // 2. Look in Music/MusicHub/Songs and Music/MusicHub root
+    // 2. Look in Music/MusicHub/Songs and Music/MusicHub root and external storage
     val songsDir = MusicHubStorage.getSongsDir()
     val cleanArtist = song.artist.trim().replace(Regex("[/\\\\:*?\"<>|]"), " ").trim()
     val cleanTitle = song.title.trim().replace(Regex("[/\\\\:*?\"<>|]"), " ").trim()
-    val searchDirs = listOf(songsDir, publicDir)
+    val searchDirs = listOfNotNull(
+        songsDir,
+        publicDir,
+        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
+        context.getExternalFilesDir(Environment.DIRECTORY_MUSIC),
+        File(context.filesDir, "music")
+    )
 
     for (dir in searchDirs) {
-        if (!dir.exists()) continue
+        if (!dir.exists() || !dir.isDirectory) continue
         val candidates = listOf(
             File(dir, "$cleanArtist - $cleanTitle.${song.format.lowercase()}"),
             File(dir, "$cleanArtist - $cleanTitle.mp3"),
             File(dir, "$cleanArtist - $cleanTitle.m4a"),
             File(dir, "$cleanArtist - $cleanTitle.mp4"),
             File(dir, "$cleanTitle.${song.format.lowercase()}"),
-            File(dir, "$cleanTitle.mp3")
+            File(dir, "$cleanTitle.mp3"),
+            File(dir, "$cleanTitle.m4a"),
+            File(dir, "$cleanArtist - Topic - $cleanTitle.mp3"),
+            File(dir, "Topic - $cleanTitle.mp3")
         )
         for (f in candidates) {
             if (f.exists() && f.length() > 512) {
                 return Uri.fromFile(f).toString()
+            }
+        }
+
+        // Match files in directory by title
+        val files = dir.listFiles() ?: emptyArray()
+        for (f in files) {
+            if (f.isFile && f.length() > 512) {
+                val nameWithoutExt = f.nameWithoutExtension.lowercase()
+                val cleanCandidateName = nameWithoutExt.replace(Regex("(?i)\\btopic\\b"), "").replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+                val cleanSongTitle = song.title.lowercase().replace(Regex("(?i)\\btopic\\b"), "").replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+                if (cleanSongTitle.isNotBlank() && (cleanCandidateName == cleanSongTitle || cleanCandidateName.contains(cleanSongTitle) || cleanSongTitle.contains(cleanCandidateName))) {
+                    return Uri.fromFile(f).toString()
+                }
             }
         }
     }
@@ -345,10 +369,11 @@ fun findExistingAudioUri(context: Context, song: SongItem, publicDir: File): Str
 
 fun sanitizeArtist(rawArtist: String): String {
     var artist = rawArtist.trim()
-    artist = artist.replace(Regex("(?i)\\s*-\\s*topic\\b"), "")
+    artist = artist.replace(Regex("(?i)\\s*-\\s*topic$"), "")
+    artist = artist.replace(Regex("(?i)^topic\\s*-\\s*"), "")
     artist = artist.replace(Regex("(?i)\\btopic\\b"), "")
     artist = artist.replace(Regex("(?i)\\b(vevo|official channel|official)\\b"), "")
-    artist = artist.trim().replace(Regex("\\s+"), " ")
+    artist = artist.trim().replace(Regex("\\s+"), " ").trim('-', ' ', ':')
     return if (artist.isBlank() || artist.equals("MusicHub", ignoreCase = true) || artist.equals("<unknown>", ignoreCase = true)) {
         "MusicHub"
     } else {
@@ -356,9 +381,10 @@ fun sanitizeArtist(rawArtist: String): String {
     }
 }
 
-fun sanitizeTitle(rawTitle: String): String {
+fun sanitizeTitle(rawTitle: String, artistHint: String = ""): String {
     var title = rawTitle.trim()
     title = title.replace(Regex("(?i)^topic\\s*[-:]\\s*"), "")
+    title = title.replace(Regex("(?i)\\s*-\\s*topic$"), "")
     title = title
         .replace(Regex("(?i)\\s*\\(official(\\s+music)?\\s+(video|audio)\\)"), "")
         .replace(Regex("(?i)\\s*\\[official(\\s+music)?\\s+(video|audio)\\]"), "")
@@ -366,20 +392,38 @@ fun sanitizeTitle(rawTitle: String): String {
         .replace(Regex("(?i)\\s*\\[audio\\]"), "")
         .replace(Regex("(?i)\\s*\\(video\\)"), "")
         .replace(Regex("(?i)\\s*\\[video\\]"), "")
+        .replace(Regex("(?i)\\s*\\(official\\)"), "")
+        .replace(Regex("(?i)\\s*\\[official\\]"), "")
         .replace(Regex("(?i)\\s*\\(lyrics?\\)"), "")
         .replace(Regex("(?i)\\s*\\[lyrics?\\]"), "")
         .replace(Regex("(?i)\\s*\\(visualizer\\)"), "")
         .replace(Regex("(?i)\\s*\\[visualizer\\]"), "")
         .replace(Regex("(?i)\\s*\\(mv\\)"), "")
         .replace(Regex("(?i)\\s*\\[mv\\]"), "")
-    title = title.trim().replace(Regex("\\s+"), " ")
+        .replace(Regex("(?i)\\s*\\(hd\\)"), "")
+        .replace(Regex("(?i)\\s*\\[hd\\]"), "")
+        .replace(Regex("(?i)\\s*\\(4k\\)"), "")
+        .replace(Regex("(?i)\\s*\\[4k\\]"), "")
+
+    // Strip artist prefix if present (e.g. "Song Ji Eun - Twenty-Five" -> "Twenty-Five")
+    if (artistHint.isNotBlank() && !artistHint.equals("MusicHub", ignoreCase = true)) {
+        val trimmedArt = artistHint.trim()
+        if (title.startsWith("$trimmedArt - ", ignoreCase = true)) {
+            title = title.substring("$trimmedArt - ".length)
+        } else if (title.startsWith("$trimmedArt: ", ignoreCase = true)) {
+            title = title.substring("$trimmedArt: ".length)
+        } else if (title.startsWith("$trimmedArt | ", ignoreCase = true)) {
+            title = title.substring("$trimmedArt | ".length)
+        }
+    }
+
+    title = title.trim().replace(Regex("\\s+"), " ").trim('-', ' ', ':')
     return if (title.isBlank()) "Track" else title
 }
 
 fun restoreAndSyncLibrary(context: Context): List<SongItem> {
     val resultList = mutableListOf<SongItem>()
     val seenFilePaths = mutableSetOf<String>()
-    val seenFileNames = mutableSetOf<String>()
     val deletedSignatures = getDeletedSongSignatures(context)
 
     fun isSongDeleted(uri: String): Boolean {
@@ -405,16 +449,15 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
     val songsSubDir = MusicHubStorage.getSongsDir()
     val coversSubDir = MusicHubStorage.getCoversDir()
 
-    // 1. SharedPreferences
+    // 1. SharedPreferences (Active songs previously saved)
     val prefSongs = loadSavedSongs(context)
     for (s in prefSongs) {
         val cleanArtist = sanitizeArtist(s.artist)
-        val cleanTitle = sanitizeTitle(s.title)
-        if (isSongDeleted(s.uriString)) continue
+        val cleanTitle = sanitizeTitle(s.title, cleanArtist)
         val validUri = findExistingAudioUri(context, s, publicDir) ?: s.uriString
         val canonPath = getCanonicalPath(validUri)
 
-        if (seenFilePaths.add(canonPath)) {
+        if (canonPath.isBlank() || seenFilePaths.add(canonPath)) {
             var art = s.artworkUrl
             val companionArt = File(coversSubDir, "$cleanArtist - $cleanTitle.jpg")
             val rootArt = File(publicDir, "$cleanArtist - $cleanTitle.jpg")
@@ -442,12 +485,11 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
                 val manifestSongs = parseSongsFromJson(manifestFile.readText())
                 for (s in manifestSongs) {
                     val cleanArtist = sanitizeArtist(s.artist)
-                    val cleanTitle = sanitizeTitle(s.title)
-                    if (isSongDeleted(s.uriString)) continue
+                    val cleanTitle = sanitizeTitle(s.title, cleanArtist)
                     val validUri = findExistingAudioUri(context, s, publicDir) ?: s.uriString
                     val canonPath = getCanonicalPath(validUri)
 
-                    if (seenFilePaths.add(canonPath)) {
+                    if (canonPath.isBlank() || seenFilePaths.add(canonPath)) {
                         var art = s.artworkUrl
                         val companionArt = File(coversSubDir, "$cleanArtist - $cleanTitle.jpg")
                         val rootArt = File(publicDir, "$cleanArtist - $cleanTitle.jpg")
@@ -503,15 +545,18 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
             val baseName = file.nameWithoutExtension
             val ext = file.extension.uppercase()
 
-            // Normalize baseName by removing " - Topic - " or "- Topic -"
-            val normalizedBase = baseName.replace(Regex("(?i)\\s*-\\s*topic\\s*-\\s*"), " - ").trim()
+            // Normalize baseName by removing topic markers
+            val normalizedBase = baseName
+                .replace(Regex("(?i)\\s*-\\s*topic\\s*-\\s*"), " - ")
+                .replace(Regex("(?i)^topic\\s*-\\s*"), "")
+                .trim()
             var parsedArtist = "MusicHub"
             var parsedTitle = normalizedBase
 
             if (normalizedBase.contains(" - ")) {
                 val parts = normalizedBase.split(" - ", limit = 2)
                 parsedArtist = sanitizeArtist(parts.getOrNull(0) ?: "MusicHub")
-                parsedTitle = sanitizeTitle(parts.getOrNull(1) ?: normalizedBase)
+                parsedTitle = sanitizeTitle(parts.getOrNull(1) ?: normalizedBase, parsedArtist)
             } else {
                 parsedTitle = sanitizeTitle(normalizedBase)
             }
@@ -538,18 +583,18 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
                     durSec = (d / 1000).toInt()
                     durStr = "%d:%02d".format(durSec / 60, durSec % 60)
                 }
-                val tagTitle = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
                 val tagArtist = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
-                if (!tagTitle.isNullOrBlank()) {
-                    val cleanTagTitle = sanitizeTitle(tagTitle)
-                    if (cleanTagTitle.isNotBlank() && cleanTagTitle != "Track") {
-                        parsedTitle = cleanTagTitle
-                    }
-                }
+                val tagTitle = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
                 if (!tagArtist.isNullOrBlank()) {
                     val cleanTagArt = sanitizeArtist(tagArtist)
                     if (cleanTagArt.isNotBlank() && cleanTagArt != "MusicHub") {
                         parsedArtist = cleanTagArt
+                    }
+                }
+                if (!tagTitle.isNullOrBlank()) {
+                    val cleanTagTitle = sanitizeTitle(tagTitle, parsedArtist)
+                    if (cleanTagTitle.isNotBlank() && cleanTagTitle != "Track") {
+                        parsedTitle = cleanTagTitle
                     }
                 }
                 if (artUri.isBlank()) {
@@ -566,7 +611,17 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
             } catch (e: Exception) {}
 
             parsedArtist = sanitizeArtist(parsedArtist)
-            parsedTitle = sanitizeTitle(parsedTitle)
+            parsedTitle = sanitizeTitle(parsedTitle, parsedArtist)
+
+            if (parsedArtist == "MusicHub" && parsedTitle.contains(" - ")) {
+                val parts = parsedTitle.split(" - ", limit = 2)
+                val maybeArt = sanitizeArtist(parts[0])
+                val maybeTit = sanitizeTitle(parts[1], maybeArt)
+                if (maybeArt != "MusicHub" && maybeTit != "Track") {
+                    parsedArtist = maybeArt
+                    parsedTitle = maybeTit
+                }
+            }
 
             if (isSongDeleted(fileUri)) continue
 
@@ -588,33 +643,149 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
         }
     }
 
-    // 4. Clean, Merge & De-duplicate: Keep the version with highest quality metadata
+    // 4. Scan Android MediaStore Audio library to recover any missing tracks on device
+    try {
+        val projection = arrayOf(
+            MediaStore.Audio.Media._ID,
+            MediaStore.Audio.Media.TITLE,
+            MediaStore.Audio.Media.ARTIST,
+            MediaStore.Audio.Media.DATA,
+            MediaStore.Audio.Media.DURATION,
+            MediaStore.Audio.Media.ALBUM
+        )
+        val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0 OR ${MediaStore.Audio.Media.DATA} LIKE '%Music%' OR ${MediaStore.Audio.Media.DATA} LIKE '%Download%'"
+        context.contentResolver.query(
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+            projection,
+            selection,
+            null,
+            "${MediaStore.Audio.Media.DATE_ADDED} DESC"
+        )?.use { cursor ->
+            val idCol = cursor.getColumnIndex(MediaStore.Audio.Media._ID)
+            val titleCol = cursor.getColumnIndex(MediaStore.Audio.Media.TITLE)
+            val artistCol = cursor.getColumnIndex(MediaStore.Audio.Media.ARTIST)
+            val dataCol = cursor.getColumnIndex(MediaStore.Audio.Media.DATA)
+            val durCol = cursor.getColumnIndex(MediaStore.Audio.Media.DURATION)
+            val albumCol = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM)
+
+            while (cursor.moveToNext()) {
+                val mediaId = if (idCol >= 0) cursor.getLong(idCol) else -1L
+                val path = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else ""
+                val rawTitle = if (titleCol >= 0) cursor.getString(titleCol) ?: "" else ""
+                val rawArtist = if (artistCol >= 0) cursor.getString(artistCol) ?: "" else ""
+                val durationMs = if (durCol >= 0) cursor.getLong(durCol) else 0L
+                val album = if (albumCol >= 0) cursor.getString(albumCol) ?: "MusicHub" else "MusicHub"
+
+                if (durationMs in 1..14999) continue
+
+                val contentUri = if (mediaId >= 0) {
+                    ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, mediaId).toString()
+                } else if (path.isNotBlank()) {
+                    Uri.fromFile(File(path)).toString()
+                } else ""
+
+                if (contentUri.isBlank()) continue
+                if (isSongDeleted(contentUri)) continue
+                if (path.isNotBlank()) {
+                    val f = File(path)
+                    if (!f.exists() || f.length() < 1024) continue
+                    val canon = try { f.canonicalPath.lowercase() } catch (e: Exception) { path.lowercase() }
+                    if (canon in seenFilePaths) continue
+                    seenFilePaths.add(canon)
+                }
+
+                var cleanArt = sanitizeArtist(rawArtist)
+                var cleanTit = sanitizeTitle(rawTitle, cleanArt)
+                if (cleanArt == "MusicHub" && cleanTit.contains(" - ")) {
+                    val parts = cleanTit.split(" - ", limit = 2)
+                    cleanArt = sanitizeArtist(parts[0])
+                    cleanTit = sanitizeTitle(parts[1], cleanArt)
+                }
+
+                val durSec = (durationMs / 1000).toInt()
+                val durStr = "%d:%02d".format(durSec / 60, durSec % 60)
+
+                resultList.add(
+                    SongItem(
+                        id = UUID.randomUUID().toString(),
+                        title = cleanTit,
+                        artist = cleanArt,
+                        album = if (album.isNotBlank() && album != "<unknown>") album else "MusicHub",
+                        duration = durStr,
+                        durationSec = durSec,
+                        artworkUrl = "",
+                        uriString = contentUri,
+                        format = if (path.contains(".")) path.substringAfterLast(".").uppercase() else "MP3",
+                        isFavorite = false
+                    )
+                )
+            }
+        }
+    } catch (e: Exception) {}
+
+    // 5. Clean, Merge & De-duplicate: Keep highest quality metadata and artwork without deleting files
     fun cleanArtist(artist: String): String {
-        return artist.lowercase()
-            .replace("vevo", "")
-            .replace("official", "")
-            .replace("topic", "")
-            .replace("channel", "")
-            .replace("records", "")
-            .replace("music", "")
-            .replace(Regex("[^a-z0-9]"), "")
+        val lower = artist.lowercase().trim()
+        if (lower.isBlank() || lower == "musichub" || lower == "unknown" || lower == "<unknown>" || lower == "local artist") {
+            return ""
+        }
+        return lower
+            .replace(Regex("(?i)\\s*-\\s*topic$"), "")
+            .replace(Regex("(?i)\\btopic\\b"), "")
+            .replace(Regex("(?i)\\b(vevo|official channel|official|records)\\b"), "")
+            .replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
             .trim()
     }
 
-    fun cleanTitle(title: String): String {
-        return title.lowercase()
-            .replace(Regex("(?i)^topic\\s*[-:]\\s*"), "")
-            .replace("topic", "")
-            .replace("official", "")
-            .replace("music", "")
-            .replace("video", "")
-            .replace("audio", "")
-            .replace("lyrics", "")
-            .replace("lyric", "")
-            .replace("visualizer", "")
-            .replace("mv", "")
-            .replace(Regex("[^a-z0-9]"), "")
-            .trim()
+    fun cleanTitle(title: String, artistHint: String = ""): String {
+        var t = title.lowercase().trim()
+        t = t.replace(Regex("(?i)^topic\\s*[-:]\\s*"), "")
+        t = t.replace(Regex("(?i)\\s*-\\s*topic$"), "")
+        t = t.replace(Regex("(?i)\\btopic\\b"), "")
+        t = t
+            .replace(Regex("(?i)\\s*\\(official(\\s+music)?\\s+(video|audio)\\)"), "")
+            .replace(Regex("(?i)\\s*\\[official(\\s+music)?\\s+(video|audio)\\]"), "")
+            .replace(Regex("(?i)\\s*\\(audio\\)"), "")
+            .replace(Regex("(?i)\\s*\\[audio\\]"), "")
+            .replace(Regex("(?i)\\s*\\(video\\)"), "")
+            .replace(Regex("(?i)\\s*\\[video\\]"), "")
+            .replace(Regex("(?i)\\s*\\(official\\)"), "")
+            .replace(Regex("(?i)\\s*\\[official\\]"), "")
+            .replace(Regex("(?i)\\s*\\(lyrics?\\)"), "")
+            .replace(Regex("(?i)\\s*\\[lyrics?\\]"), "")
+            .replace(Regex("(?i)\\s*\\(visualizer\\)"), "")
+            .replace(Regex("(?i)\\s*\\[visualizer\\]"), "")
+            .replace(Regex("(?i)\\s*\\(mv\\)"), "")
+            .replace(Regex("(?i)\\s*\\[mv\\]"), "")
+            .replace(Regex("(?i)\\s*\\(hd\\)"), "")
+            .replace(Regex("(?i)\\s*\\[hd\\]"), "")
+            .replace(Regex("(?i)\\s*\\(4k\\)"), "")
+            .replace(Regex("(?i)\\s*\\[4k\\]"), "")
+
+        // Strip artist prefix if present (e.g. "Song Ji Eun - Twenty-Five" -> "Twenty-Five")
+        if (artistHint.isNotBlank()) {
+            val aClean = cleanArtist(artistHint)
+            if (aClean.isNotBlank()) {
+                val tPure = t.replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+                if (tPure.startsWith(aClean) && tPure.length > aClean.length) {
+                    return tPure.removePrefix(aClean)
+                }
+            }
+        }
+        if (t.contains(" - ")) {
+            val parts = t.split(" - ", limit = 2)
+            val firstPart = parts[0].trim()
+            val secondPart = parts[1].trim()
+            if (secondPart.isNotBlank() && firstPart.length in 2..40) {
+                val cleanFirst = firstPart.replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+                val cleanHint = cleanArtist(artistHint)
+                if (cleanHint.isNotBlank() && (cleanFirst == cleanHint || cleanFirst.contains(cleanHint) || cleanHint.contains(cleanFirst))) {
+                    t = secondPart
+                }
+            }
+        }
+
+        return t.replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "").trim()
     }
 
     fun areDuplicates(a: SongItem, b: SongItem): Boolean {
@@ -628,31 +799,51 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
         val bCanon = getCanonicalPath(b.uriString)
         if (aCanon.isNotBlank() && bCanon.isNotBlank() && aCanon == bCanon) return true
 
-        val aTitleClean = cleanTitle(a.title)
-        val bTitleClean = cleanTitle(b.title)
-        if (aTitleClean.isBlank() || bTitleClean.isBlank()) return false
-
-        val aArtClean = cleanArtist(a.artist)
-        val bArtClean = cleanArtist(b.artist)
-
-        // 1. Exact Title Match AND Exact Artist Match (Case-insensitive, Topic/VEVO tags removed)
-        if (aTitleClean == bTitleClean && aArtClean.isNotBlank() && bArtClean.isNotBlank() && aArtClean == bArtClean) {
-            return true
-        }
-
-        // 2. Exact Title Match AND one of the artists is blank/MusicHub with matching duration
-        if (aTitleClean == bTitleClean && (aArtClean.isBlank() || aArtClean == "musichub" || bArtClean.isBlank() || bArtClean == "musichub")) {
-            val durationMatches = a.durationSec > 0 && b.durationSec > 0 && kotlin.math.abs(a.durationSec - b.durationSec) <= 4
-            if (durationMatches) return true
-        }
-
-        // 3. Exact matching filename on storage (e.g. file in Songs/ vs root)
         val aFileName = try { File(Uri.parse(a.uriString).path ?: "").nameWithoutExtension.lowercase() } catch (e: Exception) { "" }
         val bFileName = try { File(Uri.parse(b.uriString).path ?: "").nameWithoutExtension.lowercase() } catch (e: Exception) { "" }
         if (aFileName.isNotBlank() && bFileName.isNotBlank()) {
-            val aCleanName = aFileName.replace("topic", "").replace(Regex("[^a-z0-9]"), "")
-            val bCleanName = bFileName.replace("topic", "").replace(Regex("[^a-z0-9]"), "")
+            val aCleanName = aFileName.replace(Regex("(?i)\\btopic\\b"), "").replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+            val bCleanName = bFileName.replace(Regex("(?i)\\btopic\\b"), "").replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
             if (aCleanName.isNotBlank() && aCleanName == bCleanName) return true
+        }
+
+        val aArtClean = cleanArtist(a.artist)
+        val bArtClean = cleanArtist(b.artist)
+        val aTitleClean = cleanTitle(a.title, a.artist)
+        val bTitleClean = cleanTitle(b.title, b.artist)
+
+        if (aTitleClean.isBlank() || bTitleClean.isBlank()) return false
+
+        // 1. Exact Title Match AND Matching Artist (or unknown artist)
+        val artistsMatch = when {
+            aArtClean.isNotBlank() && bArtClean.isNotBlank() -> {
+                aArtClean == bArtClean || aArtClean.contains(bArtClean) || bArtClean.contains(aArtClean)
+            }
+            else -> true
+        }
+
+        if (aTitleClean == bTitleClean && artistsMatch) {
+            if (a.durationSec > 0 && b.durationSec > 0) {
+                val durDiff = kotlin.math.abs(a.durationSec - b.durationSec)
+                if (durDiff <= 20) return true
+                if (aArtClean.isNotBlank() && bArtClean.isNotBlank() && aArtClean == bArtClean && durDiff <= 35) {
+                    return true
+                }
+                return false
+            }
+            return true
+        }
+
+        // 2. Cross-check: title of one contains title of other AND artists match strongly
+        if (aArtClean.isNotBlank() && bArtClean.isNotBlank() && aArtClean == bArtClean) {
+            if (aTitleClean.length >= 4 && bTitleClean.length >= 4) {
+                if (aTitleClean == bTitleClean || aTitleClean.startsWith(bTitleClean) || bTitleClean.startsWith(aTitleClean)) {
+                    if (a.durationSec > 0 && b.durationSec > 0) {
+                        return kotlin.math.abs(a.durationSec - b.durationSec) <= 25
+                    }
+                    return true
+                }
+            }
         }
 
         return false
@@ -673,11 +864,12 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
             artEx != "MusicHub" && !existing.artist.contains("VEVO", true) -> artEx
             artCan != "MusicHub" && !candidate.artist.contains("VEVO", true) -> artCan
             artEx != "MusicHub" -> artEx
-            else -> artCan
+            artCan != "MusicHub" -> artCan
+            else -> "MusicHub"
         }
 
-        val titEx = sanitizeTitle(existing.title)
-        val titCan = sanitizeTitle(candidate.title)
+        val titEx = sanitizeTitle(existing.title, bestArtist)
+        val titCan = sanitizeTitle(candidate.title, bestArtist)
         val bestTitle = when {
             titEx.isNotBlank() && titCan.isNotBlank() -> {
                 if (titEx.length <= titCan.length) titEx else titCan
@@ -694,12 +886,26 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
             else -> candidate.uriString
         }
 
+        val bestDurationSec = when {
+            existing.durationSec > 0 && existing.durationSec != 210 -> existing.durationSec
+            candidate.durationSec > 0 && candidate.durationSec != 210 -> candidate.durationSec
+            existing.durationSec > 0 -> existing.durationSec
+            else -> candidate.durationSec
+        }
+        val bestDuration = if (bestDurationSec > 0) {
+            "%d:%02d".format(bestDurationSec / 60, bestDurationSec % 60)
+        } else {
+            if (existing.duration != "3:30") existing.duration else candidate.duration
+        }
+
         return existing.copy(
             title = bestTitle,
             artist = bestArtist,
             artworkUrl = bestArtwork,
             isFavorite = bestFavorite,
-            uriString = bestUri
+            uriString = bestUri,
+            durationSec = bestDurationSec,
+            duration = bestDuration
         )
     }
 
@@ -707,6 +913,7 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
         compareByDescending<SongItem> { it.artworkUrl.isNotBlank() && !it.artworkUrl.contains("mqdefault") }
             .thenByDescending { it.isFavorite }
             .thenByDescending { sanitizeArtist(it.artist) != "MusicHub" && !it.artist.contains("VEVO", true) }
+            .thenByDescending { !it.title.startsWith("Topic -", true) }
             .thenByDescending { it.uriString.contains("/Songs/") }
     )
 
@@ -1802,18 +2009,12 @@ fun MusicHubApp() {
                 Toast.makeText(context, if (isKhmer) "មិនអាចចាក់បទនេះបានទេ" else "Cannot play track: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         } else {
-            // Track physical file is missing from storage, prune from library
-            songsList = songsList.filter { it.id != song.id }
-            saveSongs(context, songsList)
-            if (currentSong?.id == song.id) {
-                currentSong = null
-                isPlaying = false
-            }
+            isPlaying = false
             Toast.makeText(
                 context,
-                if (isKhmer) "ឯកសារចម្រៀងនេះមិនទាន់មាន ឬខូច។ បានសម្អាតចេញពីបញ្ជី!"
-                else "Track file is missing or corrupted. Removed from library!",
-                Toast.LENGTH_LONG
+                if (isKhmer) "ឯកសារចម្រៀងនេះមិនទាន់មាន ឬរកមិនឃើញ"
+                else "Track file not found",
+                Toast.LENGTH_SHORT
             ).show()
         }
     }
