@@ -88,9 +88,18 @@ object LocalMediaExtractor {
                 val thumb = resolveBestYouTubeThumbnail(videoId, client)
 
                 if (rawTitle.isNotBlank()) {
+                    val cleanArt = author
+                        .replace(Regex("(?i)\\s*-\\s*topic$"), "")
+                        .replace(Regex("(?i)\\s*topic$"), "")
+                        .trim()
+                        .ifBlank { "YouTube" }
+                    val cleanTit = rawTitle
+                        .replace(Regex("(?i)^topic\\s*[-:]\\s*"), "")
+                        .trim()
+
                     return@withContext YouTubeMetadata(
-                        title = rawTitle,
-                        artist = author,
+                        title = cleanTit,
+                        artist = cleanArt,
                         thumbnailUrl = thumb
                     )
                 }
@@ -135,6 +144,7 @@ object LocalMediaExtractor {
                 .replace("Official Music Video", "", ignoreCase = true)
                 .replace("Official Video", "", ignoreCase = true)
                 .replace("Music Video", "", ignoreCase = true)
+                .replace("Topic", "", ignoreCase = true)
                 .replace("MV", "", ignoreCase = true)
                 .replace("VEVO", "", ignoreCase = true)
                 .replace("\\s+".toRegex(), " ")
