@@ -2526,6 +2526,7 @@ fun MusicHubApp() {
                             it.album.contains(searchQuery, ignoreCase = true)
                         },
                         allSongs = songsList,
+                        recommendedTracks = recommendedTracks,
                         currentSong = currentSong,
                         isPlaying = isPlaying,
                         onSongClick = { song ->
@@ -5683,6 +5684,7 @@ fun SearchScreen(
     onQueryChange: (String) -> Unit,
     songs: List<SongItem>,
     allSongs: List<SongItem>,
+    recommendedTracks: List<RecommendedTrack> = emptyList(),
     currentSong: SongItem?,
     isPlaying: Boolean,
     onSongClick: (SongItem) -> Unit,
@@ -5702,6 +5704,26 @@ fun SearchScreen(
     var hasSearchedOnline by remember { mutableStateOf(false) }
     var onlineErrorMessage by remember { mutableStateOf<String?>(null) }
     val client = remember { OkHttpClient() }
+
+    val recOnlineResults = remember(recommendedTracks) {
+        recommendedTracks.map { rec ->
+            OnlineSearchResult(
+                id = "rec_" + rec.id,
+                title = rec.title,
+                artist = rec.artist,
+                duration = rec.duration,
+                artworkUrl = rec.artworkUrl,
+                webUrl = rec.downloadQuery,
+                previewUrl = rec.previewUrl
+            )
+        }
+    }
+
+    val recLocalMatchesMap = remember(recOnlineResults, allSongs) {
+        recOnlineResults.associate { item ->
+            item.id to findMatchingLocalSong(item, allSongs)
+        }
+    }
 
     val executeOnlineSearch: (String) -> Unit = remember {
         { targetQuery ->
@@ -5839,6 +5861,11 @@ fun SearchScreen(
                         onQueryChange(newText)
                     } else {
                         onlineQuery = newText
+                        if (newText.isBlank()) {
+                            hasSearchedOnline = false
+                            onlineResults = emptyList()
+                            onlineErrorMessage = null
+                        }
                     }
                 },
                 placeholder = {
@@ -6044,7 +6071,7 @@ fun SearchScreen(
                 ) { item ->
                     val localMatch = localMatchesMap[item.id]
                     val isCurrent = currentSong?.let {
-                        it.id == "yt_" + item.id || (localMatch != null && it.id == localMatch.id)
+                        it.id == "stream_" + item.id || it.id == "yt_" + item.id || (localMatch != null && it.id == localMatch.id)
                     } ?: false
 
                     OnlineTrackRowItem(
@@ -6092,12 +6119,12 @@ fun SearchScreen(
                         }
                     }
                 }
-            } else if (!hasSearchedOnline) {
+            } else if (!hasSearchedOnline || (onlineQuery.isBlank() && onlineResults.isEmpty())) {
                 item {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 20.dp),
+                            .padding(vertical = 12.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
@@ -6106,7 +6133,7 @@ fun SearchScreen(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
                         val suggestions = listOf("Trending", "YOASOBI", "Vannda", "Remix", "Acoustic", "Lofi")
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -6161,6 +6188,49 @@ fun SearchScreen(
                                 }
                             }
                         }
+                    }
+                }
+
+                if (recOnlineResults.isNotEmpty()) {
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp, bottom = 4.dp)
+                        ) {
+                            Text(
+                                text = if (isKhmer) "បទចម្រៀងណែនាំសម្រាប់អ្នក" else "Recommended Songs For You",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = if (isKhmer) "ផ្អែកលើចំណូលចិត្តនៃការស្តាប់របស់អ្នក" else "Based on your music taste & listening habits",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    items(
+                        items = recOnlineResults,
+                        key = { it.id }
+                    ) { item ->
+                        val localMatch = recLocalMatchesMap[item.id]
+                        val isCurrent = currentSong?.let {
+                            it.id == "stream_" + item.id || it.id == "yt_" + item.id || it.id == item.id || (localMatch != null && it.id == localMatch.id)
+                        } ?: false
+
+                        OnlineTrackRowItem(
+                            isKhmer = isKhmer,
+                            item = item,
+                            localMatch = localMatch,
+                            isPlaying = isPlaying,
+                            isCurrent = isCurrent,
+                            onPlayClick = { onPlayOnlineTrack(item) },
+                            onDownloadClick = { onDownloadOnlineTrack(item) }
+                        )
                     }
                 }
             }
