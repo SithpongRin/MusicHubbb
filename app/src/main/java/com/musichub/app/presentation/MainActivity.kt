@@ -2570,51 +2570,56 @@ fun MusicHubApp() {
                         onPlayOnlineTrack = { onlineTrack ->
                             val localMatch = findMatchingLocalSong(onlineTrack, songsList)
                             if (localMatch != null) {
-                                activePlaylistId = null
-                                currentSong = localMatch
-                                isPlaying = true
+                                if (currentSong?.id == localMatch.id) {
+                                    togglePlayPause()
+                                } else {
+                                    activePlaylistId = null
+                                    currentSong = localMatch
+                                    isPlaying = true
+                                }
                             } else {
-                                scope.launch {
-                                    Toast.makeText(
-                                        context,
-                                        if (isKhmer) "កំពុងតភ្ជាប់សំឡេង៖ ${onlineTrack.title}" else "Connecting audio: ${onlineTrack.title}",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                    try {
-                                        val stream = LocalMediaExtractor.extractStreamUrl(context, onlineTrack.webUrl, OkHttpClient())
-                                        if (stream != null && stream.streamUrl.isNotBlank()) {
-                                            val streamSong = SongItem(
-                                                id = "yt_" + onlineTrack.id,
-                                                title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
-                                                artist = sanitizeArtist(onlineTrack.artist),
-                                                album = "Online Stream",
-                                                duration = onlineTrack.duration,
-                                                durationSec = 210,
-                                                artworkUrl = onlineTrack.artworkUrl,
-                                                uriString = stream.streamUrl,
-                                                format = "M4A",
-                                                isFavorite = false
-                                            )
-                                            activePlaylistId = null
-                                            currentSong = streamSong
-                                            isPlaying = true
-                                        } else {
-                                            downloadPrefill = DownloadPrefill(
-                                                url = onlineTrack.webUrl,
-                                                title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
-                                                artist = sanitizeArtist(onlineTrack.artist),
-                                                thumbnail = onlineTrack.artworkUrl,
-                                                fallbackAudioUrl = "",
-                                                autoStart = true
-                                            )
-                                            showDownloadModal = true
-                                        }
-                                    } catch (e: Exception) {
+                                if (currentSong?.id == "yt_" + onlineTrack.id) {
+                                    togglePlayPause()
+                                } else {
+                                    scope.launch {
                                         Toast.makeText(
                                             context,
-                                            if (isKhmer) "មិនអាចចាក់បទនេះបានទេ" else "Cannot stream track",
+                                            if (isKhmer) "កំពុងតភ្ជាប់សំឡេង៖ ${onlineTrack.title}" else "Connecting audio: ${onlineTrack.title}",
                                             Toast.LENGTH_SHORT
                                         ).show()
+                                        try {
+                                            val stream = LocalMediaExtractor.extractStreamDirect(onlineTrack.id, OkHttpClient()).firstOrNull()
+                                                ?: LocalMediaExtractor.extractStreamUrl(context, onlineTrack.id, OkHttpClient())
+                                            if (stream != null && stream.streamUrl.isNotBlank()) {
+                                                val streamSong = SongItem(
+                                                    id = "yt_" + onlineTrack.id,
+                                                    title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
+                                                    artist = sanitizeArtist(onlineTrack.artist),
+                                                    album = "Online Stream",
+                                                    duration = onlineTrack.duration,
+                                                    durationSec = 210,
+                                                    artworkUrl = onlineTrack.artworkUrl,
+                                                    uriString = stream.streamUrl,
+                                                    format = "M4A",
+                                                    isFavorite = false
+                                                )
+                                                activePlaylistId = null
+                                                currentSong = streamSong
+                                                isPlaying = true
+                                            } else {
+                                                Toast.makeText(
+                                                    context,
+                                                    if (isKhmer) "មិនអាចចាក់បទនេះបានទេ សូមសាកល្បងម្ដងទៀត" else "Cannot stream track, please try again",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        } catch (e: Exception) {
+                                            Toast.makeText(
+                                                context,
+                                                if (isKhmer) "មិនអាចចាក់បទនេះបានទេ" else "Cannot stream track",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
                                     }
                                 }
                             }
@@ -2960,7 +2965,10 @@ fun MusicHubApp() {
                             }
                         }
                     ) {
-                        Text(if (isKhmer) "ជំនួសបទចាស់" else "Replace Old")
+                        Text(
+                            text = if (isKhmer) "ជំនួសបទចាស់" else "Replace Old",
+                            color = if (isDarkMode) Color(0xFFE2E8F0) else Color(0xFF334155)
+                        )
                     }
                 }
             )
@@ -3155,7 +3163,7 @@ fun MusicHubApp() {
     }
 }
 
-// Smart High-Resolution Artwork Image with dynamic YouTube resolution upgrade & fallback
+// Smart Artwork Image with fast smooth caching
 @Composable
 fun SmartArtworkImage(
     artworkUrl: String,
@@ -3163,39 +3171,14 @@ fun SmartArtworkImage(
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop
 ) {
-    val initialUrl = remember(artworkUrl) {
-        if (artworkUrl.contains("i.ytimg.com/vi/")) {
-            artworkUrl
-                .replace("/mqdefault.jpg", "/maxresdefault.jpg")
-                .replace("/hqdefault.jpg", "/maxresdefault.jpg")
-                .replace("/sddefault.jpg", "/maxresdefault.jpg")
-                .replace("/default.jpg", "/maxresdefault.jpg")
-        } else {
-            artworkUrl
-        }
-    }
-
-    var currentUrl by remember(artworkUrl) { mutableStateOf(initialUrl) }
-
     AsyncImage(
         model = ImageRequest.Builder(LocalContext.current)
-            .data(currentUrl)
+            .data(artworkUrl.ifBlank { null })
             .crossfade(true)
             .allowHardware(true)
             .build(),
         contentDescription = contentDescription,
         contentScale = contentScale,
-        onError = {
-            if (currentUrl.contains("/maxresdefault.jpg")) {
-                currentUrl = currentUrl.replace("/maxresdefault.jpg", "/hq720.jpg")
-            } else if (currentUrl.contains("/hq720.jpg")) {
-                currentUrl = currentUrl.replace("/hq720.jpg", "/sddefault.jpg")
-            } else if (currentUrl.contains("/sddefault.jpg")) {
-                currentUrl = currentUrl.replace("/sddefault.jpg", "/hqdefault.jpg")
-            } else if (currentUrl.contains("/hqdefault.jpg")) {
-                currentUrl = artworkUrl
-            }
-        },
         modifier = modifier
     )
 }
@@ -5755,6 +5738,12 @@ fun SearchScreen(
         }
     }
 
+    val localMatchesMap = remember(onlineResults, allSongs) {
+        onlineResults.associate { item ->
+            item.id to findMatchingLocalSong(item, allSongs)
+        }
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -5949,7 +5938,7 @@ fun SearchScreen(
         // CONTENT: OFFLINE TAB
         if (currentTab == SearchTab.OFFLINE) {
             if (songs.isNotEmpty()) {
-                itemsIndexed(songs) { index, song ->
+                itemsIndexed(songs, key = { _, song -> song.id }) { index, song ->
                     NumberedTrackRowItem(
                         index = index + 1,
                         isKhmer = isKhmer,
@@ -6059,8 +6048,11 @@ fun SearchScreen(
                     )
                 }
 
-                items(onlineResults) { item ->
-                    val localMatch = findMatchingLocalSong(item, allSongs)
+                items(
+                    items = onlineResults,
+                    key = { it.id }
+                ) { item ->
+                    val localMatch = localMatchesMap[item.id]
                     val isCurrent = currentSong?.let {
                         it.id == "yt_" + item.id || (localMatch != null && it.id == localMatch.id)
                     } ?: false

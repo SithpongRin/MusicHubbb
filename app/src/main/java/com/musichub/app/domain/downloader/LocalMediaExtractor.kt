@@ -545,10 +545,22 @@ object LocalMediaExtractor {
         client: OkHttpClient,
         onProgress: (Int, String) -> Unit = { _, _ -> },
         isKhmer: Boolean = false,
-        timeoutMs: Long = 8000L
+        timeoutMs: Long = 4000L
     ): ExtractedMediaStream? {
-        // 1. Primary Engine: Direct High-Speed MP3 Stream
-        val loaderUrl = fetchLoaderStreamUrl(videoId, client, onProgress, isKhmer)
+        val cleanId = if (videoId.length == 11 && !videoId.contains("/") && !videoId.contains(".")) {
+            videoId
+        } else {
+            extractYouTubeId(videoId) ?: videoId
+        }
+
+        // 1. Primary Engine: Innertube Direct Audio Protocol (Instant streaming < 1s)
+        val directStreams = extractStreamDirect(cleanId, client)
+        if (directStreams.isNotEmpty()) {
+            return directStreams.first()
+        }
+
+        // 2. Secondary Engine: Direct High-Speed Stream (loader.to)
+        val loaderUrl = fetchLoaderStreamUrl(cleanId, client, onProgress, isKhmer)
         if (loaderUrl != null && loaderUrl.isNotBlank()) {
             return ExtractedMediaStream(
                 streamUrl = loaderUrl,
@@ -558,14 +570,7 @@ object LocalMediaExtractor {
             )
         }
 
-        // 2. Secondary Engine: Innertube Direct Audio Protocol
-        val directStreams = extractStreamDirect(videoId, client)
-        if (directStreams.isNotEmpty()) {
-            return directStreams.first()
-        }
-
-        // 3. Fallback: Headless Chromium Interception
-        return extractStreamViaWebView(context, videoId, timeoutMs)
+        return null
     }
 
     private suspend fun extractStreamViaWebView(
