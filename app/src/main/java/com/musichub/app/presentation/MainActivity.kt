@@ -94,6 +94,8 @@ import androidx.core.content.ContextCompat
 import com.musichub.app.player.MediaPlaybackService
 import com.musichub.app.domain.downloader.LocalMediaExtractor
 import com.musichub.app.domain.audio.AudioWaveformFingerprinter
+import com.musichub.app.domain.recommendation.RecommendationEngine
+import com.musichub.app.domain.recommendation.RecommendedTrack
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 
@@ -485,6 +487,150 @@ fun sanitizeTitle(rawTitle: String, artistHint: String = ""): String {
     return if (title.isBlank()) "Track" else title
 }
 
+fun getCanonicalPath(uriStr: String): String {
+    return try {
+        if (uriStr.startsWith("file://")) {
+            File(Uri.parse(uriStr).path ?: "").canonicalPath.lowercase()
+        } else {
+            uriStr.trim().lowercase()
+        }
+    } catch (e: Exception) {
+        uriStr.trim().lowercase()
+    }
+}
+
+fun cleanArtist(artist: String): String {
+    val lower = artist.lowercase().trim()
+    if (lower.isBlank() || lower == "musichub" || lower == "unknown" || lower == "<unknown>" || lower == "local artist") {
+        return ""
+    }
+    return lower
+        .replace(Regex("(?i)\\s*-\\s*topic$"), "")
+        .replace(Regex("(?i)\\btopic\\b"), "")
+        .replace(Regex("(?i)vevo$"), "")
+        .replace(Regex("(?i)\\b(vevo|official channel|official|records)\\b"), "")
+        .replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+        .trim()
+}
+
+fun cleanTitle(title: String, artistHint: String = ""): String {
+    var t = title.lowercase().trim()
+    t = t.replace(Regex("(?i)^topic\\s*[-:]\\s*"), "")
+    t = t.replace(Regex("(?i)\\s*-\\s*topic$"), "")
+    t = t.replace(Regex("(?i)\\btopic\\b"), "")
+    t = t
+        .replace(Regex("(?i)\\s*\\(official(\\s+music)?\\s+(video|audio)\\)"), "")
+        .replace(Regex("(?i)\\s*\\[official(\\s+music)?\\s+(video|audio)\\]"), "")
+        .replace(Regex("(?i)\\s*\\(audio\\)"), "")
+        .replace(Regex("(?i)\\s*\\[audio\\]"), "")
+        .replace(Regex("(?i)\\s*\\(video\\)"), "")
+        .replace(Regex("(?i)\\s*\\[video\\]"), "")
+        .replace(Regex("(?i)\\s*\\(official\\)"), "")
+        .replace(Regex("(?i)\\s*\\[official\\]"), "")
+        .replace(Regex("(?i)\\s*\\(lyrics?\\)"), "")
+        .replace(Regex("(?i)\\s*\\[lyrics?\\]"), "")
+        .replace(Regex("(?i)\\s*\\(visualizer\\)"), "")
+        .replace(Regex("(?i)\\s*\\[visualizer\\]"), "")
+        .replace(Regex("(?i)\\s*\\(mv\\)"), "")
+        .replace(Regex("(?i)\\s*\\[mv\\]"), "")
+        .replace(Regex("(?i)\\s*\\(hd\\)"), "")
+        .replace(Regex("(?i)\\s*\\[hd\\]"), "")
+        .replace(Regex("(?i)\\s*\\(4k\\)"), "")
+        .replace(Regex("(?i)\\s*\\[4k\\]"), "")
+
+    if (t.contains(" - ")) {
+        val parts = t.split(" - ", limit = 2)
+        val firstPart = parts[0].trim()
+        val secondPart = parts[1].trim()
+        if (secondPart.isNotBlank() && firstPart.length in 2..40) {
+            val cleanFirst = cleanArtist(firstPart)
+            val cleanHint = cleanArtist(artistHint)
+            if (cleanHint.isNotBlank() && (cleanFirst == cleanHint || cleanFirst.contains(cleanHint) || cleanHint.contains(cleanFirst))) {
+                t = secondPart
+            } else if (cleanHint.isBlank()) {
+                t = secondPart
+            }
+        }
+    }
+
+    // Strip artist prefix if present
+    if (artistHint.isNotBlank()) {
+        val aClean = cleanArtist(artistHint)
+        if (aClean.isNotBlank()) {
+            val tPure = t.replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+            if (tPure.startsWith(aClean) && tPure.length > aClean.length) {
+                return tPure.removePrefix(aClean)
+            }
+        }
+    }
+
+    return t.replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "").trim()
+}
+
+fun areDuplicates(a: SongItem, b: SongItem): Boolean {
+    if (a.id == b.id) return true
+
+    if (a.uriString.isNotBlank() && b.uriString.isNotBlank()) {
+        if (a.uriString.equals(b.uriString, ignoreCase = true)) return true
+    }
+
+    val aCanon = getCanonicalPath(a.uriString)
+    val bCanon = getCanonicalPath(b.uriString)
+    if (aCanon.isNotBlank() && bCanon.isNotBlank() && aCanon == bCanon) return true
+
+    val aFileName = try { File(Uri.parse(a.uriString).path ?: "").nameWithoutExtension.lowercase() } catch (e: Exception) { "" }
+    val bFileName = try { File(Uri.parse(b.uriString).path ?: "").nameWithoutExtension.lowercase() } catch (e: Exception) { "" }
+    if (aFileName.isNotBlank() && bFileName.isNotBlank()) {
+        val aCleanName = aFileName.replace(Regex("(?i)\\btopic\\b"), "").replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+        val bCleanName = bFileName.replace(Regex("(?i)\\btopic\\b"), "").replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
+        if (aCleanName.isNotBlank() && aCleanName == bCleanName) return true
+    }
+
+    val aArtClean = cleanArtist(a.artist)
+    val bArtClean = cleanArtist(b.artist)
+    val aTitleClean = cleanTitle(a.title, a.artist)
+    val bTitleClean = cleanTitle(b.title, b.artist)
+
+    if (aTitleClean.isBlank() || bTitleClean.isBlank()) return false
+
+    // 1. Exact Title Match
+    if (aTitleClean == bTitleClean) {
+        val artistsMatch = when {
+            aArtClean.isNotBlank() && bArtClean.isNotBlank() -> {
+                aArtClean == bArtClean || aArtClean.contains(bArtClean) || bArtClean.contains(aArtClean)
+            }
+            else -> true
+        }
+        if (artistsMatch) {
+            return true
+        }
+    }
+
+    // 2. Cross-check: title of one contains title of other AND artists match strongly
+    if (aArtClean.isNotBlank() && bArtClean.isNotBlank() && (aArtClean == bArtClean || aArtClean.contains(bArtClean) || bArtClean.contains(aArtClean))) {
+        if (aTitleClean.length >= 3 && bTitleClean.length >= 3) {
+            if (aTitleClean == bTitleClean || aTitleClean.contains(bTitleClean) || bTitleClean.contains(aTitleClean)) {
+                if (a.durationSec > 0 && b.durationSec > 0 && a.durationSec != 210 && b.durationSec != 210) {
+                    return kotlin.math.abs(a.durationSec - b.durationSec) <= 45
+                }
+                return true
+            }
+        }
+    }
+
+    // 3. One artist is unknown / MusicHub, and title is contained in the other
+    if (aArtClean.isBlank() || bArtClean.isBlank() || aArtClean == "musichub" || bArtClean == "musichub") {
+        if (aTitleClean == bTitleClean || (aTitleClean.length >= 5 && bTitleClean.length >= 5 && (aTitleClean.contains(bTitleClean) || bTitleClean.contains(aTitleClean)))) {
+            if (a.durationSec > 0 && b.durationSec > 0 && a.durationSec != 210 && b.durationSec != 210) {
+                return kotlin.math.abs(a.durationSec - b.durationSec) <= 30
+            }
+            return true
+        }
+    }
+
+    return false
+}
+
 fun restoreAndSyncLibrary(context: Context): List<SongItem> {
     val resultList = mutableListOf<SongItem>()
     val seenFilePaths = mutableSetOf<String>()
@@ -495,18 +641,6 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
             return true
         }
         return false
-    }
-
-    fun getCanonicalPath(uriStr: String): String {
-        return try {
-            if (uriStr.startsWith("file://")) {
-                File(Uri.parse(uriStr).path ?: "").canonicalPath.lowercase()
-            } else {
-                uriStr.trim().lowercase()
-            }
-        } catch (e: Exception) {
-            uriStr.trim().lowercase()
-        }
     }
 
     val publicDir = MusicHubStorage.getBaseDir()
@@ -710,137 +844,7 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
     }
 
     // 4. Clean, Merge & De-duplicate: Keep highest quality metadata and artwork without deleting files
-    fun cleanArtist(artist: String): String {
-        val lower = artist.lowercase().trim()
-        if (lower.isBlank() || lower == "musichub" || lower == "unknown" || lower == "<unknown>" || lower == "local artist") {
-            return ""
-        }
-        return lower
-            .replace(Regex("(?i)\\s*-\\s*topic$"), "")
-            .replace(Regex("(?i)\\btopic\\b"), "")
-            .replace(Regex("(?i)vevo$"), "")
-            .replace(Regex("(?i)\\b(vevo|official channel|official|records)\\b"), "")
-            .replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
-            .trim()
-    }
 
-    fun cleanTitle(title: String, artistHint: String = ""): String {
-        var t = title.lowercase().trim()
-        t = t.replace(Regex("(?i)^topic\\s*[-:]\\s*"), "")
-        t = t.replace(Regex("(?i)\\s*-\\s*topic$"), "")
-        t = t.replace(Regex("(?i)\\btopic\\b"), "")
-        t = t
-            .replace(Regex("(?i)\\s*\\(official(\\s+music)?\\s+(video|audio)\\)"), "")
-            .replace(Regex("(?i)\\s*\\[official(\\s+music)?\\s+(video|audio)\\]"), "")
-            .replace(Regex("(?i)\\s*\\(audio\\)"), "")
-            .replace(Regex("(?i)\\s*\\[audio\\]"), "")
-            .replace(Regex("(?i)\\s*\\(video\\)"), "")
-            .replace(Regex("(?i)\\s*\\[video\\]"), "")
-            .replace(Regex("(?i)\\s*\\(official\\)"), "")
-            .replace(Regex("(?i)\\s*\\[official\\]"), "")
-            .replace(Regex("(?i)\\s*\\(lyrics?\\)"), "")
-            .replace(Regex("(?i)\\s*\\[lyrics?\\]"), "")
-            .replace(Regex("(?i)\\s*\\(visualizer\\)"), "")
-            .replace(Regex("(?i)\\s*\\[visualizer\\]"), "")
-            .replace(Regex("(?i)\\s*\\(mv\\)"), "")
-            .replace(Regex("(?i)\\s*\\[mv\\]"), "")
-            .replace(Regex("(?i)\\s*\\(hd\\)"), "")
-            .replace(Regex("(?i)\\s*\\[hd\\]"), "")
-            .replace(Regex("(?i)\\s*\\(4k\\)"), "")
-            .replace(Regex("(?i)\\s*\\[4k\\]"), "")
-
-        if (t.contains(" - ")) {
-            val parts = t.split(" - ", limit = 2)
-            val firstPart = parts[0].trim()
-            val secondPart = parts[1].trim()
-            if (secondPart.isNotBlank() && firstPart.length in 2..40) {
-                val cleanFirst = cleanArtist(firstPart)
-                val cleanHint = cleanArtist(artistHint)
-                if (cleanHint.isNotBlank() && (cleanFirst == cleanHint || cleanFirst.contains(cleanHint) || cleanHint.contains(cleanFirst))) {
-                    t = secondPart
-                } else if (cleanHint.isBlank()) {
-                    t = secondPart
-                }
-            }
-        }
-
-        // Strip artist prefix if present
-        if (artistHint.isNotBlank()) {
-            val aClean = cleanArtist(artistHint)
-            if (aClean.isNotBlank()) {
-                val tPure = t.replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
-                if (tPure.startsWith(aClean) && tPure.length > aClean.length) {
-                    return tPure.removePrefix(aClean)
-                }
-            }
-        }
-
-        return t.replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "").trim()
-    }
-
-    fun areDuplicates(a: SongItem, b: SongItem): Boolean {
-        if (a.id == b.id) return true
-
-        if (a.uriString.isNotBlank() && b.uriString.isNotBlank()) {
-            if (a.uriString.equals(b.uriString, ignoreCase = true)) return true
-        }
-
-        val aCanon = getCanonicalPath(a.uriString)
-        val bCanon = getCanonicalPath(b.uriString)
-        if (aCanon.isNotBlank() && bCanon.isNotBlank() && aCanon == bCanon) return true
-
-        val aFileName = try { File(Uri.parse(a.uriString).path ?: "").nameWithoutExtension.lowercase() } catch (e: Exception) { "" }
-        val bFileName = try { File(Uri.parse(b.uriString).path ?: "").nameWithoutExtension.lowercase() } catch (e: Exception) { "" }
-        if (aFileName.isNotBlank() && bFileName.isNotBlank()) {
-            val aCleanName = aFileName.replace(Regex("(?i)\\btopic\\b"), "").replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
-            val bCleanName = bFileName.replace(Regex("(?i)\\btopic\\b"), "").replace(Regex("[^\\p{L}\\p{M}\\p{Nd}]"), "")
-            if (aCleanName.isNotBlank() && aCleanName == bCleanName) return true
-        }
-
-        val aArtClean = cleanArtist(a.artist)
-        val bArtClean = cleanArtist(b.artist)
-        val aTitleClean = cleanTitle(a.title, a.artist)
-        val bTitleClean = cleanTitle(b.title, b.artist)
-
-        if (aTitleClean.isBlank() || bTitleClean.isBlank()) return false
-
-        // 1. Exact Title Match
-        if (aTitleClean == bTitleClean) {
-            val artistsMatch = when {
-                aArtClean.isNotBlank() && bArtClean.isNotBlank() -> {
-                    aArtClean == bArtClean || aArtClean.contains(bArtClean) || bArtClean.contains(aArtClean)
-                }
-                else -> true
-            }
-            if (artistsMatch) {
-                return true
-            }
-        }
-
-        // 2. Cross-check: title of one contains title of other AND artists match strongly
-        if (aArtClean.isNotBlank() && bArtClean.isNotBlank() && (aArtClean == bArtClean || aArtClean.contains(bArtClean) || bArtClean.contains(aArtClean))) {
-            if (aTitleClean.length >= 3 && bTitleClean.length >= 3) {
-                if (aTitleClean == bTitleClean || aTitleClean.contains(bTitleClean) || bTitleClean.contains(aTitleClean)) {
-                    if (a.durationSec > 0 && b.durationSec > 0 && a.durationSec != 210 && b.durationSec != 210) {
-                        return kotlin.math.abs(a.durationSec - b.durationSec) <= 45
-                    }
-                    return true
-                }
-            }
-        }
-
-        // 3. One artist is unknown / MusicHub, and title is contained in the other
-        if (aArtClean.isBlank() || bArtClean.isBlank() || aArtClean == "musichub" || bArtClean == "musichub") {
-            if (aTitleClean == bTitleClean || (aTitleClean.length >= 5 && bTitleClean.length >= 5 && (aTitleClean.contains(bTitleClean) || bTitleClean.contains(aTitleClean)))) {
-                if (a.durationSec > 0 && b.durationSec > 0 && a.durationSec != 210 && b.durationSec != 210) {
-                    return kotlin.math.abs(a.durationSec - b.durationSec) <= 30
-                }
-                return true
-            }
-        }
-
-        return false
-    }
 
     fun mergeDuplicates(existing: SongItem, candidate: SongItem): SongItem {
         val bestArtwork = when {
@@ -1078,7 +1082,18 @@ suspend fun downloadAudioToStorage(
     }
 
     // YouTube stream extraction (100% On-Device, Local Chromium Interception)
-    val ytId = LocalMediaExtractor.extractYouTubeId(u)
+    var ytId = LocalMediaExtractor.extractYouTubeId(u)
+    if (ytId == null && (u.contains("search_query=") || !u.startsWith("http"))) {
+        val q = if (u.contains("search_query=")) {
+            java.net.URLDecoder.decode(u.substringAfter("search_query=").substringBefore("&"), "UTF-8")
+        } else {
+            u
+        }
+        onProgress(18, if (isKhmer) "កំពុងស្វែងរកលើ YouTube..." else "Searching YouTube...")
+        try {
+            ytId = LocalMediaExtractor.searchYouTubeVideoId(q, client)
+        } catch (_: Exception) {}
+    }
     if (ytId != null) {
         onProgress(20, if (isKhmer) "កំពុងទាញយកព័ត៌មានពី YouTube..." else "Fetching YouTube info...")
         try {
@@ -1432,7 +1447,7 @@ suspend fun downloadAudioToStorage(
 
     try { tempFile.delete() } catch (e: Exception) {}
 
-    onProgress(95, if (isKhmer) "កំពុងបញ្ចប់..." else "Finalizing track...")
+    onProgress(90, if (isKhmer) "ជំហានទី ២៖ កំពុងផ្ទៀងផ្ទាត់រលកសំឡេង..." else "Step 2: Analyzing audio wave...")
     var durSec = 210
     var durStr = "3:30"
     try {
@@ -1451,7 +1466,12 @@ suspend fun downloadAudioToStorage(
         mmr.release()
     } catch (e: Exception) {}
 
-    onProgress(100, if (isKhmer) "បានទាញយកជោគជ័យ!" else "Download complete!")
+    // Extract lightweight waveform fingerprint for future instant matching
+    try {
+        AudioWaveformFingerprinter.getWaveformFingerprint(context, savedUriString, durSec)
+    } catch (_: Exception) {}
+
+    onProgress(100, if (isKhmer) "ជំហានទី ៣៖ បានទាញយកជោគជ័យ!" else "Step 3: Download complete!")
     delay(150)
 
     val finalArtwork = savedArtworkUriString.ifBlank { resolvedArtworkUrl }
@@ -1508,6 +1528,8 @@ fun MusicHubApp() {
     var viewingArtist by remember { mutableStateOf<Pair<String, List<SongItem>>?>(null) }
     var playlistForAddSong by remember { mutableStateOf<SongItem?>(null) }
     var showCreatePlaylistModal by remember { mutableStateOf(false) }
+    var recommendedTracks by remember { mutableStateOf<List<RecommendedTrack>>(emptyList()) }
+    var duplicateConflictSong by remember { mutableStateOf<Pair<SongItem, SongItem>?>(null) }
 
     var currentSong by remember { mutableStateOf<SongItem?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
@@ -1517,6 +1539,19 @@ fun MusicHubApp() {
     var playbackProgress by remember { mutableFloatStateOf(0.0f) }
     var playbackPositionMs by remember { mutableLongStateOf(0L) }
     var playbackDurationMs by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(songsList.size) {
+        if (recommendedTracks.isEmpty() && songsList.isNotEmpty()) {
+            withContext(Dispatchers.IO) {
+                try {
+                    val recs = RecommendationEngine.getPersonalizedRecommendations(songsList, OkHttpClient())
+                    withContext(Dispatchers.Main) {
+                        recommendedTracks = recs
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+    }
 
     fun getCurrentPlaybackQueue(): List<SongItem> {
         val pid = activePlaylistId
@@ -2377,6 +2412,36 @@ fun MusicHubApp() {
                         currentSong = currentSong,
                         isPlaying = isPlaying,
                         playlists = playlists,
+                        recommendedTracks = recommendedTracks,
+                        onRecommendedDownload = { track ->
+                            scope.launch {
+                                Toast.makeText(context, if (isKhmer) "កំពុងទាញយក ${track.title}..." else "Downloading ${track.title}...", Toast.LENGTH_SHORT).show()
+                                try {
+                                    val newSong = downloadAudioToStorage(
+                                        context = context,
+                                        url = track.downloadQuery,
+                                        format = "MP3",
+                                        title = track.title,
+                                        artist = track.artist,
+                                        artworkUrl = track.artworkUrl,
+                                        isKhmer = isKhmer,
+                                        onProgress = { _, _ -> }
+                                    )
+                                    val existingDup = songsList.find { areDuplicates(it, newSong) }
+                                    val isVariant = listOf("remix", "speed up", "sped up", "slowed", "reverb", "nightcore", "cover", "acoustic", "live", "reverse").any { newSong.title.contains(it, true) }
+                                    if (existingDup != null && !isVariant) {
+                                        duplicateConflictSong = Pair(existingDup, newSong)
+                                    } else {
+                                        saveSongs(context, listOf(newSong) + songsList.filter { it.id != newSong.id })
+                                        songsList = restoreAndSyncLibrary(context)
+                                        recommendedTracks = recommendedTracks.filter { it.id != track.id }
+                                        Toast.makeText(context, if (isKhmer) "បានបន្ថែម ${track.title} ទៅក្នុងបណ្ណាល័យ!" else "Added ${track.title} to library!", Toast.LENGTH_SHORT).show()
+                                    }
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, if (isKhmer) "ទាញយកមិនបាន៖ ${e.message}" else "Download failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
                         onPlaylistClick = { playlist -> viewingPlaylist = playlist },
                         onCreatePlaylistClick = { showCreatePlaylistModal = true },
                         onArtistClick = { artistName, aSongs -> viewingArtist = Pair(artistName, aSongs) },
@@ -2610,17 +2675,24 @@ fun MusicHubApp() {
                                     onProgressCallback(pct, statusText)
                                 }
                             )
-                            saveSongs(context, listOf(newSong) + songsList.filter { it.id != newSong.id })
-                            songsList = restoreAndSyncLibrary(context)
-                            currentSong = songsList.find { it.id == newSong.id } ?: newSong
-                            isPlaying = true
-                            delay(300)
-                            showDownloadModal = false
-                            Toast.makeText(
-                                context,
-                                if (isKhmer) "បានទាញយក និងកំពុងចាក់" else "Downloaded & playing",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            val existingDup = songsList.find { areDuplicates(it, newSong) }
+                            val isVariant = listOf("remix", "speed up", "sped up", "slowed", "reverb", "nightcore", "cover", "acoustic", "live", "reverse").any { newSong.title.contains(it, true) }
+                            if (existingDup != null && !isVariant) {
+                                showDownloadModal = false
+                                duplicateConflictSong = Pair(existingDup, newSong)
+                            } else {
+                                saveSongs(context, listOf(newSong) + songsList.filter { it.id != newSong.id })
+                                songsList = restoreAndSyncLibrary(context)
+                                currentSong = songsList.find { it.id == newSong.id } ?: newSong
+                                isPlaying = true
+                                delay(300)
+                                showDownloadModal = false
+                                Toast.makeText(
+                                    context,
+                                    if (isKhmer) "បានទាញយក និងកំពុងចាក់" else "Downloaded & playing",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
                         } catch (e: Exception) {
                             onErrorCallback(e.message ?: "Download failed")
                             Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_LONG).show()
@@ -2632,6 +2704,70 @@ fun MusicHubApp() {
                     audioPickerLauncher.launch("audio/*")
                 },
                 onDismiss = { showDownloadModal = false }
+            )
+        }
+
+        // Duplicate Song Verification Prompt Dialog
+        if (duplicateConflictSong != null) {
+            val (existing, candidate) = duplicateConflictSong!!
+            AlertDialog(
+                onDismissRequest = { duplicateConflictSong = null },
+                containerColor = if (isDarkMode) Color(0xFF1E222D) else Color.White,
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(imageVector = Icons.Default.Info, contentDescription = null, tint = Color(0xFF6366F1))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isKhmer) "រកឃើញបទស្រដៀងគ្នាក្នុងបណ្ណាល័យ!" else "Similar Track in Library!",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 17.sp,
+                            color = if (isDarkMode) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                        )
+                    }
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = if (isKhmer)
+                                "បទនេះមានក្នុងបណ្ណាល័យរបស់អ្នករួចហើយ៖\n• បទចាស់៖ ${existing.title} (${existing.artist})\n• បទថ្មី៖ ${candidate.title} (${candidate.artist})\n\nតើអ្នកចង់រក្សាទុកទាំងពីរ ឬជំនួសបទចាស់?"
+                            else
+                                "This track already exists in your library:\n• Existing: ${existing.title} (${existing.artist})\n• New: ${candidate.title} (${candidate.artist})\n\nDo you want to keep both or replace the old one?",
+                            fontSize = 13.sp,
+                            color = if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF475569)
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val distinctCandidate = candidate.copy(id = UUID.randomUUID().toString())
+                            saveSongs(context, listOf(distinctCandidate) + songsList)
+                            songsList = restoreAndSyncLibrary(context)
+                            currentSong = distinctCandidate
+                            isPlaying = true
+                            duplicateConflictSong = null
+                            Toast.makeText(context, if (isKhmer) "បានរក្សាទុកទាំងពីរ" else "Kept both tracks", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = if (isDarkMode) Color(0xFF6366F1) else Color(0xFF14161D))
+                    ) {
+                        Text(if (isKhmer) "រក្សាទុកទាំងពីរ" else "Keep Both", color = Color.White)
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(
+                        onClick = {
+                            val updated = songsList.map { if (it.id == existing.id) candidate.copy(id = existing.id) else it }
+                            saveSongs(context, updated)
+                            songsList = restoreAndSyncLibrary(context)
+                            currentSong = candidate.copy(id = existing.id)
+                            isPlaying = true
+                            duplicateConflictSong = null
+                            Toast.makeText(context, if (isKhmer) "បានជំនួសបទចាស់ដោយគុណភាពថ្មី" else "Replaced with higher quality track", Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
+                        Text(if (isKhmer) "ជំនួសបទចាស់" else "Replace Old")
+                    }
+                }
             )
         }
 
@@ -4125,6 +4261,8 @@ fun HomeScreen(
     currentSong: SongItem?,
     isPlaying: Boolean,
     playlists: List<PlaylistItem> = emptyList(),
+    recommendedTracks: List<RecommendedTrack> = emptyList(),
+    onRecommendedDownload: (RecommendedTrack) -> Unit = {},
     onPlaylistClick: (PlaylistItem) -> Unit = {},
     onCreatePlaylistClick: () -> Unit = {},
     onArtistClick: (String, List<SongItem>) -> Unit = { _, _ -> },
@@ -4328,6 +4466,110 @@ fun HomeScreen(
                             Icon(imageVector = Icons.Default.Shuffle, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(text = if (isKhmer) "ច្របល់" else "Shuffle", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Smart Recommended For You (Level 2 Discovery)
+        if (recommendedTracks.isNotEmpty()) {
+            item {
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isKhmer) "✨ បទណែនាំសម្រាប់អ្នក" else "✨ Recommended for You",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = if (isKhmer) "ថ្មីៗ • Trending" else "New & Trending",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        contentPadding = PaddingValues(bottom = 6.dp)
+                    ) {
+                        items(recommendedTracks) { track ->
+                            Surface(
+                                modifier = Modifier
+                                    .width(140.dp)
+                                    .clip(RoundedCornerShape(18.dp)),
+                                color = MaterialTheme.colorScheme.surface,
+                                shadowElevation = 2.dp
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(120.dp)
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(Color(0xFF232733)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        SmartArtworkImage(
+                                            artworkUrl = track.artworkUrl,
+                                            contentDescription = track.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+
+                                        // Action Button Overlay (Download)
+                                        Surface(
+                                            modifier = Modifier
+                                                .align(Alignment.BottomEnd)
+                                                .padding(6.dp)
+                                                .size(28.dp)
+                                                .clip(CircleShape)
+                                                .clickable { onRecommendedDownload(track) },
+                                            color = if (LocalDarkMode.current) Color(0xFF6366F1) else Color(0xFF14161D)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Download,
+                                                    contentDescription = "Download",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    Text(
+                                        text = track.title,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+
+                                    Spacer(modifier = Modifier.height(2.dp))
+
+                                    Text(
+                                        text = track.artist,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -6097,6 +6339,85 @@ fun MediaLinkDownloadDialog(
                             color = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D),
                             trackColor = if (isDark) Color(0xFF334155) else Color(0xFFECEEF2)
                         )
+                        val currentStep = when {
+                            downloadPercentage < 85 -> 1
+                            downloadPercentage < 100 -> 2
+                            else -> 3
+                        }
+
+                        // 3-Step Visual Indicator
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Step 1
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(if (currentStep >= 1) Color(0xFF6366F1) else Color.Gray),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("1", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = if (isKhmer) "ទាញយក" else "Download",
+                                    fontSize = 10.sp,
+                                    fontWeight = if (currentStep == 1) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isDark) Color(0xFFE2E8F0) else Color(0xFF334155)
+                                )
+                            }
+
+                            Icon(imageVector = Icons.Default.ArrowForward, contentDescription = null, modifier = Modifier.size(10.dp), tint = Color.Gray)
+
+                            // Step 2
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(if (currentStep >= 2) Color(0xFF6366F1) else Color.Gray),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("2", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = if (isKhmer) "ផ្ទៀងផ្ទាត់" else "Verify",
+                                    fontSize = 10.sp,
+                                    fontWeight = if (currentStep == 2) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isDark) Color(0xFFE2E8F0) else Color(0xFF334155)
+                                )
+                            }
+
+                            Icon(imageVector = Icons.Default.ArrowForward, contentDescription = null, modifier = Modifier.size(10.dp), tint = Color.Gray)
+
+                            // Step 3
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(if (currentStep >= 3) Color(0xFF10B981) else Color.Gray),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("3", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text(
+                                    text = if (isKhmer) "រួចរាល់" else "Done",
+                                    fontSize = 10.sp,
+                                    fontWeight = if (currentStep == 3) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isDark) Color(0xFFE2E8F0) else Color(0xFF334155)
+                                )
+                            }
+                        }
+
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
                             text = downloadStatusText.ifBlank { if (isKhmer) "កំពុងទាញយក..." else "Downloading..." },

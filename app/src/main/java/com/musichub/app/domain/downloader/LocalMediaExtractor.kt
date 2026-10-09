@@ -71,6 +71,30 @@ object LocalMediaExtractor {
     }
 
     /**
+     * Searches YouTube directly for a query and returns the best matching video ID.
+     */
+    suspend fun searchYouTubeVideoId(query: String, client: OkHttpClient): String? = withContext(Dispatchers.IO) {
+        try {
+            val clean = URLEncoder.encode(query, "UTF-8")
+            val searchUrl = "https://www.youtube.com/results?search_query=$clean"
+            val req = Request.Builder()
+                .url(searchUrl)
+                .header("User-Agent", USER_AGENT)
+                .build()
+            val resp = client.newCall(req).execute()
+            if (resp.isSuccessful) {
+                val html = resp.body?.string() ?: ""
+                val pattern = Pattern.compile("\"videoId\":\"([a-zA-Z0-9_-]{11})\"")
+                val matcher = pattern.matcher(html)
+                if (matcher.find()) {
+                    return@withContext matcher.group(1)
+                }
+            }
+        } catch (_: Exception) {}
+        null
+    }
+
+    /**
      * Fetches official metadata directly from YouTube oEmbed on the local device.
      */
     suspend fun fetchMetadata(videoId: String, client: OkHttpClient): YouTubeMetadata? = withContext(Dispatchers.IO) {
