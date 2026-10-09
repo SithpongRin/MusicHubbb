@@ -143,6 +143,51 @@ enum class LoopMode {
     OFF, ALL, ONE
 }
 
+object PlayCountTracker {
+    private const val PREFS_NAME = "musichub_play_counts"
+
+    fun recordPlay(context: Context, songId: String) {
+        if (songId.isBlank()) return
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val currentCount = prefs.getInt("count_$songId", 0)
+        prefs.edit()
+            .putInt("count_$songId", currentCount + 1)
+            .putLong("last_played_$songId", System.currentTimeMillis())
+            .apply()
+    }
+
+    fun getPlayCount(context: Context, songId: String): Int {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getInt("count_$songId", 0)
+    }
+}
+
+fun findSmartNextTrack(current: SongItem, allSongs: List<SongItem>, context: Context): SongItem? {
+    val candidates = allSongs.filter { it.id != current.id }
+    if (candidates.isEmpty()) return null
+
+    // 1. Same artist (if any)
+    val sameArtist = candidates.filter {
+        it.artist.isNotBlank() && it.artist != "MusicHub" &&
+        it.artist.equals(current.artist, ignoreCase = true)
+    }
+    if (sameArtist.isNotEmpty()) {
+        return sameArtist.random()
+    }
+
+    // 2. Similar duration (within 45s tempo/length match)
+    val similarDuration = candidates.filter {
+        current.durationSec > 0 && it.durationSec > 0 &&
+        kotlin.math.abs(it.durationSec - current.durationSec) <= 45
+    }
+    if (similarDuration.isNotEmpty()) {
+        return similarDuration.maxByOrNull { PlayCountTracker.getPlayCount(context, it.id) } ?: similarDuration.random()
+    }
+
+    // 3. Most played candidate
+    return candidates.maxByOrNull { PlayCountTracker.getPlayCount(context, it.id) } ?: candidates.random()
+}
+
 
 private fun loadSavedPlaylists(context: Context): List<PlaylistItem> {
     val prefs = context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
@@ -1592,6 +1637,7 @@ fun MusicHubApp() {
     var showEqualizerModal by remember { mutableStateOf(false) }
     var showDownloadModal by remember { mutableStateOf(false) }
     var downloadPrefill by remember { mutableStateOf<DownloadPrefill?>(null) }
+    var playCountVersion by remember { mutableIntStateOf(0) }
     var showUpdateModal by remember { mutableStateOf(false) }
     var editingSong by remember { mutableStateOf<SongItem?>(null) }
     var selectedPreset by remember {
@@ -1856,6 +1902,12 @@ fun MusicHubApp() {
             isPlaying = false
             return
         }
+        if (isAutoEnded) {
+            currentSong?.id?.let {
+                PlayCountTracker.recordPlay(context, it)
+                playCountVersion++
+            }
+        }
         if (isAutoEnded && loopMode == LoopMode.ONE) {
             exoPlayer.seekTo(0)
             exoPlayer.play()
@@ -1880,16 +1932,24 @@ fun MusicHubApp() {
                     isPlaying = true
                 } else {
                     if (isAutoEnded) {
-                        isPlaying = false
-                        exoPlayer.seekTo(0)
-                        exoPlayer.pause()
+                        // Smart Auto-Play Next (Seamless intelligent continuation)
+                        val smartNext = currentSong?.let { findSmartNextTrack(it, songsList, context) }
+                        if (smartNext != null) {
+                            currentSong = smartNext
+                            isPlaying = true
+                        } else {
+                            isPlaying = false
+                            exoPlayer.seekTo(0)
+                            exoPlayer.pause()
+                        }
                     } else {
                         currentSong = queue.first()
                         isPlaying = true
                     }
                 }
             } else {
-                currentSong = queue.first()
+                val smartNext = currentSong?.let { findSmartNextTrack(it, songsList, context) } ?: queue.first()
+                currentSong = smartNext
                 isPlaying = true
             }
         }
@@ -2034,6 +2094,7 @@ fun MusicHubApp() {
     // Playback Progress & Live Position Poller (runs continuously while playing)
     LaunchedEffect(isPlaying, currentSong?.id) {
         if (!isPlaying) return@LaunchedEffect
+        var playRecorded = false
         while (isPlaying) {
             val dur = if (exoPlayer.duration > 0) exoPlayer.duration else ((currentSong?.durationSec ?: 0) * 1000L)
             val pos = exoPlayer.currentPosition
@@ -2043,6 +2104,13 @@ fun MusicHubApp() {
             if (dur > 0) {
                 playbackDurationMs = dur
                 playbackProgress = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
+            }
+            if (!playRecorded && pos >= 20000L) {
+                playRecorded = true
+                currentSong?.id?.let {
+                    PlayCountTracker.recordPlay(context, it)
+                    playCountVersion++
+                }
             }
             delay(200)
         }
@@ -2431,6 +2499,7 @@ fun MusicHubApp() {
                         isPlaying = isPlaying,
                         playlists = playlists,
                         recommendedTracks = recommendedTracks,
+                        playCountVersion = playCountVersion,
                         onRecommendedPlay = { track ->
                             val preview = track.previewUrl
                             if (!preview.isNullOrBlank()) {
@@ -4339,6 +4408,7 @@ fun HomeScreen(
     isPlaying: Boolean,
     playlists: List<PlaylistItem> = emptyList(),
     recommendedTracks: List<RecommendedTrack> = emptyList(),
+    playCountVersion: Int = 0,
     onRecommendedPlay: (RecommendedTrack) -> Unit = {},
     onRecommendedDownload: (RecommendedTrack) -> Unit = {},
     onPlaylistClick: (PlaylistItem) -> Unit = {},
@@ -4356,6 +4426,20 @@ fun HomeScreen(
     onAddToPlaylist: (SongItem) -> Unit,
     onShareSong: (SongItem) -> Unit = {}
 ) {
+    val context = LocalContext.current
+
+    val mostPlayedSongs = remember(songs, playCountVersion) {
+        songs.filter { PlayCountTracker.getPlayCount(context, it.id) > 0 }
+            .sortedByDescending { PlayCountTracker.getPlayCount(context, it.id) }
+            .take(8)
+    }
+
+    val topArtistGroup = remember(songs, playCountVersion) {
+        val valid = songs.filter { it.artist.isNotBlank() && it.artist != "MusicHub" && it.artist != "<unknown>" }
+        val grouped = valid.groupBy { it.artist.trim() }
+        grouped.maxByOrNull { g -> g.value.sumOf { PlayCountTracker.getPlayCount(context, it.id) } * 3 + g.value.size }
+    }
+
     val artistGroups = remember(songs) {
         songs.filter { it.artist.isNotBlank() && it.artist != "MusicHub" && it.artist != "<unknown>" }
             .groupBy { it.artist.trim() }
@@ -4544,6 +4628,234 @@ fun HomeScreen(
                             Icon(imageVector = Icons.Default.Shuffle, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(text = if (isKhmer) "ច្របល់" else "Shuffle", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1. Most Played / On Repeat (Smart Offline Recommendation)
+        if (mostPlayedSongs.isNotEmpty()) {
+            item {
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isKhmer) "បទដែលអ្នកចូលចិត្តស្តាប់ជាងគេ" else "Most Played",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "On Repeat",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        contentPadding = PaddingValues(bottom = 6.dp)
+                    ) {
+                        items(mostPlayedSongs) { song ->
+                            val isSongPlaying = currentSong?.id == song.id && isPlaying
+                            val playCount = PlayCountTracker.getPlayCount(context, song.id)
+                            Surface(
+                                modifier = Modifier
+                                    .width(140.dp)
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .clickable { onSongClick(song) },
+                                color = MaterialTheme.colorScheme.surface,
+                                shadowElevation = 2.dp
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(120.dp)
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(Color(0xFF232733)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        SmartArtworkImage(
+                                            artworkUrl = song.artworkUrl,
+                                            contentDescription = song.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+
+                                        if (isSongPlaying) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(Color.Black.copy(alpha = 0.45f)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.GraphicEq,
+                                                    contentDescription = "Playing",
+                                                    tint = Color(0xFF818CF8),
+                                                    modifier = Modifier.size(32.dp)
+                                                )
+                                            }
+                                        }
+
+                                        // Play count badge
+                                        Surface(
+                                            modifier = Modifier
+                                                .align(Alignment.BottomEnd)
+                                                .padding(6.dp),
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = Color.Black.copy(alpha = 0.7f)
+                                        ) {
+                                            Text(
+                                                text = if (isKhmer) "$playCount ដង" else "$playCount plays",
+                                                color = Color.White,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    Text(
+                                        text = song.title,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+
+                                    Spacer(modifier = Modifier.height(2.dp))
+
+                                    Text(
+                                        text = song.artist,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Because You Listen to [Top Artist] (Smart Offline Recommendation)
+        if (topArtistGroup != null && topArtistGroup.value.size >= 2) {
+            val artistName = topArtistGroup.key
+            val artistSongs = topArtistGroup.value.take(8)
+            item {
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isKhmer) "ព្រោះតែអ្នកចូលចិត្តស្តាប់ $artistName" else "Because You Listen to $artistName",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (isKhmer) "ស្រដៀងគ្នា" else "Similar Vibe",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        contentPadding = PaddingValues(bottom = 6.dp)
+                    ) {
+                        items(artistSongs) { song ->
+                            val isSongPlaying = currentSong?.id == song.id && isPlaying
+                            Surface(
+                                modifier = Modifier
+                                    .width(140.dp)
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .clickable { onSongClick(song) },
+                                color = MaterialTheme.colorScheme.surface,
+                                shadowElevation = 2.dp
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(120.dp)
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(Color(0xFF232733)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        SmartArtworkImage(
+                                            artworkUrl = song.artworkUrl,
+                                            contentDescription = song.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+
+                                        if (isSongPlaying) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(Color.Black.copy(alpha = 0.45f)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.GraphicEq,
+                                                    contentDescription = "Playing",
+                                                    tint = Color(0xFF818CF8),
+                                                    modifier = Modifier.size(32.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    Text(
+                                        text = song.title,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+
+                                    Spacer(modifier = Modifier.height(2.dp))
+
+                                    Text(
+                                        text = song.artist,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
                         }
                     }
                 }
