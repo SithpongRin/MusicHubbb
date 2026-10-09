@@ -1638,6 +1638,7 @@ fun MusicHubApp() {
     var showDownloadModal by remember { mutableStateOf(false) }
     var downloadPrefill by remember { mutableStateOf<DownloadPrefill?>(null) }
     var playCountVersion by remember { mutableIntStateOf(0) }
+    var countedSongSessionId by remember { mutableStateOf<String?>(null) }
     var showUpdateModal by remember { mutableStateOf(false) }
     var editingSong by remember { mutableStateOf<SongItem?>(null) }
     var selectedPreset by remember {
@@ -1903,12 +1904,15 @@ fun MusicHubApp() {
             return
         }
         if (isAutoEnded) {
-            currentSong?.id?.let {
-                PlayCountTracker.recordPlay(context, it)
+            val currentId = currentSong?.id
+            if (currentId != null && countedSongSessionId != currentId) {
+                countedSongSessionId = currentId
+                PlayCountTracker.recordPlay(context, currentId)
                 playCountVersion++
             }
         }
         if (isAutoEnded && loopMode == LoopMode.ONE) {
+            countedSongSessionId = null
             exoPlayer.seekTo(0)
             exoPlayer.play()
             return
@@ -2094,7 +2098,6 @@ fun MusicHubApp() {
     // Playback Progress & Live Position Poller (runs continuously while playing)
     LaunchedEffect(isPlaying, currentSong?.id) {
         if (!isPlaying) return@LaunchedEffect
-        var playRecorded = false
         while (isPlaying) {
             val dur = if (exoPlayer.duration > 0) exoPlayer.duration else ((currentSong?.durationSec ?: 0) * 1000L)
             val pos = exoPlayer.currentPosition
@@ -2105,12 +2108,11 @@ fun MusicHubApp() {
                 playbackDurationMs = dur
                 playbackProgress = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
             }
-            if (!playRecorded && pos >= 20000L) {
-                playRecorded = true
-                currentSong?.id?.let {
-                    PlayCountTracker.recordPlay(context, it)
-                    playCountVersion++
-                }
+            val currentId = currentSong?.id
+            if (currentId != null && countedSongSessionId != currentId && pos >= 20000L) {
+                countedSongSessionId = currentId
+                PlayCountTracker.recordPlay(context, currentId)
+                playCountVersion++
             }
             delay(200)
         }
@@ -2118,6 +2120,7 @@ fun MusicHubApp() {
 
     // Load track into ExoPlayer on selection with auto-resolving URI
     LaunchedEffect(currentSong?.id) {
+        countedSongSessionId = null
         val song = currentSong ?: return@LaunchedEffect
         val publicDir = MusicHubStorage.getBaseDir()
         val playableUri = findExistingAudioUri(context, song, publicDir)
@@ -4399,6 +4402,69 @@ fun ArtistDetailDialog(
     }
 }
 
+@Composable
+fun AnimatedEqualizer(
+    modifier: Modifier = Modifier,
+    barColor: Color = Color(0xFF818CF8),
+    isPlaying: Boolean = true
+) {
+    val transition = rememberInfiniteTransition(label = "eq_anim")
+    val b1 by transition.animateFloat(
+        initialValue = 0.25f,
+        targetValue = 0.95f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(420, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "b1"
+    )
+    val b2 by transition.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 0.2f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(360, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "b2"
+    )
+    val b3 by transition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(510, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "b3"
+    )
+    val b4 by transition.animateFloat(
+        initialValue = 0.75f,
+        targetValue = 0.3f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(390, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "b4"
+    )
+
+    val heights = listOf(b1, b2, b3, b4)
+    Row(
+        modifier = modifier.height(28.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        heights.forEach { frac ->
+            val h = if (isPlaying) (6 + (20 * frac)).dp else 8.dp
+            Box(
+                modifier = Modifier
+                    .width(3.5.dp)
+                    .height(h)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(barColor)
+            )
+        }
+    }
+}
+
 // Home Screen
 @Composable
 fun HomeScreen(
@@ -4699,11 +4765,9 @@ fun HomeScreen(
                                                     .background(Color.Black.copy(alpha = 0.45f)),
                                                 contentAlignment = Alignment.Center
                                             ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.GraphicEq,
-                                                    contentDescription = "Playing",
-                                                    tint = Color(0xFF818CF8),
-                                                    modifier = Modifier.size(32.dp)
+                                                AnimatedEqualizer(
+                                                    barColor = Color(0xFF818CF8),
+                                                    isPlaying = isPlaying
                                                 )
                                             }
                                         }
@@ -4733,7 +4797,9 @@ fun HomeScreen(
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
+                                        maxLines = 2,
+                                        minLines = 2,
+                                        lineHeight = 16.sp,
                                         overflow = TextOverflow.Ellipsis
                                     )
 
@@ -4769,11 +4835,11 @@ fun HomeScreen(
                     ) {
                         Text(
                             text = if (isKhmer) "ព្រោះតែអ្នកចូលចិត្តស្តាប់ $artistName" else "Because You Listen to $artistName",
-                            fontSize = 17.sp,
+                            fontSize = 16.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                            maxLines = 2,
+                            lineHeight = 20.sp,
                             modifier = Modifier.weight(1f)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
@@ -4824,11 +4890,9 @@ fun HomeScreen(
                                                     .background(Color.Black.copy(alpha = 0.45f)),
                                                 contentAlignment = Alignment.Center
                                             ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.GraphicEq,
-                                                    contentDescription = "Playing",
-                                                    tint = Color(0xFF818CF8),
-                                                    modifier = Modifier.size(32.dp)
+                                                AnimatedEqualizer(
+                                                    barColor = Color(0xFF818CF8),
+                                                    isPlaying = isPlaying
                                                 )
                                             }
                                         }
@@ -4841,7 +4905,9 @@ fun HomeScreen(
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
+                                        maxLines = 2,
+                                        minLines = 2,
+                                        lineHeight = 16.sp,
                                         overflow = TextOverflow.Ellipsis
                                     )
 
@@ -4926,11 +4992,9 @@ fun HomeScreen(
                                                     .background(Color.Black.copy(alpha = 0.45f)),
                                                 contentAlignment = Alignment.Center
                                             ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.GraphicEq,
-                                                    contentDescription = "Playing",
-                                                    tint = Color(0xFF818CF8),
-                                                    modifier = Modifier.size(32.dp)
+                                                AnimatedEqualizer(
+                                                    barColor = Color(0xFF818CF8),
+                                                    isPlaying = isPlaying
                                                 )
                                             }
                                         }
@@ -4963,7 +5027,9 @@ fun HomeScreen(
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
+                                        maxLines = 2,
+                                        minLines = 2,
+                                        lineHeight = 16.sp,
                                         overflow = TextOverflow.Ellipsis
                                     )
 
