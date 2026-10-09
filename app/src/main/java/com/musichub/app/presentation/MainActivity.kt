@@ -26,6 +26,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -53,6 +54,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -1558,21 +1560,21 @@ fun MusicHubApp() {
     }
 
     fun getCurrentPlaybackQueue(): List<SongItem> {
+        val pid = activePlaylistId
+        if (pid != null) {
+            val pl = playlists.find { it.id.trim() == pid.trim() }
+            if (pl != null) {
+                val plSongs = pl.songIds.mapNotNull { id -> songsList.find { it.id.trim() == id.trim() } }
+                if (plSongs.isNotEmpty()) {
+                    return plSongs
+                }
+            }
+        }
         val artist = activeArtistName
         if (artist != null) {
             val aSongs = songsList.filter { it.artist.trim().equals(artist.trim(), ignoreCase = true) }
             if (aSongs.isNotEmpty()) {
                 return aSongs
-            }
-        }
-        val pid = activePlaylistId
-        if (pid != null) {
-            val pl = playlists.find { it.id == pid }
-            if (pl != null) {
-                val plSongs = pl.songIds.mapNotNull { id -> songsList.find { it.id == id } }
-                if (plSongs.isNotEmpty()) {
-                    return plSongs
-                }
             }
         }
         return songsList
@@ -1885,15 +1887,22 @@ fun MusicHubApp() {
                     isPlaying = true
                 } else {
                     if (isAutoEnded) {
-                        // Smart Auto-Play Next (Seamless intelligent continuation)
-                        val smartNext = currentSong?.let { findSmartNextTrack(it, songsList, context) }
-                        if (smartNext != null) {
-                            currentSong = smartNext
-                            isPlaying = true
-                        } else {
+                        if (activePlaylistId != null || activeArtistName != null) {
+                            // When at end of a Playlist or Artist in Loop Off mode, stop cleanly without escaping into other songs
                             isPlaying = false
                             exoPlayer.seekTo(0)
                             exoPlayer.pause()
+                        } else {
+                            // Smart Auto-Play Next (Seamless intelligent continuation for general library only)
+                            val smartNext = currentSong?.let { findSmartNextTrack(it, songsList, context) }
+                            if (smartNext != null) {
+                                currentSong = smartNext
+                                isPlaying = true
+                            } else {
+                                isPlaying = false
+                                exoPlayer.seekTo(0)
+                                exoPlayer.pause()
+                            }
                         }
                     } else {
                         currentSong = queue.first()
@@ -1901,9 +1910,14 @@ fun MusicHubApp() {
                     }
                 }
             } else {
-                val smartNext = currentSong?.let { findSmartNextTrack(it, songsList, context) } ?: queue.first()
-                currentSong = smartNext
-                isPlaying = true
+                if (activePlaylistId != null || activeArtistName != null) {
+                    currentSong = queue.first()
+                    isPlaying = true
+                } else {
+                    val smartNext = currentSong?.let { findSmartNextTrack(it, songsList, context) } ?: queue.first()
+                    currentSong = smartNext
+                    isPlaying = true
+                }
             }
         }
     }
@@ -2450,6 +2464,7 @@ fun MusicHubApp() {
                         songs = songsList,
                         currentSong = currentSong,
                         isPlaying = isPlaying,
+                        activeArtistName = activeArtistName,
                         playlists = playlists,
                         recommendedTracks = recommendedTracks,
                         playCountVersion = playCountVersion,
@@ -2662,6 +2677,7 @@ fun MusicHubApp() {
                         playlists = playlists,
                         currentSong = currentSong,
                         isPlaying = isPlaying,
+                        activeArtistName = activeArtistName,
                         selectedCategory = selectedCategory,
                         onCategorySelect = { selectedCategory = it },
                         onArtistClick = { artistName, aSongs -> viewingArtist = Pair(artistName, aSongs) },
@@ -3072,6 +3088,7 @@ fun MusicHubApp() {
                 },
                 onSongClick = { song ->
                     activePlaylistId = currentP.id
+                    activeArtistName = null
                     currentSong = song
                     isPlaying = true
                 },
@@ -3079,6 +3096,7 @@ fun MusicHubApp() {
                     val pSongs = currentP.songIds.mapNotNull { id -> songsList.find { it.id == id } }
                     if (pSongs.isNotEmpty()) {
                         activePlaylistId = currentP.id
+                        activeArtistName = null
                         currentSong = pSongs.first()
                         isPlaying = true
                     }
@@ -3133,9 +3151,7 @@ fun MusicHubApp() {
         if (viewingArtist != null) {
             val (aName, _) = viewingArtist!!
             val aSongs = songsList.filter { it.artist.trim().equals(aName.trim(), ignoreCase = true) }
-            val isThisArtistPlaying = isPlaying && currentSong?.let {
-                it.artist.trim().equals(aName.trim(), ignoreCase = true)
-            } ?: false
+            val isThisArtistPlaying = isPlaying && activeArtistName != null && activeArtistName!!.trim().equals(aName.trim(), ignoreCase = true)
 
             ArtistDetailDialog(
                 isKhmer = isKhmer,
@@ -3143,6 +3159,15 @@ fun MusicHubApp() {
                 artistSongs = aSongs,
                 currentSong = currentSong,
                 isPlaying = isPlaying,
+                activeArtistName = activeArtistName,
+                loopMode = loopMode,
+                onLoopModeToggle = {
+                    loopMode = when (loopMode) {
+                        LoopMode.OFF -> LoopMode.ALL
+                        LoopMode.ALL -> LoopMode.ONE
+                        LoopMode.ONE -> LoopMode.OFF
+                    }
+                },
                 onSongClick = { song ->
                     activePlaylistId = null
                     activeArtistName = aName
@@ -4047,6 +4072,8 @@ fun PlaylistDetailDialog(
                         }
                     }
                 } else {
+                    val density = LocalDensity.current
+                    val itemHeightPx: Float = remember(density) { with(density) { 66.dp.toPx() } }
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -4135,50 +4162,58 @@ fun PlaylistDetailDialog(
                                                     val startIdx = songsOrder.indexOf(song.id)
                                                     if (startIdx < 0) return@awaitEachGesture
 
-                                                    draggingIndex = startIdx
-                                                    dragOffsetY = 0f
-                                                    var hasDragged = false
+                                                    var totalDeltaY = 0f
+                                                    var isDraggingActive = false
+                                                    val touchSlop = viewConfiguration.touchSlop
 
                                                     while (true) {
                                                         val event = awaitPointerEvent()
-                                                        val drag = event.changes.firstOrNull { it.id == down.id } ?: break
-                                                        if (!drag.pressed) {
+                                                        val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
+                                                        if (!pointer.pressed) {
                                                             break
                                                         }
-                                                        val deltaY = drag.positionChange().y
-                                                        if (kotlin.math.abs(deltaY) > 0.5f) {
-                                                            hasDragged = true
-                                                            drag.consume()
-                                                            dragOffsetY += deltaY
-
-                                                            val curIdx = draggingIndex ?: startIdx
-                                                            val step = 140f
-                                                            if (dragOffsetY > step * 0.5f && curIdx < songsOrder.size - 1) {
-                                                                val targetIdx = curIdx + 1
+                                                        val dy = pointer.positionChange().y
+                                                        totalDeltaY += dy
+                                                        if (!isDraggingActive) {
+                                                            if (kotlin.math.abs(totalDeltaY) > touchSlop) {
+                                                                isDraggingActive = true
+                                                                pointer.consume()
+                                                                val startIdx = songsOrder.indexOf(song.id)
+                                                                if (startIdx >= 0) {
+                                                                    draggingIndex = startIdx
+                                                                    dragOffsetY = totalDeltaY
+                                                                }
+                                                            }
+                                                        } else {
+                                                            pointer.consume()
+                                                            dragOffsetY += dy
+                                                            while (dragOffsetY > itemHeightPx * 0.5f && (draggingIndex ?: 0) < songsOrder.size - 1) {
+                                                                val cur = draggingIndex ?: break
+                                                                val target = cur + 1
                                                                 val mutable = songsOrder.toMutableList()
-                                                                val item = mutable.removeAt(curIdx)
-                                                                mutable.add(targetIdx, item)
+                                                                val item = mutable.removeAt(cur)
+                                                                mutable.add(target, item)
                                                                 songsOrder = mutable
-                                                                draggingIndex = targetIdx
-                                                                dragOffsetY -= step
-                                                                onSaveSongIds(mutable)
-                                                            } else if (dragOffsetY < -step * 0.5f && curIdx > 0) {
-                                                                val targetIdx = curIdx - 1
+                                                                draggingIndex = target
+                                                                dragOffsetY -= itemHeightPx
+                                                            }
+                                                            while (dragOffsetY < -itemHeightPx * 0.5f && (draggingIndex ?: 0) > 0) {
+                                                                val cur = draggingIndex ?: break
+                                                                val target = cur - 1
                                                                 val mutable = songsOrder.toMutableList()
-                                                                val item = mutable.removeAt(curIdx)
-                                                                mutable.add(targetIdx, item)
+                                                                val item = mutable.removeAt(cur)
+                                                                mutable.add(target, item)
                                                                 songsOrder = mutable
-                                                                draggingIndex = targetIdx
-                                                                dragOffsetY += step
-                                                                onSaveSongIds(mutable)
+                                                                draggingIndex = target
+                                                                dragOffsetY += itemHeightPx
                                                             }
                                                         }
                                                     }
 
-                                                    if (!hasDragged) {
-                                                        showReorderMenu = true
-                                                    } else {
+                                                    if (isDraggingActive) {
                                                         onSaveSongIds(songsOrder)
+                                                    } else {
+                                                        showReorderMenu = true
                                                     }
                                                     draggingIndex = null
                                                     dragOffsetY = 0f
@@ -4283,6 +4318,9 @@ fun ArtistDetailDialog(
     artistSongs: List<SongItem>,
     currentSong: SongItem?,
     isPlaying: Boolean,
+    activeArtistName: String? = null,
+    loopMode: LoopMode = LoopMode.ALL,
+    onLoopModeToggle: () -> Unit = {},
     onSongClick: (SongItem) -> Unit,
     onPlayAll: () -> Unit,
     onShufflePlay: () -> Unit,
@@ -4298,9 +4336,7 @@ fun ArtistDetailDialog(
         artistSongs.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
     }
 
-    val isThisArtistPlaying = isPlaying && currentSong?.let {
-        it.artist.trim().equals(artistName.trim(), ignoreCase = true)
-    } ?: false
+    val isThisArtistPlaying = isPlaying && activeArtistName != null && activeArtistName.trim().equals(artistName.trim(), ignoreCase = true)
 
     val infiniteTransition = rememberInfiniteTransition(label = "artist_header_anim")
     val avatarRotation by infiniteTransition.animateFloat(
@@ -4516,6 +4552,57 @@ fun ArtistDetailDialog(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
+                // Action Bar: Tracks count & Loop Mode Toggle Button (Identical to Playlist)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (isKhmer) "${artistSongs.size} បទចម្រៀង" else "${artistSongs.size} tracks",
+                        fontSize = 13.sp,
+                        color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E),
+                        fontWeight = FontWeight.Medium
+                    )
+
+                    // Loop Mode Toggle Button
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable { onLoopModeToggle() },
+                        color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF1E222D) else Color.White),
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                                contentDescription = "Loop",
+                                tint = if (loopMode != LoopMode.OFF) Color.White else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = when (loopMode) {
+                                    LoopMode.OFF -> if (isKhmer) "បិទ Loop" else "Loop Off"
+                                    LoopMode.ALL -> if (isKhmer) "Loop ទាំងអស់" else "Loop All"
+                                    LoopMode.ONE -> if (isKhmer) "Loop 1 បទ" else "Loop 1"
+                                },
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (loopMode != LoopMode.OFF) Color.White else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B))
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
                 // Songs List
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
@@ -4613,6 +4700,7 @@ fun HomeScreen(
     songs: List<SongItem>,
     currentSong: SongItem?,
     isPlaying: Boolean,
+    activeArtistName: String? = null,
     playlists: List<PlaylistItem> = emptyList(),
     recommendedTracks: List<RecommendedTrack> = emptyList(),
     playCountVersion: Int = 0,
@@ -5358,9 +5446,7 @@ fun HomeScreen(
                     ) {
                         items(artistGroups) { (artistName, aSongs) ->
                             val artistCover = aSongs.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
-                            val isThisArtistPlaying = isPlaying && currentSong?.let {
-                                it.artist.trim().equals(artistName.trim(), ignoreCase = true)
-                            } ?: false
+                            val isThisArtistPlaying = isPlaying && activeArtistName != null && activeArtistName.trim().equals(artistName.trim(), ignoreCase = true)
 
                             Surface(
                                 modifier = Modifier
@@ -6423,6 +6509,7 @@ fun LibraryScreen(
     playlists: List<PlaylistItem>,
     currentSong: SongItem?,
     isPlaying: Boolean,
+    activeArtistName: String? = null,
     selectedCategory: String,
     onCategorySelect: (String) -> Unit,
     onArtistClick: (String, List<SongItem>) -> Unit = { _, _ -> },
@@ -6640,9 +6727,7 @@ fun LibraryScreen(
             } else {
                 items(artistGroups) { (artistName, aSongs) ->
                     val artistCover = aSongs.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
-                    val isThisArtistPlaying = isPlaying && currentSong?.let {
-                        it.artist.trim().equals(artistName.trim(), ignoreCase = true)
-                    } ?: false
+                    val isThisArtistPlaying = isPlaying && activeArtistName != null && activeArtistName.trim().equals(artistName.trim(), ignoreCase = true)
 
                     Surface(
                         modifier = Modifier
