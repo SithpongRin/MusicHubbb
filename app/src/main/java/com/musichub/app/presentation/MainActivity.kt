@@ -93,6 +93,7 @@ import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import com.musichub.app.player.MediaPlaybackService
 import com.musichub.app.domain.downloader.LocalMediaExtractor
+import com.musichub.app.domain.audio.AudioWaveformFingerprinter
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 
@@ -844,6 +845,20 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
                     return true
                 }
             }
+        }
+
+        // 3. Acoustic Waveform Fingerprint Verification (Acoustic Wave Matching)
+        // If durations are close (within 28s) and titles share keywords or artists match, verify PCM waveforms
+        val durDiff = if (a.durationSec > 0 && b.durationSec > 0) kotlin.math.abs(a.durationSec - b.durationSec) else 0
+        if (durDiff <= 28 && (aTitleClean.contains(bTitleClean) || bTitleClean.contains(aTitleClean) || aTitleClean.take(4) == bTitleClean.take(4) || artistsMatch)) {
+            val isWaveMatch = AudioWaveformFingerprinter.areAudioWaveformsMatching(
+                context,
+                a.uriString,
+                a.durationSec,
+                b.uriString,
+                b.durationSec
+            )
+            if (isWaveMatch) return true
         }
 
         return false
@@ -2470,7 +2485,7 @@ fun MusicHubApp() {
                         onShareSong = { song -> shareSongFile(context, song) },
                         onRescanLibrary = {
                             songsList = restoreAndSyncLibrary(context)
-                            Toast.makeText(context, if (isKhmer) "បានធ្វើបច្ចុប្បន្នភាពបណ្ណាល័យ (${songsList.size} បទ)" else "Library updated (${songsList.size} tracks)", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, if (isKhmer) "បានស្កេន និងផ្គូផ្គង Waveform បណ្ណាល័យ (${songsList.size} បទ)" else "Library updated via Waveform Scan (${songsList.size} tracks)", Toast.LENGTH_SHORT).show()
                         }
                     )
                     Screen.SETTINGS -> SettingsScreen(
