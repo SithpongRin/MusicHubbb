@@ -309,12 +309,10 @@ fun findExistingAudioUri(context: Context, song: SongItem, publicDir: File): Str
         try {
             val u = Uri.parse(song.uriString)
             if (song.uriString.startsWith("content://")) {
-                context.contentResolver.openFileDescriptor(u, "r")?.use { pfd ->
-                    if (pfd.statSize > 1024) return song.uriString
-                }
+                return song.uriString
             } else if (song.uriString.startsWith("file://")) {
                 val f = File(u.path ?: "")
-                if (f.exists() && f.length() > 1024) return song.uriString
+                if (f.exists() && f.length() > 512) return song.uriString
             }
         } catch (e: Exception) {}
     }
@@ -331,26 +329,18 @@ fun findExistingAudioUri(context: Context, song: SongItem, publicDir: File): Str
             File(dir, "$cleanArtist - $cleanTitle.${song.format.lowercase()}"),
             File(dir, "$cleanArtist - $cleanTitle.mp3"),
             File(dir, "$cleanArtist - $cleanTitle.m4a"),
-            File(dir, "$cleanArtist - $cleanTitle.mp4")
+            File(dir, "$cleanArtist - $cleanTitle.mp4"),
+            File(dir, "$cleanTitle.${song.format.lowercase()}"),
+            File(dir, "$cleanTitle.mp3")
         )
         for (f in candidates) {
-            if (f.exists() && f.length() > 1024) {
+            if (f.exists() && f.length() > 512) {
                 return Uri.fromFile(f).toString()
-            }
-        }
-
-        val allFiles = dir.listFiles() ?: emptyArray()
-        for (f in allFiles) {
-            if (f.isFile && f.length() > 1024) {
-                val fname = f.nameWithoutExtension.lowercase()
-                if (cleanTitle.isNotBlank() && fname.contains(cleanTitle.lowercase())) {
-                    return Uri.fromFile(f).toString()
-                }
             }
         }
     }
 
-    return null
+    return if (song.uriString.isNotBlank()) song.uriString else null
 }
 
 fun sanitizeArtist(rawArtist: String): String {
@@ -392,15 +382,9 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
     val seenFileNames = mutableSetOf<String>()
     val deletedSignatures = getDeletedSongSignatures(context)
 
-    fun isSongDeleted(uri: String, artist: String, title: String, durSec: Int): Boolean {
+    fun isSongDeleted(uri: String): Boolean {
         if (uri.isNotBlank() && deletedSignatures.contains("uri:" + uri.trim().lowercase())) {
             return true
-        }
-        val artistNorm = artist.trim().lowercase()
-        val titleNorm = title.trim().lowercase()
-        if (titleNorm.isNotBlank()) {
-            if (deletedSignatures.contains("key:$artistNorm - $titleNorm")) return true
-            if (durSec > 0 && deletedSignatures.contains("title_dur:$titleNorm - $durSec")) return true
         }
         return false
     }
@@ -426,13 +410,11 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
     for (s in prefSongs) {
         val cleanArtist = sanitizeArtist(s.artist)
         val cleanTitle = sanitizeTitle(s.title)
-        if (isSongDeleted(s.uriString, cleanArtist, cleanTitle, s.durationSec)) continue
-        val validUri = findExistingAudioUri(context, s, publicDir) ?: continue
+        if (isSongDeleted(s.uriString)) continue
+        val validUri = findExistingAudioUri(context, s, publicDir) ?: s.uriString
         val canonPath = getCanonicalPath(validUri)
-        val fName = try { File(Uri.parse(validUri).path ?: "").name.lowercase() } catch (e: Exception) { "" }
 
         if (seenFilePaths.add(canonPath)) {
-            if (fName.isNotBlank()) seenFileNames.add(fName)
             var art = s.artworkUrl
             val companionArt = File(coversSubDir, "$cleanArtist - $cleanTitle.jpg")
             val rootArt = File(publicDir, "$cleanArtist - $cleanTitle.jpg")
@@ -461,13 +443,11 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
                 for (s in manifestSongs) {
                     val cleanArtist = sanitizeArtist(s.artist)
                     val cleanTitle = sanitizeTitle(s.title)
-                    if (isSongDeleted(s.uriString, cleanArtist, cleanTitle, s.durationSec)) continue
-                    val validUri = findExistingAudioUri(context, s, publicDir) ?: continue
+                    if (isSongDeleted(s.uriString)) continue
+                    val validUri = findExistingAudioUri(context, s, publicDir) ?: s.uriString
                     val canonPath = getCanonicalPath(validUri)
-                    val fName = try { File(Uri.parse(validUri).path ?: "").name.lowercase() } catch (e: Exception) { "" }
 
                     if (seenFilePaths.add(canonPath)) {
-                        if (fName.isNotBlank()) seenFileNames.add(fName)
                         var art = s.artworkUrl
                         val companionArt = File(coversSubDir, "$cleanArtist - $cleanTitle.jpg")
                         val rootArt = File(publicDir, "$cleanArtist - $cleanTitle.jpg")
@@ -494,6 +474,7 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
     val scanDirs = listOfNotNull(
         songsSubDir,
         publicDir,
+        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
         context.getExternalFilesDir(Environment.DIRECTORY_MUSIC),
         File(context.filesDir, "music")
     )
@@ -508,18 +489,16 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
         for (file in audioFiles) {
             val fileUri = Uri.fromFile(file).toString()
             val canonPath = try { file.canonicalPath.lowercase() } catch (e: Exception) { fileUri.lowercase() }
-            val fName = file.name.lowercase()
 
-            // If in publicDir root, and file already exists in dedicated Songs directory, clean up root copy
+            // If in publicDir root, and file already exists in dedicated Songs directory, skip it
             if (dir.canonicalPath == publicDir.canonicalPath) {
                 val companionInSongs = File(songsSubDir, file.name)
-                if (companionInSongs.exists() && companionInSongs.length() > 1024) {
-                    try { file.delete() } catch (e: Exception) {}
+                if (companionInSongs.exists() && companionInSongs.length() > 512) {
                     continue
                 }
             }
 
-            if (canonPath in seenFilePaths || fName in seenFileNames) continue
+            if (canonPath in seenFilePaths) continue
 
             val baseName = file.nameWithoutExtension
             val ext = file.extension.uppercase()
@@ -589,10 +568,9 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
             parsedArtist = sanitizeArtist(parsedArtist)
             parsedTitle = sanitizeTitle(parsedTitle)
 
-            if (isSongDeleted(fileUri, parsedArtist, parsedTitle, durSec)) continue
+            if (isSongDeleted(fileUri)) continue
 
             seenFilePaths.add(canonPath)
-            seenFileNames.add(fName)
             resultList.add(
                 SongItem(
                     id = UUID.randomUUID().toString(),
@@ -650,14 +628,6 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
         val bCanon = getCanonicalPath(b.uriString)
         if (aCanon.isNotBlank() && bCanon.isNotBlank() && aCanon == bCanon) return true
 
-        val aFileName = try { File(Uri.parse(a.uriString).path ?: "").nameWithoutExtension.lowercase() } catch (e: Exception) { "" }
-        val bFileName = try { File(Uri.parse(b.uriString).path ?: "").nameWithoutExtension.lowercase() } catch (e: Exception) { "" }
-        if (aFileName.isNotBlank() && bFileName.isNotBlank()) {
-            val aCleanName = aFileName.replace("topic", "").replace(Regex("[^a-z0-9]"), "")
-            val bCleanName = bFileName.replace("topic", "").replace(Regex("[^a-z0-9]"), "")
-            if (aCleanName.isNotBlank() && aCleanName == bCleanName) return true
-        }
-
         val aTitleClean = cleanTitle(a.title)
         val bTitleClean = cleanTitle(b.title)
         if (aTitleClean.isBlank() || bTitleClean.isBlank()) return false
@@ -665,41 +635,24 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
         val aArtClean = cleanArtist(a.artist)
         val bArtClean = cleanArtist(b.artist)
 
-        val durationMatches = a.durationSec > 0 && b.durationSec > 0 && kotlin.math.abs(a.durationSec - b.durationSec) <= 5
-
-        // 1. Same normalized title
-        if (aTitleClean == bTitleClean) {
-            if (aArtClean.isBlank() || bArtClean.isBlank() || aArtClean == bArtClean || aArtClean.contains(bArtClean) || bArtClean.contains(aArtClean)) {
-                return true
-            }
-            if (durationMatches) {
-                return true
-            }
-        }
-
-        // 2. Substring titles (e.g. "twentyfive" in "topictwentyfive", "pasilyo" in "sunkissedlolapasilyo")
-        if (aTitleClean.contains(bTitleClean) || bTitleClean.contains(aTitleClean)) {
-            if (aArtClean == bArtClean || aArtClean.contains(bArtClean) || bArtClean.contains(aArtClean)) {
-                return true
-            }
-            if (durationMatches) {
-                return true
-            }
-        }
-
-        // 3. Combination of artist + title
-        val comboA = aArtClean + aTitleClean
-        val comboB = bArtClean + bTitleClean
-        if (comboA == comboB || comboA.contains(comboB) || comboB.contains(comboA)) {
+        // 1. Exact Title Match AND Exact Artist Match (Case-insensitive, Topic/VEVO tags removed)
+        if (aTitleClean == bTitleClean && aArtClean.isNotBlank() && bArtClean.isNotBlank() && aArtClean == bArtClean) {
             return true
         }
 
-        // 4. Matching artist and close duration with shared title chunk
-        if (aArtClean.isNotBlank() && bArtClean.isNotBlank() && aArtClean == bArtClean && durationMatches) {
-            val titleWordsA = aTitleClean.chunked(4).filter { it.length >= 4 }
-            if (titleWordsA.any { bTitleClean.contains(it) }) {
-                return true
-            }
+        // 2. Exact Title Match AND one of the artists is blank/MusicHub with matching duration
+        if (aTitleClean == bTitleClean && (aArtClean.isBlank() || aArtClean == "musichub" || bArtClean.isBlank() || bArtClean == "musichub")) {
+            val durationMatches = a.durationSec > 0 && b.durationSec > 0 && kotlin.math.abs(a.durationSec - b.durationSec) <= 4
+            if (durationMatches) return true
+        }
+
+        // 3. Exact matching filename on storage (e.g. file in Songs/ vs root)
+        val aFileName = try { File(Uri.parse(a.uriString).path ?: "").nameWithoutExtension.lowercase() } catch (e: Exception) { "" }
+        val bFileName = try { File(Uri.parse(b.uriString).path ?: "").nameWithoutExtension.lowercase() } catch (e: Exception) { "" }
+        if (aFileName.isNotBlank() && bFileName.isNotBlank()) {
+            val aCleanName = aFileName.replace("topic", "").replace(Regex("[^a-z0-9]"), "")
+            val bCleanName = bFileName.replace("topic", "").replace(Regex("[^a-z0-9]"), "")
+            if (aCleanName.isNotBlank() && aCleanName == bCleanName) return true
         }
 
         return false
@@ -740,23 +693,6 @@ fun restoreAndSyncLibrary(context: Context): List<SongItem> {
             existing.uriString.isNotBlank() -> existing.uriString
             else -> candidate.uriString
         }
-
-        // Clean up redundant physical file in publicDir root
-        try {
-            val u1 = Uri.parse(existing.uriString).path
-            val u2 = Uri.parse(candidate.uriString).path
-            if (u1 != null && u2 != null && u1 != u2) {
-                val f1 = File(u1)
-                val f2 = File(u2)
-                if (f1.exists() && f2.exists()) {
-                    if (f1.parentFile?.canonicalPath == publicDir.canonicalPath) {
-                        f1.delete()
-                    } else if (f2.parentFile?.canonicalPath == publicDir.canonicalPath) {
-                        f2.delete()
-                    }
-                }
-            }
-        } catch (e: Exception) {}
 
         return existing.copy(
             title = bestTitle,
