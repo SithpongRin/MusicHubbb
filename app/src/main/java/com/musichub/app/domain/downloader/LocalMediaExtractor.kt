@@ -654,7 +654,15 @@ object LocalMediaExtractor {
             return directStreams.first()
         }
 
-        // 2. Secondary Engine: Direct High-Speed Stream (loader.to)
+        // 2. Secondary Engine: Chromium WebView Live Interception
+        try {
+            val webViewStream = extractStreamViaWebView(context, cleanId, timeoutMs)
+            if (webViewStream != null && webViewStream.streamUrl.isNotBlank()) {
+                return webViewStream
+            }
+        } catch (_: Exception) {}
+
+        // 3. Third Engine: Direct High-Speed Stream (loader.to)
         val loaderUrl = fetchLoaderStreamUrl(cleanId, client, onProgress, isKhmer)
         if (loaderUrl != null && loaderUrl.isNotBlank()) {
             return ExtractedMediaStream(
@@ -668,10 +676,10 @@ object LocalMediaExtractor {
         return null
     }
 
-    private suspend fun extractStreamViaWebView(
+    suspend fun extractStreamViaWebView(
         context: Context,
         videoId: String,
-        timeoutMs: Long
+        timeoutMs: Long = 5000L
     ): ExtractedMediaStream? = withTimeoutOrNull(timeoutMs) {
         withContext(Dispatchers.Main) {
             suspendCancellableCoroutine { cont ->
@@ -754,6 +762,35 @@ object LocalMediaExtractor {
                 }
             }
         }
+    }
+
+    /**
+     * Expands Google Video streams with fallback CDN nodes (parsed from mn= query parameter).
+     * Bypasses broken ISP Google Global Cache nodes (which drop HTTPS SYN packets) by targeting global edge nodes.
+     */
+    fun expandGoogleVideoCandidates(stream: ExtractedMediaStream): List<ExtractedMediaStream> {
+        val results = mutableListOf<ExtractedMediaStream>()
+        val rawUrl = stream.streamUrl
+        try {
+            val uri = java.net.URI(rawUrl)
+            val host = uri.host ?: ""
+            if (host.contains("googlevideo.com") && host.contains("---")) {
+                val prefix = host.substringBefore("---")
+                val mnParam = rawUrl.substringAfter("mn=", "").substringBefore("&")
+                if (mnParam.isNotBlank()) {
+                    val decoded = java.net.URLDecoder.decode(mnParam, "UTF-8")
+                    val nodes = decoded.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                    for (node in nodes) {
+                        val altHost = "$prefix---$node.googlevideo.com"
+                        if (altHost != host) {
+                            results.add(stream.copy(streamUrl = rawUrl.replace(host, altHost)))
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        results.add(stream)
+        return results
     }
 
     fun cleanGoogleVideoUrl(rawUrl: String): String {

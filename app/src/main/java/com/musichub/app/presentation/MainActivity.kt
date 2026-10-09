@@ -1103,6 +1103,12 @@ fun shareSongFile(context: Context, song: SongItem) {
     }
 }
 
+data class CandidateDownloadTarget(
+    val url: String,
+    val userAgent: String = LocalMediaExtractor.USER_AGENT,
+    val cookies: String? = null
+)
+
 suspend fun downloadAudioToStorage(
     context: Context,
     url: String,
@@ -1121,15 +1127,15 @@ suspend fun downloadAudioToStorage(
     if (tempFile.exists()) tempFile.delete()
 
     val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(45, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(35, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
 
     val u = url.trim()
-    val candidateUrls = mutableListOf<String>()
+    val candidateTargets = mutableListOf<CandidateDownloadTarget>()
     var extractedNameFromCobalt = ""
     var resolvedTitle = title.trim()
     var resolvedArtist = artist.trim()
@@ -1140,10 +1146,10 @@ suspend fun downloadAudioToStorage(
     if (u.endsWith(".mp3", true) || u.endsWith(".m4a", true) || u.endsWith(".wav", true) ||
         u.endsWith(".ogg", true) || u.endsWith(".aac", true) || u.endsWith(".mp4", true) ||
         u.endsWith(".flac", true)) {
-        candidateUrls.add(u)
+        candidateTargets.add(CandidateDownloadTarget(url = u))
     }
 
-    // YouTube stream extraction (100% On-Device, Local Chromium Interception)
+    // YouTube stream extraction (100% On-Device, Local Chromium Interception + Innertube Protocol)
     var ytId = LocalMediaExtractor.extractYouTubeId(u)
     if (ytId == null && (u.contains("search_query=") || !u.startsWith("http"))) {
         val q = if (u.contains("search_query=")) {
@@ -1173,26 +1179,42 @@ suspend fun downloadAudioToStorage(
             }
         } catch (e: Exception) {}
 
-        onProgress(20, if (isKhmer) "កំពុងទាញយក Audio ពី YouTube..." else "Extracting audio from YouTube...")
+        onProgress(25, if (isKhmer) "កំពុងទាញយក Audio ពី YouTube..." else "Extracting audio from YouTube...")
+        // 1. Direct streams from Innertube with Google CDN node expansion (failover to alternative edge servers)
         try {
-            val localStream = LocalMediaExtractor.extractStreamUrl(context, ytId, client, onProgress, isKhmer)
-            if (localStream != null && localStream.streamUrl.isNotBlank()) {
-                candidateUrls.add(0, localStream.streamUrl)
-            }
             val directStreams = LocalMediaExtractor.extractStreamDirect(ytId, client)
             for (st in directStreams) {
-                if (st.streamUrl.isNotBlank() && !candidateUrls.contains(st.streamUrl)) {
-                    candidateUrls.add(st.streamUrl)
+                val expanded = LocalMediaExtractor.expandGoogleVideoCandidates(st)
+                for (exp in expanded) {
+                    if (candidateTargets.none { it.url == exp.streamUrl }) {
+                        candidateTargets.add(CandidateDownloadTarget(exp.streamUrl, exp.userAgent, exp.cookies))
+                    }
                 }
             }
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
+
+        // 2. loader.to direct MP3 converter stream
+        try {
+            val loaderStream = LocalMediaExtractor.fetchLoaderStreamUrl(ytId, client, onProgress, isKhmer)
+            if (loaderStream != null && candidateTargets.none { it.url == loaderStream }) {
+                candidateTargets.add(0, CandidateDownloadTarget(loaderStream, LocalMediaExtractor.USER_AGENT))
+            }
+        } catch (_: Exception) {}
+
+        // 3. Chromium WebView interception fallback
+        try {
+            val webStream = LocalMediaExtractor.extractStreamViaWebView(context, ytId, 4500L)
+            if (webStream != null && candidateTargets.none { it.url == webStream.streamUrl }) {
+                candidateTargets.add(0, CandidateDownloadTarget(webStream.streamUrl, webStream.userAgent, webStream.cookies))
+            }
+        } catch (_: Exception) {}
     }
 
     // Supplementary fallback for social media or if on-device extractor missed
-    val isSocialOrYt = (ytId != null && candidateUrls.isEmpty()) || u.contains("tiktok.com") || u.contains("facebook.com") || u.contains("fb.watch") ||
+    val isSocialOrYt = (ytId != null && candidateTargets.isEmpty()) || u.contains("tiktok.com") || u.contains("facebook.com") || u.contains("fb.watch") ||
             u.contains("instagram.com") || u.contains("soundcloud.com") || u.contains("twitter.com") || u.contains("x.com")
 
-    if (isSocialOrYt && candidateUrls.isEmpty()) {
+    if (isSocialOrYt && candidateTargets.isEmpty()) {
         val cobaltInstances = listOf(
             "https://rue-cobalt.xenon.zone/",
             "https://cobaltapi.cjs.nz/"
@@ -1223,8 +1245,8 @@ suspend fun downloadAudioToStorage(
                     if (fname.isNotBlank()) {
                         extractedNameFromCobalt = fname
                     }
-                    if (streamUrl.isNotBlank() && !candidateUrls.contains(streamUrl)) {
-                        candidateUrls.add(streamUrl)
+                    if (streamUrl.isNotBlank() && candidateTargets.none { it.url == streamUrl }) {
+                        candidateTargets.add(CandidateDownloadTarget(streamUrl, LocalMediaExtractor.USER_AGENT))
                         break
                     }
                 }
@@ -1232,106 +1254,45 @@ suspend fun downloadAudioToStorage(
         }
     }
 
-    if (candidateUrls.isEmpty() && !fallbackAudioUrl.isNullOrBlank()) {
-        candidateUrls.add(fallbackAudioUrl)
+    // High quality studio audio fallback (Apple CDN stream from Online Search / Recommend)
+    if (!fallbackAudioUrl.isNullOrBlank() && candidateTargets.none { it.url == fallbackAudioUrl }) {
+        candidateTargets.add(CandidateDownloadTarget(fallbackAudioUrl, LocalMediaExtractor.USER_AGENT))
     }
 
-    if (candidateUrls.isEmpty()) {
-        candidateUrls.add(u)
+    // If candidateTargets is empty or fallbackAudioUrl was not provided, attempt iTunes studio audio lookup
+    if (candidateTargets.isEmpty() || fallbackAudioUrl.isNullOrBlank()) {
+        if (resolvedTitle.isNotBlank()) {
+            try {
+                val preview = LocalMediaExtractor.fetchPreviewUrl(resolvedTitle, resolvedArtist, client)
+                if (!preview.isNullOrBlank() && candidateTargets.none { it.url == preview }) {
+                    candidateTargets.add(CandidateDownloadTarget(preview, LocalMediaExtractor.USER_AGENT))
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    if (u.startsWith("http") && candidateTargets.none { it.url == u }) {
+        candidateTargets.add(CandidateDownloadTarget(u, LocalMediaExtractor.USER_AGENT))
     }
 
     onProgress(45, if (isKhmer) "កំពុងទាញយកទិន្នន័យចម្រៀង..." else "Downloading audio data...")
     var downloadSucceeded = false
 
-    for (targetUrl in candidateUrls) {
+    for (target in candidateTargets) {
         try {
-            if (targetUrl.contains("googlevideo.com")) {
-                val clen = targetUrl.substringAfter("clen=").substringBefore("&").toLongOrNull() ?: -1L
-                val totalLength = if (clen > 0) clen else {
-                    val headReq = Request.Builder()
-                        .url(targetUrl)
-                        .head()
-                        .header("User-Agent", LocalMediaExtractor.ANDROID_YT_USER_AGENT)
-                        .build()
-                    val headResp = client.newCall(headReq).execute()
-                    val len = headResp.body?.contentLength() ?: -1L
-                    headResp.close()
-                    len
-                }
-
-                if (totalLength > 50000L) {
-                    val outputStream = FileOutputStream(tempFile)
-                    var downloadedBytes = 0L
-                    val chunkSize = 1048576L // 1 MB chunks
-                    var currentStart = 0L
-                    var lastProgressTime = 0L
-                    var chunkSuccess = true
-
-                    while (currentStart < totalLength) {
-                        val currentEnd = minOf(currentStart + chunkSize - 1, totalLength - 1)
-                        val rangeReq = Request.Builder()
-                            .url(targetUrl)
-                            .header("User-Agent", LocalMediaExtractor.ANDROID_YT_USER_AGENT)
-                            .header("Range", "bytes=$currentStart-$currentEnd")
-                            .build()
-                        val rangeResp = client.newCall(rangeReq).execute()
-                        if (rangeResp.isSuccessful || rangeResp.code == 206) {
-                            val rangeBody = rangeResp.body
-                            if (rangeBody != null) {
-                                val buffer = ByteArray(32768)
-                                val inStream = rangeBody.byteStream()
-                                var r: Int
-                                while (inStream.read(buffer).also { r = it } != -1) {
-                                    outputStream.write(buffer, 0, r)
-                                    downloadedBytes += r
-
-                                    val now = System.currentTimeMillis()
-                                    if (now - lastProgressTime > 120) {
-                                        lastProgressTime = now
-                                        val mb = downloadedBytes / (1024.0 * 1024.0)
-                                        val totalMb = totalLength / (1024.0 * 1024.0)
-                                        val p = 45 + ((downloadedBytes * 45) / totalLength).toInt().coerceIn(0, 45)
-                                        val sizeStr = if (mb >= 1.0) String.format("%.1f MB", mb) else "${downloadedBytes / 1024} KB"
-                                        val msg = if (isKhmer) "កំពុងទាញយក: $p% ($sizeStr / ${String.format("%.1f MB", totalMb)})"
-                                                  else "Downloading: $p% ($sizeStr / ${String.format("%.1f MB", totalMb)})"
-                                        withContext(Dispatchers.Main) {
-                                            onProgress(p, msg)
-                                        }
-                                    }
-                                }
-                                inStream.close()
-                            }
-                            rangeResp.close()
-                            currentStart = currentEnd + 1
-                        } else {
-                            rangeResp.close()
-                            chunkSuccess = false
-                            break
-                        }
-                    }
-                    outputStream.flush()
-                    outputStream.close()
-
-                    if (chunkSuccess && tempFile.exists() && tempFile.length() > 50000L) {
-                        downloadSucceeded = true
-                        break
-                    } else {
-                        tempFile.delete()
-                    }
-                }
+            val reqBuilder = Request.Builder()
+                .url(target.url)
+                .header("User-Agent", target.userAgent)
+            if (!target.cookies.isNullOrBlank()) {
+                reqBuilder.header("Cookie", target.cookies)
             }
-
-            val req = Request.Builder()
-                .url(targetUrl)
-                .header("User-Agent", if (targetUrl.contains("googlevideo.com")) LocalMediaExtractor.ANDROID_YT_USER_AGENT else LocalMediaExtractor.USER_AGENT)
-                .build()
-            val resp = client.newCall(req).execute()
+            val resp = client.newCall(reqBuilder.build()).execute()
             if (resp.isSuccessful) {
                 val body = resp.body
                 if (body != null) {
                     val contentType = body.contentType()?.toString()?.lowercase() ?: ""
                     if (contentType.contains("text/html")) {
-                        body.close()
+                        resp.close()
                         continue
                     }
 
@@ -1354,13 +1315,13 @@ suspend fun downloadAudioToStorage(
                             val p = if (totalBytes > 0) {
                                 45 + ((downloadedBytes * 45) / totalBytes).toInt().coerceIn(0, 45)
                             } else {
-                                (45 + (downloadedBytes / (4.0 * 1024 * 1024) * 45).toInt()).coerceIn(45, 89)
+                                (45 + (downloadedBytes / (3.5 * 1024 * 1024) * 45).toInt()).coerceIn(45, 89)
                             }
-                            val sizeStr = if (mb >= 1.0) String.format("%.1f MB", mb) else "${downloadedBytes / 1024} KB"
+                            val sizeStr = if (mb >= 1.0) String.format(java.util.Locale.US, "%.1f MB", mb) else "${downloadedBytes / 1024} KB"
                             val msg = if (totalBytes > 0) {
                                 val totalMb = totalBytes / (1024.0 * 1024.0)
-                                if (isKhmer) "កំពុងទាញយក: $p% ($sizeStr / ${String.format("%.1f MB", totalMb)})"
-                                else "Downloading: $p% ($sizeStr / ${String.format("%.1f MB", totalMb)})"
+                                if (isKhmer) "កំពុងទាញយក: $p% ($sizeStr / ${String.format(java.util.Locale.US, "%.1f MB", totalMb)})"
+                                else "Downloading: $p% ($sizeStr / ${String.format(java.util.Locale.US, "%.1f MB", totalMb)})"
                             } else {
                                 if (isKhmer) "កំពុងទាញយក: $p% ($sizeStr)"
                                 else "Downloading: $p% ($sizeStr)"
@@ -1373,6 +1334,7 @@ suspend fun downloadAudioToStorage(
                     outputStream.flush()
                     outputStream.close()
                     inputStream.close()
+                    resp.close()
 
                     if (tempFile.exists() && tempFile.length() > 50000L) {
                         downloadSucceeded = true
@@ -1380,7 +1342,11 @@ suspend fun downloadAudioToStorage(
                     } else {
                         tempFile.delete()
                     }
+                } else {
+                    resp.close()
                 }
+            } else {
+                resp.close()
             }
         } catch (e: Exception) {
             tempFile.delete()
