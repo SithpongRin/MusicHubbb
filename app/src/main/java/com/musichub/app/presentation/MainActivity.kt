@@ -130,6 +130,15 @@ data class PlaylistItem(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+data class DownloadPrefill(
+    val url: String = "",
+    val title: String = "",
+    val artist: String = "",
+    val thumbnail: String = "",
+    val fallbackAudioUrl: String = "",
+    val autoStart: Boolean = false
+)
+
 enum class LoopMode {
     OFF, ALL, ONE
 }
@@ -354,6 +363,9 @@ fun findExistingAudioUri(context: Context, song: SongItem, publicDir: File): Str
     // 1. Check existing URI
     if (song.uriString.isNotBlank()) {
         try {
+            if (song.uriString.startsWith("http://") || song.uriString.startsWith("https://")) {
+                return song.uriString
+            }
             if (song.uriString.startsWith("content://")) {
                 return song.uriString
             } else if (song.uriString.startsWith("file://")) {
@@ -1049,6 +1061,7 @@ suspend fun downloadAudioToStorage(
     title: String,
     artist: String,
     artworkUrl: String,
+    fallbackAudioUrl: String? = null,
     isKhmer: Boolean = false,
     onProgress: (Int, String) -> Unit
 ): SongItem = withContext(Dispatchers.IO) {
@@ -1168,6 +1181,10 @@ suspend fun downloadAudioToStorage(
                 }
             } catch (e: Exception) {}
         }
+    }
+
+    if (candidateUrls.isEmpty() && !fallbackAudioUrl.isNullOrBlank()) {
+        candidateUrls.add(fallbackAudioUrl)
     }
 
     if (candidateUrls.isEmpty()) {
@@ -1574,6 +1591,7 @@ fun MusicHubApp() {
     var showNowPlayingModal by remember { mutableStateOf(false) }
     var showEqualizerModal by remember { mutableStateOf(false) }
     var showDownloadModal by remember { mutableStateOf(false) }
+    var downloadPrefill by remember { mutableStateOf<DownloadPrefill?>(null) }
     var showUpdateModal by remember { mutableStateOf(false) }
     var editingSong by remember { mutableStateOf<SongItem?>(null) }
     var selectedPreset by remember {
@@ -2413,34 +2431,47 @@ fun MusicHubApp() {
                         isPlaying = isPlaying,
                         playlists = playlists,
                         recommendedTracks = recommendedTracks,
-                        onRecommendedDownload = { track ->
-                            scope.launch {
-                                Toast.makeText(context, if (isKhmer) "កំពុងទាញយក ${track.title}..." else "Downloading ${track.title}...", Toast.LENGTH_SHORT).show()
-                                try {
-                                    val newSong = downloadAudioToStorage(
-                                        context = context,
-                                        url = track.downloadQuery,
-                                        format = "MP3",
-                                        title = track.title,
-                                        artist = track.artist,
-                                        artworkUrl = track.artworkUrl,
-                                        isKhmer = isKhmer,
-                                        onProgress = { _, _ -> }
-                                    )
-                                    val existingDup = songsList.find { areDuplicates(it, newSong) }
-                                    val isVariant = listOf("remix", "speed up", "sped up", "slowed", "reverb", "nightcore", "cover", "acoustic", "live", "reverse").any { newSong.title.contains(it, true) }
-                                    if (existingDup != null && !isVariant) {
-                                        duplicateConflictSong = Pair(existingDup, newSong)
-                                    } else {
-                                        saveSongs(context, listOf(newSong) + songsList.filter { it.id != newSong.id })
-                                        songsList = restoreAndSyncLibrary(context)
-                                        recommendedTracks = recommendedTracks.filter { it.id != track.id }
-                                        Toast.makeText(context, if (isKhmer) "បានបន្ថែម ${track.title} ទៅក្នុងបណ្ណាល័យ!" else "Added ${track.title} to library!", Toast.LENGTH_SHORT).show()
-                                    }
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, if (isKhmer) "ទាញយកមិនបាន៖ ${e.message}" else "Download failed: ${e.message}", Toast.LENGTH_SHORT).show()
-                                }
+                        onRecommendedPlay = { track ->
+                            val preview = track.previewUrl
+                            if (!preview.isNullOrBlank()) {
+                                val streamSong = SongItem(
+                                    id = "rec_" + track.id,
+                                    title = track.title,
+                                    artist = track.artist,
+                                    album = "Discovery",
+                                    duration = track.duration,
+                                    durationSec = 30,
+                                    artworkUrl = track.artworkUrl,
+                                    uriString = preview,
+                                    format = "M4A",
+                                    isFavorite = false
+                                )
+                                activePlaylistId = null
+                                currentSong = streamSong
+                                isPlaying = true
+                                Toast.makeText(context, if (isKhmer) "កំពុងចាក់សាកល្បង៖ ${track.title}" else "Preview playing: ${track.title}", Toast.LENGTH_SHORT).show()
+                            } else {
+                                downloadPrefill = DownloadPrefill(
+                                    url = track.downloadQuery,
+                                    title = track.title,
+                                    artist = track.artist,
+                                    thumbnail = track.artworkUrl,
+                                    fallbackAudioUrl = "",
+                                    autoStart = true
+                                )
+                                showDownloadModal = true
                             }
+                        },
+                        onRecommendedDownload = { track ->
+                            downloadPrefill = DownloadPrefill(
+                                url = track.downloadQuery,
+                                title = track.title,
+                                artist = track.artist,
+                                thumbnail = track.artworkUrl,
+                                fallbackAudioUrl = track.previewUrl ?: "",
+                                autoStart = true
+                            )
+                            showDownloadModal = true
                         },
                         onPlaylistClick = { playlist -> viewingPlaylist = playlist },
                         onCreatePlaylistClick = { showCreatePlaylistModal = true },
@@ -2660,6 +2691,11 @@ fun MusicHubApp() {
         if (showDownloadModal) {
             MediaLinkDownloadDialog(
                 isKhmer = isKhmer,
+                initialUrl = downloadPrefill?.url ?: "",
+                initialTitle = downloadPrefill?.title ?: "",
+                initialArtist = downloadPrefill?.artist ?: "",
+                initialThumbnail = downloadPrefill?.thumbnail ?: "",
+                autoStartDownload = downloadPrefill?.autoStart ?: false,
                 onDownloadSubmit = { url, format, title, artist, thumbnail, onProgressCallback, onErrorCallback ->
                     scope.launch {
                         try {
@@ -2670,6 +2706,7 @@ fun MusicHubApp() {
                                 title = title,
                                 artist = artist,
                                 artworkUrl = thumbnail,
+                                fallbackAudioUrl = downloadPrefill?.fallbackAudioUrl,
                                 isKhmer = isKhmer,
                                 onProgress = { pct, statusText ->
                                     onProgressCallback(pct, statusText)
@@ -2679,6 +2716,7 @@ fun MusicHubApp() {
                             val isVariant = listOf("remix", "speed up", "sped up", "slowed", "reverb", "nightcore", "cover", "acoustic", "live", "reverse").any { newSong.title.contains(it, true) }
                             if (existingDup != null && !isVariant) {
                                 showDownloadModal = false
+                                downloadPrefill = null
                                 duplicateConflictSong = Pair(existingDup, newSong)
                             } else {
                                 saveSongs(context, listOf(newSong) + songsList.filter { it.id != newSong.id })
@@ -2687,6 +2725,7 @@ fun MusicHubApp() {
                                 isPlaying = true
                                 delay(300)
                                 showDownloadModal = false
+                                downloadPrefill = null
                                 Toast.makeText(
                                     context,
                                     if (isKhmer) "បានទាញយក និងកំពុងចាក់" else "Downloaded & playing",
@@ -2701,9 +2740,13 @@ fun MusicHubApp() {
                 },
                 onImportClick = {
                     showDownloadModal = false
+                    downloadPrefill = null
                     audioPickerLauncher.launch("audio/*")
                 },
-                onDismiss = { showDownloadModal = false }
+                onDismiss = {
+                    showDownloadModal = false
+                    downloadPrefill = null
+                }
             )
         }
 
@@ -2740,13 +2783,19 @@ fun MusicHubApp() {
                 confirmButton = {
                     Button(
                         onClick = {
-                            val distinctCandidate = candidate.copy(id = UUID.randomUUID().toString())
-                            saveSongs(context, listOf(distinctCandidate) + songsList)
-                            songsList = restoreAndSyncLibrary(context)
-                            currentSong = distinctCandidate
-                            isPlaying = true
-                            duplicateConflictSong = null
-                            Toast.makeText(context, if (isKhmer) "បានរក្សាទុកទាំងពីរ" else "Kept both tracks", Toast.LENGTH_SHORT).show()
+                            scope.launch {
+                                try {
+                                    val distinctCandidate = candidate.copy(id = UUID.randomUUID().toString())
+                                    saveSongs(context, listOf(distinctCandidate) + songsList)
+                                    songsList = restoreAndSyncLibrary(context)
+                                    currentSong = distinctCandidate
+                                    isPlaying = true
+                                    duplicateConflictSong = null
+                                    Toast.makeText(context, if (isKhmer) "បានរក្សាទុកទាំងពីរ" else "Kept both tracks", Toast.LENGTH_SHORT).show()
+                                } catch (e: Exception) {
+                                    duplicateConflictSong = null
+                                }
+                            }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = if (isDarkMode) Color(0xFF6366F1) else Color(0xFF14161D))
                     ) {
@@ -2756,13 +2805,41 @@ fun MusicHubApp() {
                 dismissButton = {
                     OutlinedButton(
                         onClick = {
-                            val updated = songsList.map { if (it.id == existing.id) candidate.copy(id = existing.id) else it }
-                            saveSongs(context, updated)
-                            songsList = restoreAndSyncLibrary(context)
-                            currentSong = candidate.copy(id = existing.id)
-                            isPlaying = true
-                            duplicateConflictSong = null
-                            Toast.makeText(context, if (isKhmer) "បានជំនួសបទចាស់ដោយគុណភាពថ្មី" else "Replaced with higher quality track", Toast.LENGTH_SHORT).show()
+                            scope.launch {
+                                try {
+                                    if (currentSong?.id == existing.id) {
+                                        exoPlayer.stop()
+                                    }
+                                    if (existing.uriString.isNotBlank() && existing.uriString != candidate.uriString) {
+                                        try {
+                                            if (existing.uriString.startsWith("file://")) {
+                                                val oldFile = File(Uri.parse(existing.uriString).path ?: "")
+                                                if (oldFile.exists()) oldFile.delete()
+                                            }
+                                        } catch (_: Exception) {}
+                                    }
+                                    val replacedCandidate = candidate.copy(id = existing.id)
+                                    val updated = songsList.map { if (it.id == existing.id) replacedCandidate else it }
+                                    saveSongs(context, updated)
+                                    songsList = restoreAndSyncLibrary(context)
+                                    currentSong = replacedCandidate
+                                    val playUri = findExistingAudioUri(context, replacedCandidate, MusicHubStorage.getBaseDir()) ?: replacedCandidate.uriString
+                                    if (playUri.isNotBlank()) {
+                                        try {
+                                            exoPlayer.stop()
+                                            exoPlayer.setMediaItem(MediaItem.fromUri(Uri.parse(playUri)))
+                                            exoPlayer.prepare()
+                                            exoPlayer.play()
+                                            isPlaying = true
+                                        } catch (_: Exception) {}
+                                    }
+                                    duplicateConflictSong = null
+                                    Toast.makeText(context, if (isKhmer) "បានជំនួសបទចាស់ដោយជោគជ័យ" else "Replaced old track successfully", Toast.LENGTH_SHORT).show()
+                                } catch (e: Exception) {
+                                    duplicateConflictSong = null
+                                    Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
                         }
                     ) {
                         Text(if (isKhmer) "ជំនួសបទចាស់" else "Replace Old")
@@ -4262,6 +4339,7 @@ fun HomeScreen(
     isPlaying: Boolean,
     playlists: List<PlaylistItem> = emptyList(),
     recommendedTracks: List<RecommendedTrack> = emptyList(),
+    onRecommendedPlay: (RecommendedTrack) -> Unit = {},
     onRecommendedDownload: (RecommendedTrack) -> Unit = {},
     onPlaylistClick: (PlaylistItem) -> Unit = {},
     onCreatePlaylistClick: () -> Unit = {},
@@ -4484,7 +4562,7 @@ fun HomeScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = if (isKhmer) "✨ បទណែនាំសម្រាប់អ្នក" else "✨ Recommended for You",
+                            text = if (isKhmer) "បទណែនាំសម្រាប់អ្នក" else "Recommended for You",
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
@@ -4504,10 +4582,12 @@ fun HomeScreen(
                         contentPadding = PaddingValues(bottom = 6.dp)
                     ) {
                         items(recommendedTracks) { track ->
+                            val isTrackPlaying = currentSong?.title == track.title && isPlaying
                             Surface(
                                 modifier = Modifier
                                     .width(140.dp)
-                                    .clip(RoundedCornerShape(18.dp)),
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .clickable { onRecommendedPlay(track) },
                                 color = MaterialTheme.colorScheme.surface,
                                 shadowElevation = 2.dp
                             ) {
@@ -4526,6 +4606,22 @@ fun HomeScreen(
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier.fillMaxSize()
                                         )
+
+                                        if (isTrackPlaying) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(Color.Black.copy(alpha = 0.45f)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.GraphicEq,
+                                                    contentDescription = "Playing",
+                                                    tint = Color(0xFF818CF8),
+                                                    modifier = Modifier.size(32.dp)
+                                                )
+                                            }
+                                        }
 
                                         // Action Button Overlay (Download)
                                         Surface(
@@ -6240,6 +6336,11 @@ fun NowPlayingDialog(
 @Composable
 fun MediaLinkDownloadDialog(
     isKhmer: Boolean,
+    initialUrl: String = "",
+    initialTitle: String = "",
+    initialArtist: String = "",
+    initialThumbnail: String = "",
+    autoStartDownload: Boolean = false,
     onDownloadSubmit: (
         url: String,
         format: String,
@@ -6252,17 +6353,39 @@ fun MediaLinkDownloadDialog(
     onImportClick: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
-    var urlText by remember { mutableStateOf("") }
+    var urlText by remember { mutableStateOf(initialUrl) }
     var selectedFormat by remember { mutableStateOf("MP3") }
-    var customTitle by remember { mutableStateOf("") }
-    var customArtist by remember { mutableStateOf("") }
-    var extractedThumbnail by remember { mutableStateOf("") }
+    var customTitle by remember { mutableStateOf(initialTitle) }
+    var customArtist by remember { mutableStateOf(initialArtist) }
+    var extractedThumbnail by remember { mutableStateOf(initialThumbnail) }
     var isFetchingTitle by remember { mutableStateOf(false) }
 
     var isDownloading by remember { mutableStateOf(false) }
     var downloadPercentage by remember { mutableIntStateOf(0) }
     var downloadStatusText by remember { mutableStateOf("") }
     var downloadErrorMessage by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        if (autoStartDownload && (urlText.isNotBlank() || customTitle.isNotBlank())) {
+            isDownloading = true
+            downloadErrorMessage = null
+            onDownloadSubmit(
+                urlText.ifBlank { "$customArtist - $customTitle" },
+                selectedFormat,
+                customTitle,
+                customArtist,
+                extractedThumbnail,
+                { pct, msg ->
+                    downloadPercentage = pct
+                    downloadStatusText = msg
+                },
+                { err ->
+                    isDownloading = false
+                    downloadErrorMessage = err
+                }
+            )
+        }
+    }
 
     val formats = listOf("MP3", "MP4", "M4A", "FLAC")
 

@@ -74,6 +74,47 @@ object LocalMediaExtractor {
      * Searches YouTube directly for a query and returns the best matching video ID.
      */
     suspend fun searchYouTubeVideoId(query: String, client: OkHttpClient): String? = withContext(Dispatchers.IO) {
+        // 1. Android Innertube Protocol (Fastest, zero captcha/cookies needed)
+        try {
+            val payload = JSONObject().apply {
+                val contextObj = JSONObject().apply {
+                    val clientObj = JSONObject().apply {
+                        put("clientName", "ANDROID")
+                        put("clientVersion", "20.10.38")
+                        put("androidSdkVersion", 34)
+                        put("hl", "en")
+                        put("gl", "US")
+                    }
+                    put("client", clientObj)
+                }
+                put("context", contextObj)
+                put("query", query)
+            }
+
+            val req = Request.Builder()
+                .url("https://www.youtube.com/youtubei/v1/search")
+                .header("Content-Type", "application/json")
+                .header("User-Agent", ANDROID_YT_USER_AGENT)
+                .header("X-YouTube-Client-Name", "3")
+                .header("X-YouTube-Client-Version", "20.10.38")
+                .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            val resp = client.newCall(req).execute()
+            if (resp.isSuccessful) {
+                val bodyStr = resp.body?.string() ?: ""
+                val pattern = Pattern.compile("\"videoId\"\\s*:\\s*\"([a-zA-Z0-9_-]{11})\"")
+                val matcher = pattern.matcher(bodyStr)
+                if (matcher.find()) {
+                    val vid = matcher.group(1)
+                    if (!vid.isNullOrBlank()) {
+                        return@withContext vid
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 2. Web Search Fallback
         try {
             val clean = URLEncoder.encode(query, "UTF-8")
             val searchUrl = "https://www.youtube.com/results?search_query=$clean"
@@ -84,7 +125,7 @@ object LocalMediaExtractor {
             val resp = client.newCall(req).execute()
             if (resp.isSuccessful) {
                 val html = resp.body?.string() ?: ""
-                val pattern = Pattern.compile("\"videoId\":\"([a-zA-Z0-9_-]{11})\"")
+                val pattern = Pattern.compile("\"videoId\"\\s*:\\s*\"([a-zA-Z0-9_-]{11})\"")
                 val matcher = pattern.matcher(html)
                 if (matcher.find()) {
                     return@withContext matcher.group(1)
