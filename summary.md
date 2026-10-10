@@ -341,6 +341,13 @@ The app requests only required permissions:
 - Full Dark Mode Theming Support for Dialogs: Unified `PlaylistDetailDialog`, `SelectPlaylistSongsDialog`, `MediaLinkDownloadDialog`, and `EqualizerDialog` with dynamic `LocalDarkMode` palette adaptations for surfaces, cards, borders, text, and interactive buttons.
 - Bumped `versionCode = 26` and `versionName = "1.0.26"` in `app/build.gradle.kts`.
 
+### Version 1.0.50
+- Fixed "Recommended for You" card interaction on the Home screen: Wired up `onRecommendedPlay` and `onRecommendedDownload` handlers in `MainActivity.kt`. Tapping a recommended card instantly plays the matching local song or streams a preview sample with live equalizer animation overlay, and tapping the download overlay button prefills and opens the downloader.
+- Universal Mini-Player (Now Playing card) across all screens and modals: Extracted reusable `MiniPlayerCard` and integrated it at the bottom of all full-screen browsing dialogs (`OfflineLibraryDialog` for Offline Library and Your Mix / My Mix, `PlaylistDetailDialog`, and `ArtistDetailDialog`). Users can now always see the currently playing track and control playback (play/pause, favorite, tap to open full player) no matter what screen or panel is open.
+- Refactored Dialog Hierarchy: Moved `NowPlayingDialog`, `EqualizerDialog`, and `EditSongDialog` to the top of the overlay stack so expanding the player from any dialog cleanly layers above it without occlusion.
+- Maintained strict zero-emoji policy across all strings, labels, and buttons.
+- Bumped `versionCode = 50` and `versionName = "1.0.50"` in `app/build.gradle.kts`.
+
 ### Version 1.0.25
 - Added Dark Mode Toggle in Settings: Users can now switch between Light Mode and Dark Mode with persistent state saved in SharedPreferences.
 - Comprehensive Dark Theme implementation across MaterialTheme color schemes, Scaffold, NavigationBar, track items, headers, NowPlayingDialog, waveforms, and modals.

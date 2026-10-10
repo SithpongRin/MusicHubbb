@@ -2310,118 +2310,20 @@ fun MusicHubApp() {
                         exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
                     ) {
                         currentSong?.let { song ->
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 6.dp)
-                                    .shadow(12.dp, RoundedCornerShape(26.dp))
-                                    .clip(RoundedCornerShape(26.dp))
-                                    .clickable { showNowPlayingModal = true },
-                                color = Color(0xFF14161D)
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    // Circular Thumbnail with Full-Bleed Crop
-                                    Box(
-                                        modifier = Modifier
-                                            .size(46.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(0xFF2E3244)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        if (song.artworkUrl.isNotBlank()) {
-                                            SmartArtworkImage(
-                                                artworkUrl = song.artworkUrl,
-                                                contentDescription = song.title,
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier.fillMaxSize()
-                                            )
-                                        } else {
-                                            Icon(
-                                                imageVector = Icons.Default.MusicNote,
-                                                contentDescription = null,
-                                                tint = Color.White,
-                                                modifier = Modifier.size(24.dp)
-                                            )
-                                        }
+                            MiniPlayerCard(
+                                song = song,
+                                isPlaying = isPlaying,
+                                onSongClick = { showNowPlayingModal = true },
+                                onTogglePlay = { togglePlayPause() },
+                                onFavoriteToggle = {
+                                    songsList = songsList.map {
+                                        if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
                                     }
-
-                                    Spacer(modifier = Modifier.width(12.dp))
-
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = song.title,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp,
-                                            color = Color.White,
-                                            maxLines = 1,
-                                            modifier = Modifier.basicMarquee(
-                                                iterations = Int.MAX_VALUE,
-                                                delayMillis = 1200,
-                                                initialDelayMillis = 1500,
-                                                velocity = 35.dp
-                                            )
-                                        )
-                                        Text(
-                                            text = song.artist,
-                                            fontSize = 12.sp,
-                                            color = Color(0xFF94A3B8),
-                                            maxLines = 1,
-                                            modifier = Modifier.basicMarquee(
-                                                iterations = Int.MAX_VALUE,
-                                                delayMillis = 1200,
-                                                initialDelayMillis = 1500,
-                                                velocity = 35.dp
-                                            )
-                                        )
-                                    }
-
-                                    // Favorite Heart
-                                    IconButton(
-                                        onClick = {
-                                            songsList = songsList.map {
-                                                if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
-                                            }
-                                            currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
-                                            saveSongs(context, songsList)
-                                        },
-                                        modifier = Modifier.size(36.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                            contentDescription = "Favorite",
-                                            tint = if (song.isFavorite) Color(0xFFEF4444) else Color(0xFF94A3B8),
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-
-                                    Spacer(modifier = Modifier.width(6.dp))
-
-                                    // Play / Pause Pill with Spring Motion
-                                    Surface(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(16.dp))
-                                            .clickable { togglePlayPause() },
-                                        color = Color.White
-                                    ) {
-                                        Box(
-                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                                contentDescription = "Play/Pause",
-                                                tint = Color(0xFF14161D),
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                                    currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
+                                    saveSongs(context, songsList)
+                                },
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                            )
                         }
                     }
 
@@ -2467,6 +2369,109 @@ fun MusicHubApp() {
                     .padding(paddingValues)
                     .background(MaterialTheme.colorScheme.background)
             ) {
+                val handlePlayOnlineTrack: (OnlineSearchResult) -> Unit = { onlineTrack ->
+                    val localMatch = findMatchingLocalSong(onlineTrack, songsList)
+                    if (localMatch != null) {
+                        if (currentSong?.id == localMatch.id) {
+                            togglePlayPause()
+                        } else {
+                            activePlaylistId = null
+                            activeArtistName = null
+                            activeMixTitle = null
+                            activeMixTracks = emptyList()
+                            currentSong = localMatch
+                            isPlaying = true
+                        }
+                    } else {
+                        val trackStreamId = "stream_" + onlineTrack.id
+                        if (currentSong?.id == trackStreamId) {
+                            togglePlayPause()
+                        } else {
+                            val preview = onlineTrack.previewUrl
+                            if (!preview.isNullOrBlank()) {
+                                val streamSong = SongItem(
+                                    id = trackStreamId,
+                                    title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
+                                    artist = sanitizeArtist(onlineTrack.artist),
+                                    album = "Sample Preview",
+                                    duration = "0:30",
+                                    durationSec = 30,
+                                    artworkUrl = onlineTrack.artworkUrl,
+                                    uriString = preview,
+                                    format = "MP3",
+                                    isFavorite = false
+                                )
+                                activePlaylistId = null
+                                activeArtistName = null
+                                activeMixTitle = null
+                                activeMixTracks = emptyList()
+                                currentSong = streamSong
+                                isPlaying = true
+                                Toast.makeText(
+                                    context,
+                                    if (isKhmer) "កំពុងចាក់សាកល្បង៖ ${onlineTrack.title}" else "Preview playing: ${onlineTrack.title}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                scope.launch {
+                                    Toast.makeText(
+                                        context,
+                                        if (isKhmer) "កំពុងតភ្ជាប់សំឡេងសាកល្បង៖ ${onlineTrack.title}" else "Loading preview: ${onlineTrack.title}",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    try {
+                                        val resolvedPreview = LocalMediaExtractor.fetchPreviewUrl(onlineTrack.title, onlineTrack.artist)
+                                        if (!resolvedPreview.isNullOrBlank()) {
+                                            val streamSong = SongItem(
+                                                id = trackStreamId,
+                                                title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
+                                                artist = sanitizeArtist(onlineTrack.artist),
+                                                album = "Sample Preview",
+                                                duration = "0:30",
+                                                durationSec = 30,
+                                                artworkUrl = onlineTrack.artworkUrl,
+                                                uriString = resolvedPreview,
+                                                format = "MP3",
+                                                isFavorite = false
+                                            )
+                                            activePlaylistId = null
+                                            activeArtistName = null
+                                            activeMixTitle = null
+                                            activeMixTracks = emptyList()
+                                            currentSong = streamSong
+                                            isPlaying = true
+                                        } else {
+                                            Toast.makeText(
+                                                context,
+                                                if (isKhmer) "មិនមានសំឡេងសាកល្បងទេ សូមចុច Download ដើម្បីទាញយកស្ដាប់" else "No preview available, please tap Download",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    } catch (e: Exception) {
+                                        Toast.makeText(
+                                            context,
+                                            if (isKhmer) "មិនអាចចាក់បទនេះបានទេ" else "Cannot stream track",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                val handleDownloadOnlineTrack: (OnlineSearchResult) -> Unit = { onlineTrack ->
+                    downloadPrefill = DownloadPrefill(
+                        url = if (onlineTrack.webUrl.startsWith("http")) onlineTrack.webUrl else "${onlineTrack.artist} - ${onlineTrack.title}",
+                        title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
+                        artist = sanitizeArtist(onlineTrack.artist),
+                        thumbnail = onlineTrack.artworkUrl,
+                        fallbackAudioUrl = onlineTrack.previewUrl ?: "",
+                        autoStart = false
+                    )
+                    showDownloadModal = true
+                }
+
                 when (currentScreen) {
                     Screen.HOME -> HomeScreen(
                         isKhmer = isKhmer,
@@ -2481,6 +2486,30 @@ fun MusicHubApp() {
                         recommendedTracks = recommendedTracks,
                         playCountVersion = playCountVersion,
                         onHeroClick = { showOfflineLibraryModal = true },
+                        onRecommendedPlay = { recTrack ->
+                            val online = OnlineSearchResult(
+                                id = "rec_" + recTrack.id,
+                                title = recTrack.title,
+                                artist = recTrack.artist,
+                                duration = recTrack.duration,
+                                artworkUrl = recTrack.artworkUrl,
+                                webUrl = recTrack.downloadQuery,
+                                previewUrl = recTrack.previewUrl
+                            )
+                            handlePlayOnlineTrack(online)
+                        },
+                        onRecommendedDownload = { recTrack ->
+                            val online = OnlineSearchResult(
+                                id = "rec_" + recTrack.id,
+                                title = recTrack.title,
+                                artist = recTrack.artist,
+                                duration = recTrack.duration,
+                                artworkUrl = recTrack.artworkUrl,
+                                webUrl = recTrack.downloadQuery,
+                                previewUrl = recTrack.previewUrl
+                            )
+                            handleDownloadOnlineTrack(online)
+                        },
                         onPlaylistClick = { playlist -> viewingPlaylist = playlist },
                         onCreatePlaylistClick = { showCreatePlaylistModal = true },
                         onArtistClick = { artistName, aSongs -> viewingArtist = Pair(artistName, aSongs) },
@@ -2541,100 +2570,8 @@ fun MusicHubApp() {
                             currentSong = song
                             isPlaying = true
                         },
-                        onPlayOnlineTrack = { onlineTrack ->
-                            val localMatch = findMatchingLocalSong(onlineTrack, songsList)
-                            if (localMatch != null) {
-                                if (currentSong?.id == localMatch.id) {
-                                    togglePlayPause()
-                                } else {
-                                    activePlaylistId = null
-                                    activeArtistName = null
-                                    currentSong = localMatch
-                                    isPlaying = true
-                                }
-                            } else {
-                                val trackStreamId = "stream_" + onlineTrack.id
-                                if (currentSong?.id == trackStreamId) {
-                                    togglePlayPause()
-                                } else {
-                                    val preview = onlineTrack.previewUrl
-                                    if (!preview.isNullOrBlank()) {
-                                        val streamSong = SongItem(
-                                            id = trackStreamId,
-                                            title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
-                                            artist = sanitizeArtist(onlineTrack.artist),
-                                            album = "Sample Preview",
-                                            duration = "0:30",
-                                            durationSec = 30,
-                                            artworkUrl = onlineTrack.artworkUrl,
-                                            uriString = preview,
-                                            format = "MP3",
-                                            isFavorite = false
-                                        )
-                                        activePlaylistId = null
-                                        activeArtistName = null
-                                        currentSong = streamSong
-                                        isPlaying = true
-                                        Toast.makeText(
-                                            context,
-                                            if (isKhmer) "កំពុងចាក់សាកល្បង៖ ${onlineTrack.title}" else "Preview playing: ${onlineTrack.title}",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    } else {
-                                        scope.launch {
-                                            Toast.makeText(
-                                                context,
-                                                if (isKhmer) "កំពុងតភ្ជាប់សំឡេងសាកល្បង៖ ${onlineTrack.title}" else "Loading preview: ${onlineTrack.title}",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                            try {
-                                                val resolvedPreview = LocalMediaExtractor.fetchPreviewUrl(onlineTrack.title, onlineTrack.artist)
-                                                if (!resolvedPreview.isNullOrBlank()) {
-                                                    val streamSong = SongItem(
-                                                        id = trackStreamId,
-                                                        title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
-                                                        artist = sanitizeArtist(onlineTrack.artist),
-                                                        album = "Sample Preview",
-                                                        duration = "0:30",
-                                                        durationSec = 30,
-                                                        artworkUrl = onlineTrack.artworkUrl,
-                                                        uriString = resolvedPreview,
-                                                        format = "MP3",
-                                                        isFavorite = false
-                                                    )
-                                                    activePlaylistId = null
-                                                    currentSong = streamSong
-                                                    isPlaying = true
-                                                } else {
-                                                    Toast.makeText(
-                                                        context,
-                                                        if (isKhmer) "មិនមានសំឡេងសាកល្បងទេ សូមចុច Download ដើម្បីទាញយកស្ដាប់" else "No preview available, please tap Download",
-                                                        Toast.LENGTH_SHORT
-                                                    ).show()
-                                                }
-                                            } catch (e: Exception) {
-                                                Toast.makeText(
-                                                    context,
-                                                    if (isKhmer) "មិនអាចចាក់បទនេះបានទេ" else "Cannot stream track",
-                                                    Toast.LENGTH_SHORT
-                                                ).show()
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        onDownloadOnlineTrack = { onlineTrack ->
-                            downloadPrefill = DownloadPrefill(
-                                url = if (onlineTrack.webUrl.startsWith("http")) onlineTrack.webUrl else "${onlineTrack.artist} - ${onlineTrack.title}",
-                                title = sanitizeTitle(onlineTrack.title, onlineTrack.artist),
-                                artist = sanitizeArtist(onlineTrack.artist),
-                                thumbnail = onlineTrack.artworkUrl,
-                                fallbackAudioUrl = onlineTrack.previewUrl ?: "",
-                                autoStart = false
-                            )
-                            showDownloadModal = true
-                        },
+                        onPlayOnlineTrack = handlePlayOnlineTrack,
+                        onDownloadOnlineTrack = handleDownloadOnlineTrack,
                         onFavoriteToggle = { song ->
                             songsList = songsList.map {
                                 if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
@@ -2721,79 +2658,6 @@ fun MusicHubApp() {
             }
         }
 
-        // Edit Metadata Dialog
-        if (editingSong != null) {
-            EditSongDialog(
-                isKhmer = isKhmer,
-                song = editingSong!!,
-                onSave = { newTitle, newArtist, newAlbum ->
-                    val cleanTit = sanitizeTitle(newTitle)
-                    val cleanArt = sanitizeArtist(newArtist)
-                    songsList = songsList.map {
-                        if (it.id == editingSong?.id) {
-                            it.copy(title = cleanTit, artist = cleanArt, album = newAlbum)
-                        } else it
-                    }
-                    if (currentSong?.id == editingSong?.id) {
-                        currentSong = currentSong?.copy(title = cleanTit, artist = cleanArt, album = newAlbum)
-                    }
-                    saveSongs(context, songsList)
-                    songsList = restoreAndSyncLibrary(context)
-                    Toast.makeText(context, if (isKhmer) "បានកែសម្រួលព័ត៌មានរួចរាល់" else "Song info updated", Toast.LENGTH_SHORT).show()
-                    editingSong = null
-                },
-                onDismiss = { editingSong = null }
-            )
-        }
-
-        // Now Playing Dialog with Custom Waveform Scrubber
-        if (showNowPlayingModal && currentSong != null) {
-            NowPlayingDialog(
-                isKhmer = isKhmer,
-                song = currentSong!!,
-                isPlaying = isPlaying,
-                progress = playbackProgress,
-                positionMs = playbackPositionMs,
-                isShuffle = isShuffle,
-                loopMode = loopMode,
-                onProgressChange = { frac ->
-                    playbackProgress = frac
-                    val dur = if (exoPlayer.duration > 0) exoPlayer.duration else ((currentSong?.durationSec ?: 0) * 1000L)
-                    if (dur > 0) {
-                        val targetMs = (frac * dur).toLong()
-                        playbackPositionMs = targetMs
-                        exoPlayer.seekTo(targetMs)
-                    }
-                },
-                onPlayPause = { togglePlayPause() },
-                onPrevious = { playPrevTrack() },
-                onNext = { playNextTrack() },
-                onShuffleToggle = { isShuffle = !isShuffle },
-                onLoopModeToggle = {
-                    loopMode = when (loopMode) {
-                        LoopMode.OFF -> LoopMode.ALL
-                        LoopMode.ALL -> LoopMode.ONE
-                        LoopMode.ONE -> LoopMode.OFF
-                    }
-                },
-                onFavoriteToggle = {
-                    currentSong?.let { song ->
-                        songsList = songsList.map {
-                            if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
-                        }
-                        currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
-                        saveSongs(context, songsList)
-                    }
-                },
-                onEditClick = { editingSong = currentSong },
-                onEqualizerClick = { showEqualizerModal = true },
-                appVolume = appVolume,
-                onVolumeChange = { appVolume = it },
-                onShareClick = { currentSong?.let { shareSongFile(context, it) } },
-                onDismiss = { showNowPlayingModal = false }
-            )
-        }
-
         // Offline Library Dialog (Opened from Hero Card)
         if (showOfflineLibraryModal) {
             OfflineLibraryDialog(
@@ -2838,6 +2702,8 @@ fun MusicHubApp() {
                 onDeleteSong = { song -> deleteSong(song) },
                 onAddToPlaylist = { song -> playlistForAddSong = song },
                 onShareSong = { song -> shareSongFile(context, song) },
+                onMiniPlayerClick = { showNowPlayingModal = true },
+                onTogglePlay = { togglePlayPause() },
                 onDismiss = { showOfflineLibraryModal = false }
             )
         }
@@ -2899,20 +2765,9 @@ fun MusicHubApp() {
                 onDeleteSong = { song -> deleteSong(song) },
                 onAddToPlaylist = { song -> playlistForAddSong = song },
                 onShareSong = { song -> shareSongFile(context, song) },
+                onMiniPlayerClick = { showNowPlayingModal = true },
+                onTogglePlay = { togglePlayPause() },
                 onDismiss = { viewingMix = null }
-            )
-        }
-
-        // Equalizer Modal
-        if (showEqualizerModal) {
-            EqualizerDialog(
-                isKhmer = isKhmer,
-                currentPreset = selectedPreset,
-                onSelectPreset = {
-                    selectedPreset = it
-                    Toast.makeText(context, if (isKhmer) "បានកំណត់ Equalizer: $it" else "Equalizer set to $it", Toast.LENGTH_SHORT).show()
-                },
-                onDismiss = { showEqualizerModal = false }
             )
         }
 
@@ -3228,6 +3083,17 @@ fun MusicHubApp() {
                     playlists = updatedPlaylists
                     savePlaylists(context, updatedPlaylists)
                 },
+                onFavoriteToggle = { song ->
+                    songsList = songsList.map {
+                        if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
+                    }
+                    if (currentSong?.id == song.id) {
+                        currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
+                    }
+                    saveSongs(context, songsList)
+                },
+                onMiniPlayerClick = { showNowPlayingModal = true },
+                onTogglePlay = { togglePlayPause() },
                 onDismiss = { viewingPlaylist = null }
             )
         }
@@ -3288,13 +3154,104 @@ fun MusicHubApp() {
                     songsList = songsList.map {
                         if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
                     }
+                    if (currentSong?.id == song.id) {
+                        currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
+                    }
                     saveSongs(context, songsList)
                 },
                 onEditSong = { song -> editingSong = song },
                 onDeleteSong = { song -> deleteSong(song) },
                 onAddToPlaylist = { song -> playlistForAddSong = song },
                 onShareSong = { song -> shareSongFile(context, song) },
+                onMiniPlayerClick = { showNowPlayingModal = true },
+                onTogglePlay = { togglePlayPause() },
                 onDismiss = { viewingArtist = null }
+            )
+        }
+
+        // Now Playing Dialog with Custom Waveform Scrubber
+        if (showNowPlayingModal && currentSong != null) {
+            NowPlayingDialog(
+                isKhmer = isKhmer,
+                song = currentSong!!,
+                isPlaying = isPlaying,
+                progress = playbackProgress,
+                positionMs = playbackPositionMs,
+                isShuffle = isShuffle,
+                loopMode = loopMode,
+                onProgressChange = { frac ->
+                    playbackProgress = frac
+                    val dur = if (exoPlayer.duration > 0) exoPlayer.duration else ((currentSong?.durationSec ?: 0) * 1000L)
+                    if (dur > 0) {
+                        val targetMs = (frac * dur).toLong()
+                        playbackPositionMs = targetMs
+                        exoPlayer.seekTo(targetMs)
+                    }
+                },
+                onPlayPause = { togglePlayPause() },
+                onPrevious = { playPrevTrack() },
+                onNext = { playNextTrack() },
+                onShuffleToggle = { isShuffle = !isShuffle },
+                onLoopModeToggle = {
+                    loopMode = when (loopMode) {
+                        LoopMode.OFF -> LoopMode.ALL
+                        LoopMode.ALL -> LoopMode.ONE
+                        LoopMode.ONE -> LoopMode.OFF
+                    }
+                },
+                onFavoriteToggle = {
+                    currentSong?.let { song ->
+                        songsList = songsList.map {
+                            if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
+                        }
+                        currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
+                        saveSongs(context, songsList)
+                    }
+                },
+                onEditClick = { editingSong = currentSong },
+                onEqualizerClick = { showEqualizerModal = true },
+                appVolume = appVolume,
+                onVolumeChange = { appVolume = it },
+                onShareClick = { currentSong?.let { shareSongFile(context, it) } },
+                onDismiss = { showNowPlayingModal = false }
+            )
+        }
+
+        // Equalizer Modal
+        if (showEqualizerModal) {
+            EqualizerDialog(
+                isKhmer = isKhmer,
+                currentPreset = selectedPreset,
+                onSelectPreset = {
+                    selectedPreset = it
+                    Toast.makeText(context, if (isKhmer) "បានកំណត់ Equalizer: $it" else "Equalizer set to $it", Toast.LENGTH_SHORT).show()
+                },
+                onDismiss = { showEqualizerModal = false }
+            )
+        }
+
+        // Edit Metadata Dialog
+        if (editingSong != null) {
+            EditSongDialog(
+                isKhmer = isKhmer,
+                song = editingSong!!,
+                onSave = { newTitle, newArtist, newAlbum ->
+                    val cleanTit = sanitizeTitle(newTitle)
+                    val cleanArt = sanitizeArtist(newArtist)
+                    songsList = songsList.map {
+                        if (it.id == editingSong?.id) {
+                            it.copy(title = cleanTit, artist = cleanArt, album = newAlbum)
+                        } else it
+                    }
+                    if (currentSong?.id == editingSong?.id) {
+                        currentSong = currentSong?.copy(title = cleanTit, artist = cleanArt, album = newAlbum)
+                    }
+                    saveSongs(context, songsList)
+                    songsList = restoreAndSyncLibrary(context)
+                    Toast.makeText(context, if (isKhmer) "បានកែសម្រួលព័ត៌មានរួចរាល់" else "Song info updated", Toast.LENGTH_SHORT).show()
+                    editingSong = null
+                },
+                onDismiss = { editingSong = null }
             )
         }
         }
@@ -3983,6 +3940,9 @@ fun PlaylistDetailDialog(
     onMoveSongDown: (Int) -> Unit = {},
     onSaveSongIds: (List<String>) -> Unit,
     onRemoveSong: (SongItem) -> Unit,
+    onFavoriteToggle: (SongItem) -> Unit = {},
+    onMiniPlayerClick: () -> Unit = {},
+    onTogglePlay: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var showSelectSongsDialog by remember { mutableStateOf(false) }
@@ -4131,7 +4091,9 @@ fun PlaylistDetailDialog(
 
                 if (playlistSongs.isEmpty()) {
                     Box(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -4156,7 +4118,9 @@ fun PlaylistDetailDialog(
                     }
                 } else {
                     LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         itemsIndexed(playlistSongs, key = { _, song -> song.id }) { index, song ->
@@ -4357,6 +4321,18 @@ fun PlaylistDetailDialog(
                         }
                     }
                 }
+
+                if (currentSong != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    MiniPlayerCard(
+                        song = currentSong,
+                        isPlaying = isPlaying,
+                        onSongClick = onMiniPlayerClick,
+                        onTogglePlay = onTogglePlay,
+                        onFavoriteToggle = { onFavoriteToggle(currentSong) },
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
             }
         }
     }
@@ -4381,6 +4357,8 @@ fun ArtistDetailDialog(
     onDeleteSong: (SongItem) -> Unit,
     onAddToPlaylist: (SongItem) -> Unit,
     onShareSong: (SongItem) -> Unit,
+    onMiniPlayerClick: () -> Unit = {},
+    onTogglePlay: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val isDark = LocalDarkMode.current
@@ -4657,7 +4635,9 @@ fun ArtistDetailDialog(
 
                 // Songs List
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     itemsIndexed(artistSongs) { index, song ->
@@ -4675,7 +4655,19 @@ fun ArtistDetailDialog(
                             onShareSong = { onShareSong(song) }
                         )
                     }
-                    item { Spacer(modifier = Modifier.height(20.dp)) }
+                    item { Spacer(modifier = Modifier.height(12.dp)) }
+                }
+
+                if (currentSong != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    MiniPlayerCard(
+                        song = currentSong,
+                        isPlaying = isPlaying,
+                        onSongClick = onMiniPlayerClick,
+                        onTogglePlay = onTogglePlay,
+                        onFavoriteToggle = { onFavoriteToggle(currentSong) },
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                 }
             }
         }
@@ -4700,6 +4692,8 @@ fun OfflineLibraryDialog(
     onDeleteSong: (SongItem) -> Unit,
     onAddToPlaylist: (SongItem) -> Unit,
     onShareSong: (SongItem) -> Unit,
+    onMiniPlayerClick: () -> Unit = {},
+    onTogglePlay: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val isDark = LocalDarkMode.current
@@ -4860,7 +4854,9 @@ fun OfflineLibraryDialog(
                 // Songs List
                 if (songs.isEmpty()) {
                     Box(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -4871,7 +4867,9 @@ fun OfflineLibraryDialog(
                     }
                 } else {
                     LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         itemsIndexed(songs) { index, song ->
@@ -4889,8 +4887,20 @@ fun OfflineLibraryDialog(
                                 onShareSong = { onShareSong(song) }
                             )
                         }
-                        item { Spacer(modifier = Modifier.height(20.dp)) }
+                        item { Spacer(modifier = Modifier.height(12.dp)) }
                     }
+                }
+
+                if (currentSong != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    MiniPlayerCard(
+                        song = currentSong,
+                        isPlaying = isPlaying,
+                        onSongClick = onMiniPlayerClick,
+                        onTogglePlay = onTogglePlay,
+                        onFavoriteToggle = { onFavoriteToggle(currentSong) },
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                 }
             }
         }
@@ -4956,6 +4966,124 @@ fun AnimatedEqualizer(
                     .clip(RoundedCornerShape(2.dp))
                     .background(barColor)
             )
+        }
+    }
+}
+
+// Reusable Mini-Player Card docked or floating
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+fun MiniPlayerCard(
+    song: SongItem,
+    isPlaying: Boolean,
+    onSongClick: () -> Unit,
+    onTogglePlay: () -> Unit,
+    onFavoriteToggle: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .shadow(12.dp, RoundedCornerShape(26.dp))
+            .clip(RoundedCornerShape(26.dp))
+            .clickable { onSongClick() },
+        color = Color(0xFF14161D)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Circular Thumbnail with Full-Bleed Crop
+            Box(
+                modifier = Modifier
+                    .size(46.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF2E3244)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (song.artworkUrl.isNotBlank()) {
+                    SmartArtworkImage(
+                        artworkUrl = song.artworkUrl,
+                        contentDescription = song.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.MusicNote,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = song.title,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    color = Color.White,
+                    maxLines = 1,
+                    modifier = Modifier.basicMarquee(
+                        iterations = Int.MAX_VALUE,
+                        delayMillis = 1200,
+                        initialDelayMillis = 1500,
+                        velocity = 35.dp
+                    )
+                )
+                Text(
+                    text = song.artist,
+                    fontSize = 12.sp,
+                    color = Color(0xFF94A3B8),
+                    maxLines = 1,
+                    modifier = Modifier.basicMarquee(
+                        iterations = Int.MAX_VALUE,
+                        delayMillis = 1200,
+                        initialDelayMillis = 1500,
+                        velocity = 35.dp
+                    )
+                )
+            }
+
+            // Favorite Heart
+            IconButton(
+                onClick = onFavoriteToggle,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    contentDescription = "Favorite",
+                    tint = if (song.isFavorite) Color(0xFFEF4444) else Color(0xFF94A3B8),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            // Play / Pause Pill with Spring Motion
+            Surface(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(16.dp))
+                    .clickable { onTogglePlay() },
+                color = Color.White
+            ) {
+                Box(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = "Play/Pause",
+                        tint = Color(0xFF14161D),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
         }
     }
 }
@@ -5658,7 +5786,7 @@ fun HomeScreen(
                         contentPadding = PaddingValues(bottom = 6.dp)
                     ) {
                         items(recommendedTracks) { track ->
-                            val isTrackPlaying = currentSong?.title == track.title && isPlaying
+                            val isTrackPlaying = isPlaying && (currentSong?.id == "stream_rec_" + track.id || currentSong?.title.equals(track.title, ignoreCase = true) || (currentSong?.artist.equals(track.artist, ignoreCase = true) && currentSong?.title?.contains(track.title, ignoreCase = true) == true))
                             Surface(
                                 modifier = Modifier
                                     .width(140.dp)
