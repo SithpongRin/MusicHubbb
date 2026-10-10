@@ -2475,6 +2475,8 @@ fun MusicHubApp() {
                         isPlaying = isPlaying,
                         isLibraryActive = activePlaylistId == null && activeArtistName == null && activeMixTitle == null,
                         activeArtistName = activeArtistName,
+                        activePlaylistId = activePlaylistId,
+                        activeMixTitle = activeMixTitle,
                         playlists = playlists,
                         recommendedTracks = recommendedTracks,
                         playCountVersion = playCountVersion,
@@ -2651,6 +2653,7 @@ fun MusicHubApp() {
                         currentSong = currentSong,
                         isPlaying = isPlaying,
                         activeArtistName = activeArtistName,
+                        activePlaylistId = activePlaylistId,
                         selectedCategory = selectedCategory,
                         onCategorySelect = { selectedCategory = it },
                         onArtistClick = { artistName, aSongs -> viewingArtist = Pair(artistName, aSongs) },
@@ -3985,8 +3988,6 @@ fun PlaylistDetailDialog(
     var showSelectSongsDialog by remember { mutableStateOf(false) }
 
     var songsOrder by remember(playlist.songIds) { mutableStateOf(playlist.songIds) }
-    var draggingIndex by remember { mutableStateOf<Int?>(null) }
-    var dragOffsetY by remember { mutableStateOf(0f) }
 
     if (showSelectSongsDialog) {
         SelectPlaylistSongsDialog(
@@ -4154,29 +4155,17 @@ fun PlaylistDetailDialog(
                         }
                     }
                 } else {
-                    val density = LocalDensity.current
-                    val itemHeightPx: Float = remember(density) { with(density) { 66.dp.toPx() } }
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         itemsIndexed(playlistSongs, key = { _, song -> song.id }) { index, song ->
-                            val isDragging = draggingIndex == index
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .zIndex(if (isDragging) 10f else 1f)
-                                    .graphicsLayer {
-                                        if (isDragging) {
-                                            translationY = dragOffsetY
-                                            scaleX = 1.02f
-                                            scaleY = 1.02f
-                                        }
-                                    }
                                     .clip(RoundedCornerShape(14.dp))
-                                    .clickable(enabled = draggingIndex == null) { onSongClick(song) },
-                                color = if (isDragging) (if (isDark) Color(0xFF334155) else Color(0xFFE2E8F0)) else if (currentSong?.id == song.id) (if (isDark) Color(0xFF1E222D) else Color.White) else Color.Transparent,
-                                shadowElevation = if (isDragging) 8.dp else 0.dp
+                                    .clickable { onSongClick(song) },
+                                color = if (currentSong?.id == song.id) (if (isDark) Color(0xFF1E222D) else Color.White) else Color.Transparent
                             ) {
                                 Row(
                                     modifier = Modifier
@@ -4233,62 +4222,47 @@ fun PlaylistDetailDialog(
 
                                     var showReorderMenu by remember { mutableStateOf(false) }
 
-                                    // Dedicated Vertical Drag Handle (Clean gesture tracking, no click conflict)
-                                    Box(
-                                        modifier = Modifier
-                                            .size(38.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .pointerInput(song.id) {
-                                                detectVerticalDragGestures(
-                                                    onDragStart = {
-                                                        val startIdx = songsOrder.indexOf(song.id)
-                                                        if (startIdx >= 0) {
-                                                            draggingIndex = startIdx
-                                                            dragOffsetY = 0f
-                                                        }
-                                                    },
-                                                    onDragEnd = {
-                                                        draggingIndex = null
-                                                        dragOffsetY = 0f
-                                                        onSaveSongIds(songsOrder)
-                                                    },
-                                                    onDragCancel = {
-                                                        draggingIndex = null
-                                                        dragOffsetY = 0f
-                                                    },
-                                                    onVerticalDrag = { change, dragAmount ->
-                                                        change.consume()
-                                                        dragOffsetY += dragAmount
-                                                        val curIdx = draggingIndex ?: return@detectVerticalDragGestures
-                                                        val threshold = itemHeightPx * 0.5f
-
-                                                        if (dragOffsetY > threshold && curIdx < songsOrder.size - 1) {
-                                                            val target = curIdx + 1
-                                                            val mutable = songsOrder.toMutableList()
-                                                            val item = mutable.removeAt(curIdx)
-                                                            mutable.add(target, item)
-                                                            songsOrder = mutable
-                                                            draggingIndex = target
-                                                            dragOffsetY -= itemHeightPx
-                                                        } else if (dragOffsetY < -threshold && curIdx > 0) {
-                                                            val target = curIdx - 1
-                                                            val mutable = songsOrder.toMutableList()
-                                                            val item = mutable.removeAt(curIdx)
-                                                            mutable.add(target, item)
-                                                            songsOrder = mutable
-                                                            draggingIndex = target
-                                                            dragOffsetY += itemHeightPx
-                                                        }
-                                                    }
-                                                )
-                                            },
-                                        contentAlignment = Alignment.Center
+                                    // 1-Tap Quick Move Up
+                                    IconButton(
+                                        onClick = {
+                                            if (index > 0) {
+                                                val mutable = songsOrder.toMutableList()
+                                                val item = mutable.removeAt(index)
+                                                mutable.add(index - 1, item)
+                                                songsOrder = mutable
+                                                onSaveSongIds(mutable)
+                                            }
+                                        },
+                                        enabled = index > 0,
+                                        modifier = Modifier.size(30.dp)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Default.DragHandle,
-                                            contentDescription = "Drag to reorder",
-                                            tint = if (isDragging) Color(0xFF6366F1) else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
-                                            modifier = Modifier.size(22.dp)
+                                            imageVector = Icons.Default.KeyboardArrowUp,
+                                            contentDescription = "Move Up",
+                                            tint = if (index > 0) (if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)) else (if (isDark) Color(0xFF475569) else Color(0xFFCBD5E1)),
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+
+                                    // 1-Tap Quick Move Down
+                                    IconButton(
+                                        onClick = {
+                                            if (index < playlistSongs.size - 1) {
+                                                val mutable = songsOrder.toMutableList()
+                                                val item = mutable.removeAt(index)
+                                                mutable.add(index + 1, item)
+                                                songsOrder = mutable
+                                                onSaveSongIds(mutable)
+                                            }
+                                        },
+                                        enabled = index < playlistSongs.size - 1,
+                                        modifier = Modifier.size(30.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowDown,
+                                            contentDescription = "Move Down",
+                                            tint = if (index < playlistSongs.size - 1) (if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)) else (if (isDark) Color(0xFF475569) else Color(0xFFCBD5E1)),
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     }
 
@@ -4996,6 +4970,8 @@ fun HomeScreen(
     isPlaying: Boolean,
     isLibraryActive: Boolean = true,
     activeArtistName: String? = null,
+    activePlaylistId: String? = null,
+    activeMixTitle: String? = null,
     playlists: List<PlaylistItem> = emptyList(),
     recommendedTracks: List<RecommendedTrack> = emptyList(),
     playCountVersion: Int = 0,
@@ -5327,6 +5303,7 @@ fun HomeScreen(
                         item {
                             val firstArt = myMixTracks.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
                             val mixTitle = if (isKhmer) "ចម្រៀងចម្រុះរបស់ខ្ញុំ" else "My Mix"
+                            val isMyMixPlaying = isPlaying && (activeMixTitle == mixTitle || activeMixTitle == "My Mix" || activeMixTitle == "ចម្រៀងចម្រុះរបស់ខ្ញុំ")
                             Surface(
                                 modifier = Modifier
                                     .width(136.dp)
@@ -5347,6 +5324,13 @@ fun HomeScreen(
                                                 Brush.linearGradient(
                                                     listOf(Color(0xFF6366F1), Color(0xFF1E1B4B))
                                                 )
+                                            )
+                                            .then(
+                                                if (isMyMixPlaying) Modifier.border(
+                                                    width = 2.dp,
+                                                    color = Color(0xFF818CF8).copy(alpha = heroGlowAlpha),
+                                                    shape = RoundedCornerShape(14.dp)
+                                                ) else Modifier
                                             ),
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -5364,6 +5348,20 @@ fun HomeScreen(
                                                 tint = Color.White.copy(alpha = 0.8f),
                                                 modifier = Modifier.size(38.dp)
                                             )
+                                        }
+
+                                        if (isMyMixPlaying) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(Color.Black.copy(alpha = 0.4f)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                AnimatedEqualizer(
+                                                    barColor = Color(0xFF818CF8),
+                                                    isPlaying = true
+                                                )
+                                            }
                                         }
 
                                         // Badge indicating song count in bottom-right
@@ -5390,7 +5388,7 @@ fun HomeScreen(
                                         text = if (isKhmer) "ចម្រៀងចម្រុះរបស់ខ្ញុំ" else "My Mix",
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface,
+                                        color = if (isMyMixPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -5413,6 +5411,7 @@ fun HomeScreen(
                                 val topArtist = topArtistGroup.key
                                 val artistArt = artistMixTracks.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
                                 val mixTitle = "$topArtist Mix"
+                                val isArtistMixPlaying = isPlaying && activeMixTitle == mixTitle
                                 Surface(
                                     modifier = Modifier
                                         .width(136.dp)
@@ -5433,6 +5432,13 @@ fun HomeScreen(
                                                     Brush.linearGradient(
                                                         listOf(Color(0xFF3B82F6), Color(0xFF1E293B))
                                                     )
+                                                )
+                                                .then(
+                                                    if (isArtistMixPlaying) Modifier.border(
+                                                        width = 2.dp,
+                                                        color = Color(0xFF818CF8).copy(alpha = heroGlowAlpha),
+                                                        shape = RoundedCornerShape(14.dp)
+                                                    ) else Modifier
                                                 ),
                                             contentAlignment = Alignment.Center
                                         ) {
@@ -5450,6 +5456,20 @@ fun HomeScreen(
                                                     tint = Color.White.copy(alpha = 0.8f),
                                                     modifier = Modifier.size(38.dp)
                                                 )
+                                            }
+
+                                            if (isArtistMixPlaying) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .background(Color.Black.copy(alpha = 0.4f)),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    AnimatedEqualizer(
+                                                        barColor = Color(0xFF818CF8),
+                                                        isPlaying = true
+                                                    )
+                                                }
                                             }
 
                                             // Badge indicating song count in bottom-right
@@ -5476,7 +5496,7 @@ fun HomeScreen(
                                             text = "$topArtist Mix",
                                             fontSize = 13.sp,
                                             fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurface,
+                                            color = if (isArtistMixPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
@@ -5779,6 +5799,7 @@ fun HomeScreen(
                             val firstArtwork = playlist.songIds.firstNotNullOfOrNull { id ->
                                 songs.find { it.id == id && it.artworkUrl.isNotBlank() }?.artworkUrl
                             }
+                            val isPlaylistPlaying = isPlaying && activePlaylistId == playlist.id
 
                             Surface(
                                 modifier = Modifier
@@ -5799,6 +5820,13 @@ fun HomeScreen(
                                                 Brush.linearGradient(
                                                     listOf(Color(0xFF232733), Color(0xFF14161D))
                                                 )
+                                            )
+                                            .then(
+                                                if (isPlaylistPlaying) Modifier.border(
+                                                    width = 2.dp,
+                                                    color = Color(0xFF818CF8).copy(alpha = heroGlowAlpha),
+                                                    shape = RoundedCornerShape(14.dp)
+                                                ) else Modifier
                                             ),
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -5816,6 +5844,20 @@ fun HomeScreen(
                                                 tint = Color.White.copy(alpha = 0.8f),
                                                 modifier = Modifier.size(38.dp)
                                             )
+                                        }
+
+                                        if (isPlaylistPlaying) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(Color.Black.copy(alpha = 0.4f)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                AnimatedEqualizer(
+                                                    barColor = Color(0xFF818CF8),
+                                                    isPlaying = true
+                                                )
+                                            }
                                         }
 
                                         // Badge indicating song count in bottom-right
@@ -5842,7 +5884,7 @@ fun HomeScreen(
                                         text = playlist.title,
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface,
+                                        color = if (isPlaylistPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -6942,6 +6984,7 @@ fun LibraryScreen(
     currentSong: SongItem?,
     isPlaying: Boolean,
     activeArtistName: String? = null,
+    activePlaylistId: String? = null,
     selectedCategory: String,
     onCategorySelect: (String) -> Unit,
     onArtistClick: (String, List<SongItem>) -> Unit = { _, _ -> },
@@ -7290,6 +7333,7 @@ fun LibraryScreen(
             } else {
                 items(playlists) { playlist ->
                     val firstSong = songs.find { it.id == playlist.songIds.firstOrNull() }
+                    val isThisPlaylistPlaying = isPlaying && activePlaylistId == playlist.id
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -7307,7 +7351,10 @@ fun LibraryScreen(
                                 modifier = Modifier
                                     .size(54.dp)
                                     .clip(RoundedCornerShape(14.dp))
-                                    .background(Color(0xFF1E212D)),
+                                    .background(Color(0xFF1E212D))
+                                    .then(
+                                        if (isThisPlaylistPlaying) Modifier.border(2.dp, Color(0xFF818CF8), RoundedCornerShape(14.dp)) else Modifier
+                                    ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 if (firstSong != null && firstSong.artworkUrl.isNotBlank()) {
@@ -7320,6 +7367,20 @@ fun LibraryScreen(
                                 } else {
                                     Icon(imageVector = Icons.Default.QueueMusic, contentDescription = null, tint = Color.White, modifier = Modifier.size(24.dp))
                                 }
+
+                                if (isThisPlaylistPlaying) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(Color.Black.copy(alpha = 0.45f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        AnimatedEqualizer(
+                                            barColor = Color(0xFF818CF8),
+                                            isPlaying = true
+                                        )
+                                    }
+                                }
                             }
 
                             Spacer(modifier = Modifier.width(14.dp))
@@ -7329,7 +7390,7 @@ fun LibraryScreen(
                                     text = playlist.title,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 15.sp,
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                    color = if (isThisPlaylistPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
