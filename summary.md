@@ -298,6 +298,24 @@ The app requests only required permissions:
 - Added master studio artwork search via iTunes Search API (`searchHdCoverArt`) for lossless 1000x1000px cover resolution.
 - Updated `versionCode = 24` and `versionName = "1.0.24"` in `app/build.gradle.kts`.
 
+### Version 1.0.49
+- Active Playing Animations on Mix & Playlist Cards:
+  - When playing songs from "My Mix" or "Artist Mix", the corresponding mix card on the Home screen displays an active `AnimatedEqualizer` overlay over its artwork along with a pulsing glowing border and highlighted title.
+  - When playing songs from a Playlist, the active playlist card on both the Home screen and the Library screen displays an `AnimatedEqualizer` overlay, glowing border, and highlighted title.
+  - Hero card animation strictly activates only when general offline library tracks are playing, preventing animation crosstalk.
+- Smooth Playlist Song Reordering:
+  - Added dedicated 1-tap Move Up (`KeyboardArrowUp`) and Move Down (`KeyboardArrowDown`) buttons on each song row in `PlaylistDetailDialog`.
+  - Maintained the quick reorder dropdown menu (Move Up, Move Down, Move to Top, Move to Bottom) for fast one-touch repositioning.
+  - Eliminated conflicting drag-and-drop gesture states that previously caused recomposition resets or failed drops in `LazyColumn`.
+- Bumped `versionCode = 49` and `versionName = "1.0.49"` in `app/build.gradle.kts`.
+
+### Version 1.0.48
+- Mix Exploration & Playback Differentiation:
+  - Enabled viewing songs in "My Mix" and "Artist Mix" cards via `OfflineLibraryDialog` with custom headers before or during playback.
+  - Hero card title marquee animation active during track playback.
+  - Differentiated playback queue contexts (`activeMixTitle`, `activePlaylistId`, `activeArtistName`) so hero card only reflects library playback.
+- Bumped `versionCode = 48` and `versionName = "1.0.48"` in `app/build.gradle.kts`.
+
 ### Version 1.0.29
 - Fixed Compose Compilation Error in HomeScreen: Moved `remember(songs)` artist grouping outside `LazyColumn` LazyListScope to the top-level `@Composable` function scope, resolving GitHub Actions build failure `e: @Composable invocations can only happen from the context of a @Composable function`.
 - Preserved full Artists & Channels grouping functionality on Home and Library screens, with high-definition artist covers and dedicated `ArtistDetailDialog`.
