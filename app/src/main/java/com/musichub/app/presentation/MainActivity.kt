@@ -1531,6 +1531,7 @@ fun MusicHubApp() {
     var playlists by remember { mutableStateOf(loadSavedPlaylists(context)) }
     var viewingPlaylist by remember { mutableStateOf<PlaylistItem?>(null) }
     var viewingArtist by remember { mutableStateOf<Pair<String, List<SongItem>>?>(null) }
+    var viewingMix by remember { mutableStateOf<Pair<String, List<SongItem>>?>(null) }
     var playlistForAddSong by remember { mutableStateOf<SongItem?>(null) }
     var showCreatePlaylistModal by remember { mutableStateOf(false) }
     var recommendedTracks by remember { mutableStateOf<List<RecommendedTrack>>(emptyList()) }
@@ -1542,6 +1543,8 @@ fun MusicHubApp() {
     var loopMode by remember { mutableStateOf(LoopMode.ALL) }
     var activePlaylistId by remember { mutableStateOf<String?>(null) }
     var activeArtistName by remember { mutableStateOf<String?>(null) }
+    var activeMixTitle by remember { mutableStateOf<String?>(null) }
+    var activeMixTracks by remember { mutableStateOf<List<SongItem>>(emptyList()) }
     var playbackProgress by remember { mutableFloatStateOf(0.0f) }
     var playbackPositionMs by remember { mutableLongStateOf(0L) }
     var playbackDurationMs by remember { mutableLongStateOf(0L) }
@@ -1577,10 +1580,13 @@ fun MusicHubApp() {
                 return aSongs
             }
         }
+        if (activeMixTitle != null && activeMixTracks.isNotEmpty()) {
+            return activeMixTracks
+        }
         return songsList
     }
 
-    val currentQueue: List<SongItem> = remember(activeArtistName, activePlaylistId, playlists, songsList) {
+    val currentQueue: List<SongItem> = remember(activeArtistName, activePlaylistId, activeMixTitle, activeMixTracks, playlists, songsList) {
         getCurrentPlaybackQueue()
     }
 
@@ -1888,8 +1894,8 @@ fun MusicHubApp() {
                     isPlaying = true
                 } else {
                     if (isAutoEnded) {
-                        if (activePlaylistId != null || activeArtistName != null) {
-                            // When at end of a Playlist or Artist in Loop Off mode, stop cleanly without escaping into other songs
+                        if (activePlaylistId != null || activeArtistName != null || activeMixTitle != null) {
+                            // When at end of a Playlist, Artist, or Mix in Loop Off mode, stop cleanly without escaping into other songs
                             isPlaying = false
                             exoPlayer.seekTo(0)
                             exoPlayer.pause()
@@ -1911,7 +1917,7 @@ fun MusicHubApp() {
                     }
                 }
             } else {
-                if (activePlaylistId != null || activeArtistName != null) {
+                if (activePlaylistId != null || activeArtistName != null || activeMixTitle != null) {
                     currentSong = queue.first()
                     isPlaying = true
                 } else {
@@ -2137,6 +2143,8 @@ fun MusicHubApp() {
     fun shuffleAndPlay() {
         activePlaylistId = null
         activeArtistName = null
+        activeMixTitle = null
+        activeMixTracks = emptyList()
         if (songsList.isNotEmpty()) {
             val shuffled = songsList.shuffled()
             currentSong = shuffled.first()
@@ -2465,66 +2473,29 @@ fun MusicHubApp() {
                         songs = songsList,
                         currentSong = currentSong,
                         isPlaying = isPlaying,
+                        isLibraryActive = activePlaylistId == null && activeArtistName == null && activeMixTitle == null,
                         activeArtistName = activeArtistName,
                         playlists = playlists,
                         recommendedTracks = recommendedTracks,
                         playCountVersion = playCountVersion,
-                        onRecommendedPlay = { track ->
-                            val preview = track.previewUrl
-                            if (!preview.isNullOrBlank()) {
-                                val streamSong = SongItem(
-                                    id = "rec_" + track.id,
-                                    title = track.title,
-                                    artist = track.artist,
-                                    album = "Discovery",
-                                    duration = track.duration,
-                                    durationSec = 30,
-                                    artworkUrl = track.artworkUrl,
-                                    uriString = preview,
-                                    format = "MP3",
-                                    isFavorite = false
-                                )
-                                activePlaylistId = null
-                                activeArtistName = null
-                                currentSong = streamSong
-                                isPlaying = true
-                                Toast.makeText(context, if (isKhmer) "កំពុងចាក់សាកល្បង៖ ${track.title}" else "Preview playing: ${track.title}", Toast.LENGTH_SHORT).show()
-                            } else {
-                                downloadPrefill = DownloadPrefill(
-                                    url = track.downloadQuery,
-                                    title = track.title,
-                                    artist = track.artist,
-                                    thumbnail = track.artworkUrl,
-                                    fallbackAudioUrl = "",
-                                    autoStart = false
-                                )
-                                showDownloadModal = true
-                            }
-                        },
-                        onRecommendedDownload = { track ->
-                            downloadPrefill = DownloadPrefill(
-                                url = track.downloadQuery,
-                                title = track.title,
-                                artist = track.artist,
-                                thumbnail = track.artworkUrl,
-                                fallbackAudioUrl = track.previewUrl ?: "",
-                                autoStart = false
-                            )
-                            showDownloadModal = true
-                        },
                         onHeroClick = { showOfflineLibraryModal = true },
                         onPlaylistClick = { playlist -> viewingPlaylist = playlist },
                         onCreatePlaylistClick = { showCreatePlaylistModal = true },
                         onArtistClick = { artistName, aSongs -> viewingArtist = Pair(artistName, aSongs) },
+                        onMixClick = { title, mixSongs -> viewingMix = Pair(title, mixSongs) },
                         onSongClick = { song ->
                             activePlaylistId = null
                             activeArtistName = null
+                            activeMixTitle = null
+                            activeMixTracks = emptyList()
                             currentSong = song
                             isPlaying = true
                         },
                         onPlayAll = {
                             activePlaylistId = null
                             activeArtistName = null
+                            activeMixTitle = null
+                            activeMixTracks = emptyList()
                             if (songsList.isNotEmpty()) {
                                 currentSong = songsList.first()
                                 isPlaying = true
@@ -2838,12 +2809,16 @@ fun MusicHubApp() {
                 onSongClick = { song ->
                     activePlaylistId = null
                     activeArtistName = null
+                    activeMixTitle = null
+                    activeMixTracks = emptyList()
                     currentSong = song
                     isPlaying = true
                 },
                 onPlayAll = {
                     activePlaylistId = null
                     activeArtistName = null
+                    activeMixTitle = null
+                    activeMixTracks = emptyList()
                     if (songsList.isNotEmpty()) {
                         currentSong = songsList.first()
                         isPlaying = true
@@ -2861,6 +2836,67 @@ fun MusicHubApp() {
                 onAddToPlaylist = { song -> playlistForAddSong = song },
                 onShareSong = { song -> shareSongFile(context, song) },
                 onDismiss = { showOfflineLibraryModal = false }
+            )
+        }
+
+        // Your Mix Detail Dialog
+        if (viewingMix != null) {
+            val (mixTitle, mixTracks) = viewingMix!!
+            OfflineLibraryDialog(
+                isKhmer = isKhmer,
+                songs = mixTracks,
+                currentSong = currentSong,
+                isPlaying = isPlaying,
+                loopMode = loopMode,
+                customTitle = mixTitle,
+                onLoopModeToggle = {
+                    loopMode = when (loopMode) {
+                        LoopMode.OFF -> LoopMode.ALL
+                        LoopMode.ALL -> LoopMode.ONE
+                        LoopMode.ONE -> LoopMode.OFF
+                    }
+                },
+                onSongClick = { song ->
+                    activePlaylistId = null
+                    activeArtistName = null
+                    activeMixTitle = mixTitle
+                    activeMixTracks = mixTracks
+                    currentSong = song
+                    isPlaying = true
+                },
+                onPlayAll = {
+                    activePlaylistId = null
+                    activeArtistName = null
+                    activeMixTitle = mixTitle
+                    activeMixTracks = mixTracks
+                    if (mixTracks.isNotEmpty()) {
+                        currentSong = mixTracks.first()
+                        isPlaying = true
+                    }
+                },
+                onShufflePlay = {
+                    activePlaylistId = null
+                    activeArtistName = null
+                    activeMixTitle = mixTitle
+                    val shuffledMix = mixTracks.shuffled()
+                    activeMixTracks = shuffledMix
+                    if (shuffledMix.isNotEmpty()) {
+                        isShuffle = true
+                        currentSong = shuffledMix.first()
+                        isPlaying = true
+                    }
+                },
+                onFavoriteToggle = { song ->
+                    songsList = songsList.map {
+                        if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
+                    }
+                    saveSongs(context, songsList)
+                },
+                onEditSong = { song -> editingSong = song },
+                onDeleteSong = { song -> deleteSong(song) },
+                onAddToPlaylist = { song -> playlistForAddSong = song },
+                onShareSong = { song -> shareSongFile(context, song) },
+                onDismiss = { viewingMix = null }
             )
         }
 
@@ -4197,13 +4233,13 @@ fun PlaylistDetailDialog(
 
                                     var showReorderMenu by remember { mutableStateOf(false) }
 
-                                    // Drag Handle for Reordering (instant touch drag + 1-tap reorder menu)
+                                    // Dedicated Vertical Drag Handle (Clean gesture tracking, no click conflict)
                                     Box(
                                         modifier = Modifier
-                                            .size(42.dp)
+                                            .size(38.dp)
                                             .clip(RoundedCornerShape(8.dp))
                                             .pointerInput(song.id) {
-                                                detectDragGestures(
+                                                detectVerticalDragGestures(
                                                     onDragStart = {
                                                         val startIdx = songsOrder.indexOf(song.id)
                                                         if (startIdx >= 0) {
@@ -4220,11 +4256,11 @@ fun PlaylistDetailDialog(
                                                         draggingIndex = null
                                                         dragOffsetY = 0f
                                                     },
-                                                    onDrag = { change, dragAmount ->
+                                                    onVerticalDrag = { change, dragAmount ->
                                                         change.consume()
-                                                        dragOffsetY += dragAmount.y
-                                                        val curIdx = draggingIndex ?: return@detectDragGestures
-                                                        val threshold = itemHeightPx * 0.7f
+                                                        dragOffsetY += dragAmount
+                                                        val curIdx = draggingIndex ?: return@detectVerticalDragGestures
+                                                        val threshold = itemHeightPx * 0.5f
 
                                                         if (dragOffsetY > threshold && curIdx < songsOrder.size - 1) {
                                                             val target = curIdx + 1
@@ -4245,16 +4281,30 @@ fun PlaylistDetailDialog(
                                                         }
                                                     }
                                                 )
-                                            }
-                                            .clickable { showReorderMenu = true },
+                                            },
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.DragHandle,
                                             contentDescription = "Drag to reorder",
-                                            tint = if (isDragging) Color(0xFF6366F1) else Color(0xFF94A3B8),
+                                            tint = if (isDragging) Color(0xFF6366F1) else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
                                             modifier = Modifier.size(22.dp)
                                         )
+                                    }
+
+                                    // Quick Reorder Menu Button
+                                    Box {
+                                        IconButton(
+                                            onClick = { showReorderMenu = true },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.MoreVert,
+                                                contentDescription = "Reorder options",
+                                                tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
 
                                         // 1-Tap Quick Reorder Dropdown Menu
                                         DropdownMenu(
@@ -4658,7 +4708,7 @@ fun ArtistDetailDialog(
     }
 }
 
-// Offline Library Dialog (All Songs list opened from Hero card)
+// Offline Library Dialog (All Songs list opened from Hero card or Mix)
 @Composable
 fun OfflineLibraryDialog(
     isKhmer: Boolean,
@@ -4666,6 +4716,7 @@ fun OfflineLibraryDialog(
     currentSong: SongItem?,
     isPlaying: Boolean,
     loopMode: LoopMode,
+    customTitle: String? = null,
     onLoopModeToggle: () -> Unit,
     onSongClick: (SongItem) -> Unit,
     onPlayAll: () -> Unit,
@@ -4711,10 +4762,12 @@ fun OfflineLibraryDialog(
                         )
                     }
                     Text(
-                        text = if (isKhmer) "បណ្ណាល័យចម្រៀង Offline" else "Offline Library",
+                        text = customTitle ?: (if (isKhmer) "បណ្ណាល័យចម្រៀង Offline" else "Offline Library"),
                         fontSize = 17.sp,
                         fontWeight = FontWeight.Bold,
-                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Box(modifier = Modifier.size(40.dp))
                 }
@@ -4941,6 +4994,7 @@ fun HomeScreen(
     songs: List<SongItem>,
     currentSong: SongItem?,
     isPlaying: Boolean,
+    isLibraryActive: Boolean = true,
     activeArtistName: String? = null,
     playlists: List<PlaylistItem> = emptyList(),
     recommendedTracks: List<RecommendedTrack> = emptyList(),
@@ -4951,6 +5005,7 @@ fun HomeScreen(
     onPlaylistClick: (PlaylistItem) -> Unit = {},
     onCreatePlaylistClick: () -> Unit = {},
     onArtistClick: (String, List<SongItem>) -> Unit = { _, _ -> },
+    onMixClick: (String, List<SongItem>) -> Unit = { _, _ -> },
     onSongClick: (SongItem) -> Unit,
     onPlayAll: () -> Unit,
     onShufflePlay: () -> Unit,
@@ -5003,7 +5058,14 @@ fun HomeScreen(
         }
     }
 
-    // Hero playing subtle glow animation
+    // Hero playing subtle glow animation (Only active when library itself is playing)
+    val isHeroAnimating = isPlaying && isLibraryActive
+    val heroArtwork = if (isHeroAnimating && currentSong != null && currentSong.artworkUrl.isNotBlank()) {
+        currentSong.artworkUrl
+    } else {
+        songs.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
+    }
+
     val infiniteTransition = rememberInfiniteTransition(label = "hero_glow_transition")
     val heroGlowAlpha by infiniteTransition.animateFloat(
         initialValue = 0.4f,
@@ -5125,7 +5187,7 @@ fun HomeScreen(
                                 .clip(RoundedCornerShape(22.dp))
                                 .background(Color(0xFF1E212D))
                                 .then(
-                                    if (isPlaying) Modifier.border(
+                                    if (isHeroAnimating) Modifier.border(
                                         width = 2.dp,
                                         color = Color(0xFF818CF8).copy(alpha = heroGlowAlpha),
                                         shape = RoundedCornerShape(22.dp)
@@ -5133,10 +5195,10 @@ fun HomeScreen(
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (currentSong != null && currentSong.artworkUrl.isNotBlank()) {
+                            if (heroArtwork.isNotBlank()) {
                                 SmartArtworkImage(
-                                    artworkUrl = currentSong.artworkUrl,
-                                    contentDescription = currentSong.title,
+                                    artworkUrl = heroArtwork,
+                                    contentDescription = if (isHeroAnimating && currentSong != null) currentSong.title else "Offline Library",
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.fillMaxSize()
                                 )
@@ -5144,7 +5206,7 @@ fun HomeScreen(
                                 Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = Color.White, modifier = Modifier.size(38.dp))
                             }
 
-                            if (isPlaying) {
+                            if (isHeroAnimating) {
                                 Box(
                                     modifier = Modifier
                                         .fillMaxSize()
@@ -5170,13 +5232,13 @@ fun HomeScreen(
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = if (currentSong != null) currentSong.title else (if (isKhmer) "បណ្ណាល័យចម្រៀង Offline" else "Offline Library"),
+                                text = if (isHeroAnimating && currentSong != null) currentSong.title else (if (isKhmer) "បណ្ណាល័យចម្រៀង Offline" else "Offline Library"),
                                 fontSize = 19.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                modifier = if (isPlaying && currentSong != null) Modifier.basicMarquee(
+                                modifier = if (isHeroAnimating && currentSong != null) Modifier.basicMarquee(
                                     iterations = Int.MAX_VALUE,
                                     delayMillis = 1200,
                                     initialDelayMillis = 1500,
@@ -5184,7 +5246,7 @@ fun HomeScreen(
                                 ) else Modifier
                             )
                             Text(
-                                text = if (currentSong != null) currentSong.artist else (if (isKhmer) "ចុចទីនេះដើម្បីមើលទាំងអស់" else "Tap to view all songs"),
+                                text = if (isHeroAnimating && currentSong != null) currentSong.artist else (if (isKhmer) "ចុចទីនេះដើម្បីមើលទាំងអស់" else "Tap to view all songs"),
                                 fontSize = 13.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
@@ -5264,14 +5326,13 @@ fun HomeScreen(
                         // Mix 1: My Mix
                         item {
                             val firstArt = myMixTracks.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
+                            val mixTitle = if (isKhmer) "ចម្រៀងចម្រុះរបស់ខ្ញុំ" else "My Mix"
                             Surface(
                                 modifier = Modifier
                                     .width(136.dp)
                                     .clip(RoundedCornerShape(18.dp))
                                     .clickable {
-                                        if (myMixTracks.isNotEmpty()) {
-                                            onSongClick(myMixTracks.first())
-                                        }
+                                        onMixClick(mixTitle, myMixTracks)
                                     },
                                 color = MaterialTheme.colorScheme.surface,
                                 shadowElevation = 2.dp
@@ -5351,15 +5412,14 @@ fun HomeScreen(
                             item {
                                 val topArtist = topArtistGroup.key
                                 val artistArt = artistMixTracks.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
+                                val mixTitle = "$topArtist Mix"
                                 Surface(
                                     modifier = Modifier
                                         .width(136.dp)
                                         .clip(RoundedCornerShape(18.dp))
-                                        .clickable {
-                                            if (artistMixTracks.isNotEmpty()) {
-                                                onSongClick(artistMixTracks.first())
-                                            }
-                                        },
+                                    .clickable {
+                                        onMixClick(mixTitle, artistMixTracks)
+                                    },
                                     color = MaterialTheme.colorScheme.surface,
                                     shadowElevation = 2.dp
                                 ) {
