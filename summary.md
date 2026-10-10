@@ -341,6 +341,17 @@ The app requests only required permissions:
 - Full Dark Mode Theming Support for Dialogs: Unified `PlaylistDetailDialog`, `SelectPlaylistSongsDialog`, `MediaLinkDownloadDialog`, and `EqualizerDialog` with dynamic `LocalDarkMode` palette adaptations for surfaces, cards, borders, text, and interactive buttons.
 - Bumped `versionCode = 26` and `versionName = "1.0.26"` in `app/build.gradle.kts`.
 
+### Version 1.0.52
+- Search-Driven Smart Recommendation Integration (Personalized Discovery):
+  - Created `SearchPreferenceTracker` in `RecommendationEngine.kt` to record user search terms persistently (`SharedPreferences`).
+  - Search queries from both Offline Search and Online Search (including popular search chips) are automatically tracked with frequency ranking and LRU ordering.
+  - `RecommendationEngine.getPersonalizedRecommendations` dynamically ingests recent search interests alongside library top artists, finding matching trending tracks and artist discography via public metadata APIs.
+  - Instant recommendation refresh: whenever a search is conducted, `searchVersion` triggers a smooth background refresh of the "Recommended for You" carousel on the Home screen.
+  - Safe fallback: if there are no search queries, recommendation gracefully relies on library top artists and trending categories, ensuring zero disruption or crashes.
+  - Fully decoupled: offline audio playback, queue management, equalizer, downloader, and dialogs remain completely unaffected and robust.
+- Strict zero-emoji policy maintained across all strings, labels, and UI elements.
+- Bumped `versionCode = 52` and `versionName = "1.0.52"` in `app/build.gradle.kts`.
+
 ### Version 1.0.51
 - Multi-Directional Swipe-to-Dismiss on Mini-Player (Now Playing card):
   - Users can now dismiss and close the Mini-Player card by dragging downwards, swiping right, or swiping left.

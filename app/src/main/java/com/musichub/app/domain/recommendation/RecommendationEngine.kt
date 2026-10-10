@@ -1,5 +1,6 @@
 package com.musichub.app.domain.recommendation
 
+import android.content.Context
 import com.musichub.app.domain.downloader.LocalMediaExtractor
 import com.musichub.app.presentation.SongItem
 import kotlinx.coroutines.Dispatchers
@@ -21,11 +22,60 @@ data class RecommendedTrack(
     val downloadQuery: String
 )
 
+object SearchPreferenceTracker {
+    private const val PREFS_NAME = "musichub_search_prefs"
+    private const val KEY_SEARCH_QUERIES = "recent_search_queries"
+    private const val MAX_SAVED_QUERIES = 10
+
+    fun recordSearchQuery(context: Context, query: String) {
+        val clean = query.trim()
+        if (clean.length < 2) return
+        try {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val existingJson = prefs.getString(KEY_SEARCH_QUERIES, "[]") ?: "[]"
+            val array = JSONArray(existingJson)
+            val list = mutableListOf<String>()
+            for (i in 0 until array.length()) {
+                val item = array.optString(i, "")
+                if (item.isNotBlank() && !item.equals(clean, ignoreCase = true)) {
+                    list.add(item)
+                }
+            }
+            // Put latest search at the front
+            list.add(0, clean)
+            val trimmedList = list.take(MAX_SAVED_QUERIES)
+
+            val newArray = JSONArray()
+            trimmedList.forEach { newArray.put(it) }
+            prefs.edit().putString(KEY_SEARCH_QUERIES, newArray.toString()).apply()
+        } catch (_: Exception) {}
+    }
+
+    fun getRecentSearchQueries(context: Context): List<String> {
+        return try {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val existingJson = prefs.getString(KEY_SEARCH_QUERIES, "[]") ?: "[]"
+            val array = JSONArray(existingJson)
+            val list = mutableListOf<String>()
+            for (i in 0 until array.length()) {
+                val item = array.optString(i, "")
+                if (item.isNotBlank()) {
+                    list.add(item)
+                }
+            }
+            list
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+}
+
 object RecommendationEngine {
 
     suspend fun getPersonalizedRecommendations(
         existingSongs: List<SongItem>,
-        client: OkHttpClient
+        client: OkHttpClient,
+        searchQueries: List<String> = emptyList()
     ): List<RecommendedTrack> = withContext(Dispatchers.IO) {
         val resultList = mutableListOf<RecommendedTrack>()
         val existingNormalizedTitles = existingSongs.map {
@@ -43,9 +93,22 @@ object RecommendationEngine {
             .map { it.first }
 
         val queries = mutableListOf<String>()
-        queries.addAll(topArtists)
 
-        // Always add popular/trending query categories if library is small
+        // 1. Prioritize user's recent search interests (up to 3 distinct search terms)
+        val validSearches = searchQueries
+            .filter { it.isNotBlank() && it.length >= 2 }
+            .distinctBy { it.lowercase() }
+            .take(3)
+        queries.addAll(validSearches)
+
+        // 2. Add library top artists
+        for (artist in topArtists) {
+            if (!queries.any { it.equals(artist, ignoreCase = true) }) {
+                queries.add(artist)
+            }
+        }
+
+        // Always add popular/trending query categories if queries list is small
         if (queries.isEmpty()) {
             queries.add("Top Hits")
             queries.add("Acoustic Chill")
@@ -54,7 +117,7 @@ object RecommendationEngine {
             queries.add("Popular Hits")
         }
 
-        for (query in queries) {
+        for (query in queries.take(6)) {
             try {
                 val itunesUrl = "https://itunes.apple.com/search?term=${URLEncoder.encode(query, "UTF-8")}&entity=song&limit=8"
                 val req = Request.Builder()

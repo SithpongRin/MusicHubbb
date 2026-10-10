@@ -102,6 +102,7 @@ import com.musichub.app.domain.downloader.LocalMediaExtractor
 import com.musichub.app.domain.audio.AudioWaveformFingerprinter
 import com.musichub.app.domain.recommendation.RecommendationEngine
 import com.musichub.app.domain.recommendation.RecommendedTrack
+import com.musichub.app.domain.recommendation.SearchPreferenceTracker
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 
@@ -1549,13 +1550,22 @@ fun MusicHubApp() {
     var playbackPositionMs by remember { mutableLongStateOf(0L) }
     var playbackDurationMs by remember { mutableLongStateOf(0L) }
 
-    LaunchedEffect(songsList.size) {
-        if (recommendedTracks.isEmpty() && songsList.isNotEmpty()) {
+    var searchVersion by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(songsList.size, searchVersion) {
+        if (songsList.isNotEmpty()) {
             withContext(Dispatchers.IO) {
                 try {
-                    val recs = RecommendationEngine.getPersonalizedRecommendations(songsList, OkHttpClient())
+                    val searchQueries = SearchPreferenceTracker.getRecentSearchQueries(context)
+                    val recs = RecommendationEngine.getPersonalizedRecommendations(
+                        existingSongs = songsList,
+                        client = OkHttpClient(),
+                        searchQueries = searchQueries
+                    )
                     withContext(Dispatchers.Main) {
-                        recommendedTracks = recs
+                        if (recs.isNotEmpty()) {
+                            recommendedTracks = recs
+                        }
                     }
                 } catch (_: Exception) {}
             }
@@ -2594,7 +2604,8 @@ fun MusicHubApp() {
                         onEditSong = { song -> editingSong = song },
                         onDeleteSong = { song -> deleteSong(song) },
                         onAddToPlaylist = { song -> playlistForAddSong = song },
-                        onShareSong = { song -> shareSongFile(context, song) }
+                        onShareSong = { song -> shareSongFile(context, song) },
+                        onSearchRecorded = { searchVersion++ }
                     )
                     Screen.LIBRARY -> LibraryScreen(
                         isKhmer = isKhmer,
@@ -6663,7 +6674,8 @@ fun SearchScreen(
     onEditSong: (SongItem) -> Unit,
     onDeleteSong: (SongItem) -> Unit,
     onAddToPlaylist: (SongItem) -> Unit,
-    onShareSong: (SongItem) -> Unit = {}
+    onShareSong: (SongItem) -> Unit = {},
+    onSearchRecorded: (String) -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     var currentTab by remember { mutableStateOf(SearchTab.OFFLINE) }
@@ -6702,11 +6714,14 @@ fun SearchScreen(
         }
     }
 
+    val context = LocalContext.current
     val executeOnlineSearch: (String) -> Unit = remember {
         { targetQuery ->
             val clean = targetQuery.trim()
             if (clean.isNotBlank()) {
                 onlineQuery = clean
+                SearchPreferenceTracker.recordSearchQuery(context, clean)
+                onSearchRecorded(clean)
                 scope.launch {
                     isOnlineLoading = true
                     hasSearchedOnline = true
@@ -6902,6 +6917,9 @@ fun SearchScreen(
                     onSearch = {
                         if (currentTab == SearchTab.ONLINE && onlineQuery.isNotBlank()) {
                             executeOnlineSearch(onlineQuery)
+                        } else if (currentTab == SearchTab.OFFLINE && query.isNotBlank()) {
+                            SearchPreferenceTracker.recordSearchQuery(context, query.trim())
+                            onSearchRecorded(query.trim())
                         }
                     }
                 ),
