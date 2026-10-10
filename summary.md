@@ -341,6 +341,15 @@ The app requests only required permissions:
 - Full Dark Mode Theming Support for Dialogs: Unified `PlaylistDetailDialog`, `SelectPlaylistSongsDialog`, `MediaLinkDownloadDialog`, and `EqualizerDialog` with dynamic `LocalDarkMode` palette adaptations for surfaces, cards, borders, text, and interactive buttons.
 - Bumped `versionCode = 26` and `versionName = "1.0.26"` in `app/build.gradle.kts`.
 
+### Version 1.0.54
+- Clean Track Number Index & Preserved Artwork Overlay Equalizer Animation:
+  - Removed equalizer bar replacement from the track index number in `NumberedTrackRowItem`. The track number (e.g. `01`, `02`, `03`) is now permanently preserved and cleanly highlighted when active, preventing visual clutter in the track index column.
+  - Retained the animated equalizer wave overlay on the playing track's artwork thumbnail in all song rows.
+  - Fully preserved the hero card live animated equalizer overlay and pulsing glow on the Home screen whenever the offline library is actively playing.
+  - Lightweight, hardware-accelerated Compose animation ensuring zero latency, zero lag, and smooth scrolling across lists of any size.
+- Strict zero-emoji policy maintained across all strings, labels, and UI elements.
+- Bumped `versionCode = 54` and `versionName = "1.0.54"` in `app/build.gradle.kts`.
+
 ### Version 1.0.53
 - Fixed Favorite Heart Desynchronization Bug between List Tracks and Mini-Player:
   - Identified root cause where toggling favorite status from list items (such as inside `OfflineLibraryDialog`, `HomeScreen`, `LibraryScreen`, or `SearchScreen`) updated only `songsList` but left `currentSong.isFavorite` out of sync, causing the Mini-Player heart icon to remain unselected (white/empty) while the list item showed a red filled heart.

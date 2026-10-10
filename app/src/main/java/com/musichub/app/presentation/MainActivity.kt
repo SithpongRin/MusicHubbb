@@ -6323,21 +6323,17 @@ fun NumberedTrackRowItem(
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Track index or live animated equalizer bars
+            // Track index (kept clean with track number, no equalizer bars here)
             Box(
                 modifier = Modifier.width(28.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
-                if (isPlaying) {
-                    AnimatedEqualizerBars()
-                } else {
-                    Text(
-                        text = String.format("%02d", index),
-                        fontSize = 12.sp,
-                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
-                        color = if (isCurrent) (if (LocalDarkMode.current) Color(0xFF818CF8) else Color(0xFF14161D)) else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+                Text(
+                    text = String.format("%02d", index),
+                    fontSize = 12.sp,
+                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                    color = if (isCurrent) (if (LocalDarkMode.current) Color(0xFF818CF8) else Color(0xFF14161D)) else MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             Spacer(modifier = Modifier.width(4.dp))
