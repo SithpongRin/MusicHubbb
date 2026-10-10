@@ -382,7 +382,16 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
-### Version 1.0.50
+### Version 1.0.55
+- Fixed favorite state desynchronization in My Mix and all browsing modals:
+  - Dynamically resolved mix track items in `viewingMix` against the reactive `songsList` state so changes to favorites immediately reflect in the active dialog list.
+  - Enhanced `toggleFavorite` to synchronously update `viewingMix` and `activeMixTracks` alongside `songsList` and `currentSong`, guaranteeing that toggling favorite from any source (track row, Mini-Player card, or full Now Playing modal) updates all views in real time.
+  - In `OfflineLibraryDialog`, `PlaylistDetailDialog`, and `ArtistDetailDialog`, resolved the mini player song instance against the active dialog track collection, preventing any stale favorite status between track row items and the docked Mini-Player card.
+  - Synchronized `getCurrentPlaybackQueue` so auto-play and track skip within My Mix always pull fresh track metadata with updated favorite flags.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 55` and `versionName = "1.0.55"` in `app/build.gradle.kts`.
+
+### Version 1.0.51
 - Fixed "Recommended for You" card interaction on the Home screen: Wired up `onRecommendedPlay` and `onRecommendedDownload` handlers in `MainActivity.kt`. Tapping a recommended card instantly plays the matching local song or streams a preview sample with live equalizer animation overlay, and tapping the download overlay button prefills and opens the downloader.
 - Universal Mini-Player (Now Playing card) across all screens and modals: Extracted reusable `MiniPlayerCard` and integrated it at the bottom of all full-screen browsing dialogs (`OfflineLibraryDialog` for Offline Library and Your Mix / My Mix, `PlaylistDetailDialog`, and `ArtistDetailDialog`). Users can now always see the currently playing track and control playback (play/pause, favorite, tap to open full player) no matter what screen or panel is open.
 - Refactored Dialog Hierarchy: Moved `NowPlayingDialog`, `EqualizerDialog`, and `EditSongDialog` to the top of the overlay stack so expanding the player from any dialog cleanly layers above it without occlusion.

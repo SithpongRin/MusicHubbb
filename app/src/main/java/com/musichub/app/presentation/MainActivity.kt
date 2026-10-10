@@ -1591,7 +1591,7 @@ fun MusicHubApp() {
             }
         }
         if (activeMixTitle != null && activeMixTracks.isNotEmpty()) {
-            return activeMixTracks
+            return activeMixTracks.map { track -> songsList.find { it.id == track.id } ?: track }
         }
         return songsList
     }
@@ -2158,6 +2158,17 @@ fun MusicHubApp() {
         if (currentSong?.id == targetId) {
             currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
         }
+        if (viewingMix != null) {
+            val (vTitle, vTracks) = viewingMix!!
+            viewingMix = Pair(vTitle, vTracks.map {
+                if (it.id == targetId) it.copy(isFavorite = !it.isFavorite) else it
+            })
+        }
+        if (activeMixTitle != null && activeMixTracks.isNotEmpty()) {
+            activeMixTracks = activeMixTracks.map {
+                if (it.id == targetId) it.copy(isFavorite = !it.isFavorite) else it
+            }
+        }
         saveSongs(context, songsList)
     }
 
@@ -2721,11 +2732,13 @@ fun MusicHubApp() {
 
         // Your Mix Detail Dialog
         if (viewingMix != null) {
-            val (mixTitle, mixTracks) = viewingMix!!
+            val (mixTitle, rawMixTracks) = viewingMix!!
+            val mixTracks = rawMixTracks.map { track -> songsList.find { it.id == track.id } ?: track }
+            val resolvedCurrentSong = currentSong?.let { curr -> songsList.find { it.id == curr.id } ?: curr }
             OfflineLibraryDialog(
                 isKhmer = isKhmer,
                 songs = mixTracks,
-                currentSong = currentSong,
+                currentSong = resolvedCurrentSong,
                 isPlaying = isPlaying,
                 loopMode = loopMode,
                 customTitle = mixTitle,
@@ -2737,11 +2750,12 @@ fun MusicHubApp() {
                     }
                 },
                 onSongClick = { song ->
+                    val resolvedSong = songsList.find { it.id == song.id } ?: song
                     activePlaylistId = null
                     activeArtistName = null
                     activeMixTitle = mixTitle
                     activeMixTracks = mixTracks
-                    currentSong = song
+                    currentSong = resolvedSong
                     isPlaying = true
                 },
                 onPlayAll = {
@@ -4312,12 +4326,13 @@ fun PlaylistDetailDialog(
 
                 if (currentSong != null) {
                     Spacer(modifier = Modifier.height(8.dp))
+                    val resolvedMiniSong = allSongs.find { it.id == currentSong.id } ?: currentSong
                     MiniPlayerCard(
-                        song = currentSong,
+                        song = resolvedMiniSong,
                         isPlaying = isPlaying,
                         onSongClick = onMiniPlayerClick,
                         onTogglePlay = onTogglePlay,
-                        onFavoriteToggle = { onFavoriteToggle(currentSong) },
+                        onFavoriteToggle = { onFavoriteToggle(resolvedMiniSong) },
                         onDismiss = onMiniPlayerDismiss,
                         modifier = Modifier.padding(top = 4.dp)
                     )
@@ -4650,12 +4665,13 @@ fun ArtistDetailDialog(
 
                 if (currentSong != null) {
                     Spacer(modifier = Modifier.height(8.dp))
+                    val resolvedMiniSong = artistSongs.find { it.id == currentSong.id } ?: currentSong
                     MiniPlayerCard(
-                        song = currentSong,
+                        song = resolvedMiniSong,
                         isPlaying = isPlaying,
                         onSongClick = onMiniPlayerClick,
                         onTogglePlay = onTogglePlay,
-                        onFavoriteToggle = { onFavoriteToggle(currentSong) },
+                        onFavoriteToggle = { onFavoriteToggle(resolvedMiniSong) },
                         onDismiss = onMiniPlayerDismiss,
                         modifier = Modifier.padding(top = 4.dp)
                     )
@@ -4885,12 +4901,13 @@ fun OfflineLibraryDialog(
 
                 if (currentSong != null) {
                     Spacer(modifier = Modifier.height(8.dp))
+                    val resolvedMiniSong = songs.find { it.id == currentSong.id } ?: currentSong
                     MiniPlayerCard(
-                        song = currentSong,
+                        song = resolvedMiniSong,
                         isPlaying = isPlaying,
                         onSongClick = onMiniPlayerClick,
                         onTogglePlay = onTogglePlay,
-                        onFavoriteToggle = { onFavoriteToggle(currentSong) },
+                        onFavoriteToggle = { onFavoriteToggle(resolvedMiniSong) },
                         onDismiss = onMiniPlayerDismiss,
                         modifier = Modifier.padding(top = 4.dp)
                     )
