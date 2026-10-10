@@ -1585,6 +1585,7 @@ fun MusicHubApp() {
     }
 
     var showNowPlayingModal by remember { mutableStateOf(false) }
+    var showOfflineLibraryModal by remember { mutableStateOf(false) }
     var showEqualizerModal by remember { mutableStateOf(false) }
     var showDownloadModal by remember { mutableStateOf(false) }
     var downloadPrefill by remember { mutableStateOf<DownloadPrefill?>(null) }
@@ -2511,6 +2512,7 @@ fun MusicHubApp() {
                             )
                             showDownloadModal = true
                         },
+                        onHeroClick = { showOfflineLibraryModal = true },
                         onPlaylistClick = { playlist -> viewingPlaylist = playlist },
                         onCreatePlaylistClick = { showCreatePlaylistModal = true },
                         onArtistClick = { artistName, aSongs -> viewingArtist = Pair(artistName, aSongs) },
@@ -2815,6 +2817,50 @@ fun MusicHubApp() {
                 onVolumeChange = { appVolume = it },
                 onShareClick = { currentSong?.let { shareSongFile(context, it) } },
                 onDismiss = { showNowPlayingModal = false }
+            )
+        }
+
+        // Offline Library Dialog (Opened from Hero Card)
+        if (showOfflineLibraryModal) {
+            OfflineLibraryDialog(
+                isKhmer = isKhmer,
+                songs = songsList,
+                currentSong = currentSong,
+                isPlaying = isPlaying,
+                loopMode = loopMode,
+                onLoopModeToggle = {
+                    loopMode = when (loopMode) {
+                        LoopMode.OFF -> LoopMode.ALL
+                        LoopMode.ALL -> LoopMode.ONE
+                        LoopMode.ONE -> LoopMode.OFF
+                    }
+                },
+                onSongClick = { song ->
+                    activePlaylistId = null
+                    activeArtistName = null
+                    currentSong = song
+                    isPlaying = true
+                },
+                onPlayAll = {
+                    activePlaylistId = null
+                    activeArtistName = null
+                    if (songsList.isNotEmpty()) {
+                        currentSong = songsList.first()
+                        isPlaying = true
+                    }
+                },
+                onShufflePlay = { shuffleAndPlay() },
+                onFavoriteToggle = { song ->
+                    songsList = songsList.map {
+                        if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
+                    }
+                    saveSongs(context, songsList)
+                },
+                onEditSong = { song -> editingSong = song },
+                onDeleteSong = { song -> deleteSong(song) },
+                onAddToPlaylist = { song -> playlistForAddSong = song },
+                onShareSong = { song -> shareSongFile(context, song) },
+                onDismiss = { showOfflineLibraryModal = false }
             )
         }
 
@@ -4157,74 +4203,56 @@ fun PlaylistDetailDialog(
                                             .size(42.dp)
                                             .clip(RoundedCornerShape(8.dp))
                                             .pointerInput(song.id) {
-                                                awaitEachGesture {
-                                                    val down = awaitFirstDown(requireUnconsumed = false)
-                                                    val startIdx = songsOrder.indexOf(song.id)
-                                                    if (startIdx < 0) return@awaitEachGesture
-
-                                                    var totalDeltaY = 0f
-                                                    var isDraggingActive = false
-                                                    val touchSlop = viewConfiguration.touchSlop
-
-                                                    while (true) {
-                                                        val event = awaitPointerEvent()
-                                                        val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
-                                                        if (!pointer.pressed) {
-                                                            break
+                                                detectDragGestures(
+                                                    onDragStart = {
+                                                        val startIdx = songsOrder.indexOf(song.id)
+                                                        if (startIdx >= 0) {
+                                                            draggingIndex = startIdx
+                                                            dragOffsetY = 0f
                                                         }
-                                                        val dy = pointer.positionChange().y
-                                                        totalDeltaY += dy
-                                                        if (!isDraggingActive) {
-                                                            if (kotlin.math.abs(totalDeltaY) > touchSlop) {
-                                                                isDraggingActive = true
-                                                                pointer.consume()
-                                                                val startIdx = songsOrder.indexOf(song.id)
-                                                                if (startIdx >= 0) {
-                                                                    draggingIndex = startIdx
-                                                                    dragOffsetY = totalDeltaY
-                                                                }
-                                                            }
-                                                        } else {
-                                                            pointer.consume()
-                                                            dragOffsetY += dy
-                                                            while (dragOffsetY > itemHeightPx * 0.5f && (draggingIndex ?: 0) < songsOrder.size - 1) {
-                                                                val cur = draggingIndex ?: break
-                                                                val target = cur + 1
-                                                                val mutable = songsOrder.toMutableList()
-                                                                val item = mutable.removeAt(cur)
-                                                                mutable.add(target, item)
-                                                                songsOrder = mutable
-                                                                draggingIndex = target
-                                                                dragOffsetY -= itemHeightPx
-                                                            }
-                                                            while (dragOffsetY < -itemHeightPx * 0.5f && (draggingIndex ?: 0) > 0) {
-                                                                val cur = draggingIndex ?: break
-                                                                val target = cur - 1
-                                                                val mutable = songsOrder.toMutableList()
-                                                                val item = mutable.removeAt(cur)
-                                                                mutable.add(target, item)
-                                                                songsOrder = mutable
-                                                                draggingIndex = target
-                                                                dragOffsetY += itemHeightPx
-                                                            }
-                                                        }
-                                                    }
-
-                                                    if (isDraggingActive) {
+                                                    },
+                                                    onDragEnd = {
+                                                        draggingIndex = null
+                                                        dragOffsetY = 0f
                                                         onSaveSongIds(songsOrder)
-                                                    } else {
-                                                        showReorderMenu = true
+                                                    },
+                                                    onDragCancel = {
+                                                        draggingIndex = null
+                                                        dragOffsetY = 0f
+                                                    },
+                                                    onDrag = { change, dragAmount ->
+                                                        change.consume()
+                                                        dragOffsetY += dragAmount.y
+                                                        val curIdx = draggingIndex ?: return@detectDragGestures
+                                                        val threshold = itemHeightPx * 0.7f
+
+                                                        if (dragOffsetY > threshold && curIdx < songsOrder.size - 1) {
+                                                            val target = curIdx + 1
+                                                            val mutable = songsOrder.toMutableList()
+                                                            val item = mutable.removeAt(curIdx)
+                                                            mutable.add(target, item)
+                                                            songsOrder = mutable
+                                                            draggingIndex = target
+                                                            dragOffsetY -= itemHeightPx
+                                                        } else if (dragOffsetY < -threshold && curIdx > 0) {
+                                                            val target = curIdx - 1
+                                                            val mutable = songsOrder.toMutableList()
+                                                            val item = mutable.removeAt(curIdx)
+                                                            mutable.add(target, item)
+                                                            songsOrder = mutable
+                                                            draggingIndex = target
+                                                            dragOffsetY += itemHeightPx
+                                                        }
                                                     }
-                                                    draggingIndex = null
-                                                    dragOffsetY = 0f
-                                                }
-                                            },
+                                                )
+                                            }
+                                            .clickable { showReorderMenu = true },
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.DragHandle,
                                             contentDescription = "Drag to reorder",
-                                            tint = if (isDragging) Color(0xFF14161D) else Color(0xFF94A3B8),
+                                            tint = if (isDragging) Color(0xFF6366F1) else Color(0xFF94A3B8),
                                             modifier = Modifier.size(22.dp)
                                         )
 
@@ -4630,6 +4658,218 @@ fun ArtistDetailDialog(
     }
 }
 
+// Offline Library Dialog (All Songs list opened from Hero card)
+@Composable
+fun OfflineLibraryDialog(
+    isKhmer: Boolean,
+    songs: List<SongItem>,
+    currentSong: SongItem?,
+    isPlaying: Boolean,
+    loopMode: LoopMode,
+    onLoopModeToggle: () -> Unit,
+    onSongClick: (SongItem) -> Unit,
+    onPlayAll: () -> Unit,
+    onShufflePlay: () -> Unit,
+    onFavoriteToggle: (SongItem) -> Unit,
+    onEditSong: (SongItem) -> Unit,
+    onDeleteSong: (SongItem) -> Unit,
+    onAddToPlaylist: (SongItem) -> Unit,
+    onShareSong: (SongItem) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val isDark = LocalDarkMode.current
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = if (isDark) Color(0xFF14161D) else Color(0xFFF5F6F9)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp)
+            ) {
+                // Header Bar with Back Button
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(if (isDark) Color(0xFF1E222D) else Color.White, CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ArrowBack,
+                            contentDescription = "Back",
+                            tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                        )
+                    }
+                    Text(
+                        text = if (isKhmer) "បណ្ណាល័យចម្រៀង Offline" else "Offline Library",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                    )
+                    Box(modifier = Modifier.size(40.dp))
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Play All & Shuffle Buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        onClick = onPlayAll,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp),
+                        shape = RoundedCornerShape(22.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isKhmer) "ចាក់ទាំងអស់" else "Play All",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+
+                    Button(
+                        onClick = onShufflePlay,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp),
+                        shape = RoundedCornerShape(22.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isDark) Color(0xFF282F3E) else Color(0xFFE2E8F0)
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Shuffle,
+                            contentDescription = null,
+                            tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isKhmer) "ច្របល់" else "Shuffle",
+                            color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Action Bar: Tracks count & Loop Mode Toggle Button
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (isKhmer) "${songs.size} បទចម្រៀង" else "${songs.size} tracks",
+                        fontSize = 13.sp,
+                        color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E),
+                        fontWeight = FontWeight.Medium
+                    )
+
+                    // Loop Mode Toggle Button
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .clickable { onLoopModeToggle() },
+                        color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF1E222D) else Color.White),
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                                contentDescription = "Loop",
+                                tint = if (loopMode != LoopMode.OFF) Color.White else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = when (loopMode) {
+                                    LoopMode.OFF -> if (isKhmer) "បិទ Loop" else "Loop Off"
+                                    LoopMode.ALL -> if (isKhmer) "Loop ទាំងអស់" else "Loop All"
+                                    LoopMode.ONE -> if (isKhmer) "Loop 1 បទ" else "Loop 1"
+                                },
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (loopMode != LoopMode.OFF) Color.White else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B))
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Songs List
+                if (songs.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (isKhmer) "មិនទាន់មានបទចម្រៀងទេ" else "No songs found",
+                            fontSize = 14.sp,
+                            color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E)
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        itemsIndexed(songs) { index, song ->
+                            NumberedTrackRowItem(
+                                index = index + 1,
+                                isKhmer = isKhmer,
+                                song = song,
+                                isCurrent = currentSong?.id == song.id,
+                                isPlaying = isPlaying && currentSong?.id == song.id,
+                                onClick = { onSongClick(song) },
+                                onFavoriteToggle = { onFavoriteToggle(song) },
+                                onEditSong = { onEditSong(song) },
+                                onDeleteSong = { onDeleteSong(song) },
+                                onAddToPlaylist = { onAddToPlaylist(song) },
+                                onShareSong = { onShareSong(song) }
+                            )
+                        }
+                        item { Spacer(modifier = Modifier.height(20.dp)) }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun AnimatedEqualizer(
     modifier: Modifier = Modifier,
@@ -4694,6 +4934,7 @@ fun AnimatedEqualizer(
 }
 
 // Home Screen
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
     isKhmer: Boolean,
@@ -4704,6 +4945,7 @@ fun HomeScreen(
     playlists: List<PlaylistItem> = emptyList(),
     recommendedTracks: List<RecommendedTrack> = emptyList(),
     playCountVersion: Int = 0,
+    onHeroClick: () -> Unit = {},
     onRecommendedPlay: (RecommendedTrack) -> Unit = {},
     onRecommendedDownload: (RecommendedTrack) -> Unit = {},
     onPlaylistClick: (PlaylistItem) -> Unit = {},
@@ -4741,6 +4983,37 @@ fun HomeScreen(
             .toList()
             .sortedByDescending { it.second.size }
     }
+
+    // Your Mix (Clean playlist-styled mix tracks)
+    val myMixTracks = remember(songs, playCountVersion) {
+        val mostListened = songs.filter { PlayCountTracker.getPlayCount(context, it.id) > 0 }
+            .sortedByDescending { PlayCountTracker.getPlayCount(context, it.id) }
+        val favorites = songs.filter { it.isFavorite }
+        val mixPool = (mostListened + favorites + songs.shuffled()).distinctBy { it.id }
+        mixPool.take(25)
+    }
+
+    val artistMixTracks = remember(songs, topArtistGroup) {
+        if (topArtistGroup != null && topArtistGroup.value.isNotEmpty()) {
+            val artistSongs = topArtistGroup.value
+            val otherSongs = songs.filter { it.artist != topArtistGroup.key }.shuffled()
+            (artistSongs + otherSongs).distinctBy { it.id }.take(20)
+        } else {
+            emptyList()
+        }
+    }
+
+    // Hero playing subtle glow animation
+    val infiniteTransition = rememberInfiniteTransition(label = "hero_glow_transition")
+    val heroGlowAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "heroGlowAlpha"
+    )
 
     LazyColumn(
         modifier = Modifier
@@ -4833,23 +5106,31 @@ fun HomeScreen(
             }
         }
 
-        // Hero Section
+        // Hero Section (Click opens all offline songs dialog)
         item {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(26.dp)),
+                    .clip(RoundedCornerShape(26.dp))
+                    .clickable { onHeroClick() },
                 color = MaterialTheme.colorScheme.surface
             ) {
                 Column(modifier = Modifier.padding(18.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        // Full-Bleed Scaled Artwork Box (Eliminating Black Bars)
+                        // Full-Bleed Scaled Artwork Box with Playing Equalizer and Glow (No rotation)
                         Box(
                             modifier = Modifier
                                 .size(92.dp)
                                 .shadow(6.dp, RoundedCornerShape(22.dp))
                                 .clip(RoundedCornerShape(22.dp))
-                                .background(Color(0xFF1E212D)),
+                                .background(Color(0xFF1E212D))
+                                .then(
+                                    if (isPlaying) Modifier.border(
+                                        width = 2.dp,
+                                        color = Color(0xFF818CF8).copy(alpha = heroGlowAlpha),
+                                        shape = RoundedCornerShape(22.dp)
+                                    ) else Modifier
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             if (currentSong != null && currentSong.artworkUrl.isNotBlank()) {
@@ -4861,6 +5142,20 @@ fun HomeScreen(
                                 )
                             } else {
                                 Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = Color.White, modifier = Modifier.size(38.dp))
+                            }
+
+                            if (isPlaying) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(Color.Black.copy(alpha = 0.35f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    AnimatedEqualizer(
+                                        barColor = Color(0xFF818CF8),
+                                        isPlaying = true
+                                    )
+                                }
                             }
                         }
 
@@ -4875,15 +5170,21 @@ fun HomeScreen(
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = if (currentSong != null) currentSong.title else "Offline Library",
+                                text = if (currentSong != null) currentSong.title else (if (isKhmer) "បណ្ណាល័យចម្រៀង Offline" else "Offline Library"),
                                 fontSize = 19.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = if (isPlaying && currentSong != null) Modifier.basicMarquee(
+                                    iterations = Int.MAX_VALUE,
+                                    delayMillis = 1200,
+                                    initialDelayMillis = 1500,
+                                    velocity = 35.dp
+                                ) else Modifier
                             )
                             Text(
-                                text = if (currentSong != null) currentSong.artist else "MusicHub Player",
+                                text = if (currentSong != null) currentSong.artist else (if (isKhmer) "ចុចទីនេះដើម្បីមើលទាំងអស់" else "Tap to view all songs"),
                                 fontSize = 13.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
@@ -4929,8 +5230,8 @@ fun HomeScreen(
             }
         }
 
-        // 1. Most Played / On Repeat (Smart Offline Recommendation)
-        if (mostPlayedSongs.isNotEmpty()) {
+        // 1. Your Mix (Clean playlist-styled mix cards, no emojis)
+        if (myMixTracks.isNotEmpty()) {
             item {
                 Column {
                     Row(
@@ -4941,13 +5242,13 @@ fun HomeScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = if (isKhmer) "បទដែលអ្នកចូលចិត្តស្តាប់ជាងគេ" else "Most Played",
+                            text = if (isKhmer) "ការចាក់ចម្រៀងចម្រុះ (Mix)" else "Your Mix",
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "On Repeat",
+                            text = if (isKhmer) "ជ្រើសរើសសម្រាប់អ្នក" else "Made For You",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.SemiBold
@@ -4960,14 +5261,18 @@ fun HomeScreen(
                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                         contentPadding = PaddingValues(bottom = 6.dp)
                     ) {
-                        items(mostPlayedSongs) { song ->
-                            val isSongPlaying = currentSong?.id == song.id && isPlaying
-                            val playCount = PlayCountTracker.getPlayCount(context, song.id)
+                        // Mix 1: My Mix
+                        item {
+                            val firstArt = myMixTracks.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
                             Surface(
                                 modifier = Modifier
-                                    .width(140.dp)
+                                    .width(136.dp)
                                     .clip(RoundedCornerShape(18.dp))
-                                    .clickable { onSongClick(song) },
+                                    .clickable {
+                                        if (myMixTracks.isNotEmpty()) {
+                                            onSongClick(myMixTracks.first())
+                                        }
+                                    },
                                 color = MaterialTheme.colorScheme.surface,
                                 shadowElevation = 2.dp
                             ) {
@@ -4975,46 +5280,45 @@ fun HomeScreen(
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(120.dp)
+                                            .height(116.dp)
                                             .clip(RoundedCornerShape(14.dp))
-                                            .background(Color(0xFF232733)),
+                                            .background(
+                                                Brush.linearGradient(
+                                                    listOf(Color(0xFF6366F1), Color(0xFF1E1B4B))
+                                                )
+                                            ),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        SmartArtworkImage(
-                                            artworkUrl = song.artworkUrl,
-                                            contentDescription = song.title,
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxSize()
-                                        )
-
-                                        if (isSongPlaying) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxSize()
-                                                    .background(Color.Black.copy(alpha = 0.45f)),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                AnimatedEqualizer(
-                                                    barColor = Color(0xFF818CF8),
-                                                    isPlaying = isPlaying
-                                                )
-                                            }
+                                        if (firstArt.isNotBlank()) {
+                                            SmartArtworkImage(
+                                                artworkUrl = firstArt,
+                                                contentDescription = "My Mix",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Default.QueueMusic,
+                                                contentDescription = null,
+                                                tint = Color.White.copy(alpha = 0.8f),
+                                                modifier = Modifier.size(38.dp)
+                                            )
                                         }
 
-                                        // Play count badge
-                                        Surface(
+                                        // Badge indicating song count in bottom-right
+                                        Box(
                                             modifier = Modifier
                                                 .align(Alignment.BottomEnd)
-                                                .padding(6.dp),
-                                            shape = RoundedCornerShape(10.dp),
-                                            color = Color.Black.copy(alpha = 0.7f)
+                                                .padding(6.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color(0xCC000000))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
                                         ) {
                                             Text(
-                                                text = if (isKhmer) "$playCount ដង" else "$playCount plays",
-                                                color = Color.White,
-                                                fontSize = 9.sp,
+                                                text = "${myMixTracks.size}",
+                                                fontSize = 10.sp,
                                                 fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                color = Color.White
                                             )
                                         }
                                     }
@@ -5022,25 +5326,110 @@ fun HomeScreen(
                                     Spacer(modifier = Modifier.height(8.dp))
 
                                     Text(
-                                        text = song.title,
+                                        text = if (isKhmer) "ចម្រៀងចម្រុះរបស់ខ្ញុំ" else "My Mix",
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 2,
-                                        minLines = 2,
-                                        lineHeight = 16.sp,
+                                        maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
 
                                     Spacer(modifier = Modifier.height(2.dp))
 
                                     Text(
-                                        text = song.artist,
+                                        text = if (isKhmer) "${myMixTracks.size} បទ" else "${myMixTracks.size} songs",
                                         fontSize = 11.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        maxLines = 1
                                     )
+                                }
+                            }
+                        }
+
+                        // Mix 2: Artist Mix (if top artist available)
+                        if (artistMixTracks.isNotEmpty() && topArtistGroup != null) {
+                            item {
+                                val topArtist = topArtistGroup.key
+                                val artistArt = artistMixTracks.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
+                                Surface(
+                                    modifier = Modifier
+                                        .width(136.dp)
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .clickable {
+                                            if (artistMixTracks.isNotEmpty()) {
+                                                onSongClick(artistMixTracks.first())
+                                            }
+                                        },
+                                    color = MaterialTheme.colorScheme.surface,
+                                    shadowElevation = 2.dp
+                                ) {
+                                    Column(modifier = Modifier.padding(10.dp)) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(116.dp)
+                                                .clip(RoundedCornerShape(14.dp))
+                                                .background(
+                                                    Brush.linearGradient(
+                                                        listOf(Color(0xFF3B82F6), Color(0xFF1E293B))
+                                                    )
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            if (artistArt.isNotBlank()) {
+                                                SmartArtworkImage(
+                                                    artworkUrl = artistArt,
+                                                    contentDescription = "$topArtist Mix",
+                                                    contentScale = ContentScale.Crop,
+                                                    modifier = Modifier.fillMaxSize()
+                                                )
+                                            } else {
+                                                Icon(
+                                                    imageVector = Icons.Default.QueueMusic,
+                                                    contentDescription = null,
+                                                    tint = Color.White.copy(alpha = 0.8f),
+                                                    modifier = Modifier.size(38.dp)
+                                                )
+                                            }
+
+                                            // Badge indicating song count in bottom-right
+                                            Box(
+                                                modifier = Modifier
+                                                    .align(Alignment.BottomEnd)
+                                                    .padding(6.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color(0xCC000000))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                            ) {
+                                                Text(
+                                                    text = "${artistMixTracks.size}",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color.White
+                                                )
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                        Text(
+                                            text = "$topArtist Mix",
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+
+                                        Spacer(modifier = Modifier.height(2.dp))
+
+                                        Text(
+                                            text = if (isKhmer) "${artistMixTracks.size} បទ" else "${artistMixTracks.size} songs",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -5573,23 +5962,6 @@ fun HomeScreen(
                         }
                     }
                 }
-            }
-        } else {
-            // Numbered Track List with Live Animated Equalizer and Song Artwork
-            itemsIndexed(songs) { index, song ->
-                NumberedTrackRowItem(
-                    index = index + 1,
-                    isKhmer = isKhmer,
-                    song = song,
-                    isCurrent = currentSong?.id == song.id,
-                    isPlaying = isPlaying && currentSong?.id == song.id,
-                    onClick = { onSongClick(song) },
-                    onFavoriteToggle = { onFavoriteToggle(song) },
-                    onEditSong = { onEditSong(song) },
-                    onDeleteSong = { onDeleteSong(song) },
-                    onAddToPlaylist = { onAddToPlaylist(song) },
-                    onShareSong = { onShareSong(song) }
-                )
             }
         }
 
