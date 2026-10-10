@@ -2150,6 +2150,17 @@ fun MusicHubApp() {
         }
     }
 
+    fun toggleFavorite(song: SongItem) {
+        val targetId = song.id
+        songsList = songsList.map {
+            if (it.id == targetId) it.copy(isFavorite = !it.isFavorite) else it
+        }
+        if (currentSong?.id == targetId) {
+            currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
+        }
+        saveSongs(context, songsList)
+    }
+
     fun dismissMiniPlayer() {
         try {
             exoPlayer.stop()
@@ -2337,13 +2348,7 @@ fun MusicHubApp() {
                                 isPlaying = isPlaying,
                                 onSongClick = { showNowPlayingModal = true },
                                 onTogglePlay = { togglePlayPause() },
-                                onFavoriteToggle = {
-                                    songsList = songsList.map {
-                                        if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
-                                    }
-                                    currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
-                                    saveSongs(context, songsList)
-                                },
+                                onFavoriteToggle = { toggleFavorite(song) },
                                 onDismiss = { dismissMiniPlayer() },
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                             )
@@ -2559,12 +2564,7 @@ fun MusicHubApp() {
                         onImportClick = { audioPickerLauncher.launch("audio/*") },
                         onDownloadClick = { showDownloadModal = true },
                         onLanguageToggle = { isKhmer = !isKhmer },
-                        onFavoriteToggle = { song ->
-                            songsList = songsList.map {
-                                if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
-                            }
-                            saveSongs(context, songsList)
-                        },
+                        onFavoriteToggle = { song -> toggleFavorite(song) },
                         onEditSong = { song -> editingSong = song },
                         onDeleteSong = { song -> deleteSong(song) },
                         onAddToPlaylist = { song -> playlistForAddSong = song },
@@ -2595,12 +2595,7 @@ fun MusicHubApp() {
                         },
                         onPlayOnlineTrack = handlePlayOnlineTrack,
                         onDownloadOnlineTrack = handleDownloadOnlineTrack,
-                        onFavoriteToggle = { song ->
-                            songsList = songsList.map {
-                                if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
-                            }
-                            saveSongs(context, songsList)
-                        },
+                        onFavoriteToggle = { song -> toggleFavorite(song) },
                         onEditSong = { song -> editingSong = song },
                         onDeleteSong = { song -> deleteSong(song) },
                         onAddToPlaylist = { song -> playlistForAddSong = song },
@@ -2641,15 +2636,11 @@ fun MusicHubApp() {
                                 activePlaylistId = playlist.id
                                 activeArtistName = null
                                 currentSong = pSongs.first()
+                                java.lang.Boolean.TRUE
                                 isPlaying = true
                             }
                         },
-                        onFavoriteToggle = { song ->
-                            songsList = songsList.map {
-                                if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
-                            }
-                            saveSongs(context, songsList)
-                        },
+                        onFavoriteToggle = { song -> toggleFavorite(song) },
                         onEditSong = { song -> editingSong = song },
                         onDeleteSong = { song -> deleteSong(song) },
                         onAddToPlaylist = { song -> playlistForAddSong = song },
@@ -2716,12 +2707,7 @@ fun MusicHubApp() {
                     }
                 },
                 onShufflePlay = { shuffleAndPlay() },
-                onFavoriteToggle = { song ->
-                    songsList = songsList.map {
-                        if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
-                    }
-                    saveSongs(context, songsList)
-                },
+                onFavoriteToggle = { song -> toggleFavorite(song) },
                 onEditSong = { song -> editingSong = song },
                 onDeleteSong = { song -> deleteSong(song) },
                 onAddToPlaylist = { song -> playlistForAddSong = song },
@@ -2780,12 +2766,7 @@ fun MusicHubApp() {
                         isPlaying = true
                     }
                 },
-                onFavoriteToggle = { song ->
-                    songsList = songsList.map {
-                        if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
-                    }
-                    saveSongs(context, songsList)
-                },
+                onFavoriteToggle = { song -> toggleFavorite(song) },
                 onEditSong = { song -> editingSong = song },
                 onDeleteSong = { song -> deleteSong(song) },
                 onAddToPlaylist = { song -> playlistForAddSong = song },
@@ -3109,15 +3090,7 @@ fun MusicHubApp() {
                     playlists = updatedPlaylists
                     savePlaylists(context, updatedPlaylists)
                 },
-                onFavoriteToggle = { song ->
-                    songsList = songsList.map {
-                        if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
-                    }
-                    if (currentSong?.id == song.id) {
-                        currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
-                    }
-                    saveSongs(context, songsList)
-                },
+                onFavoriteToggle = { song -> toggleFavorite(song) },
                 onMiniPlayerClick = { showNowPlayingModal = true },
                 onTogglePlay = { togglePlayPause() },
                 onMiniPlayerDismiss = { dismissMiniPlayer() },
@@ -3177,15 +3150,7 @@ fun MusicHubApp() {
                         isPlaying = true
                     }
                 },
-                onFavoriteToggle = { song ->
-                    songsList = songsList.map {
-                        if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
-                    }
-                    if (currentSong?.id == song.id) {
-                        currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
-                    }
-                    saveSongs(context, songsList)
-                },
+                onFavoriteToggle = { song -> toggleFavorite(song) },
                 onEditSong = { song -> editingSong = song },
                 onDeleteSong = { song -> deleteSong(song) },
                 onAddToPlaylist = { song -> playlistForAddSong = song },
@@ -3228,13 +3193,7 @@ fun MusicHubApp() {
                     }
                 },
                 onFavoriteToggle = {
-                    currentSong?.let { song ->
-                        songsList = songsList.map {
-                            if (it.id == song.id) it.copy(isFavorite = !it.isFavorite) else it
-                        }
-                        currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
-                        saveSongs(context, songsList)
-                    }
+                    currentSong?.let { song -> toggleFavorite(song) }
                 },
                 onEditClick = { editingSong = currentSong },
                 onEqualizerClick = { showEqualizerModal = true },
