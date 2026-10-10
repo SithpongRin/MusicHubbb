@@ -2140,6 +2140,18 @@ fun MusicHubApp() {
         }
     }
 
+    fun dismissMiniPlayer() {
+        try {
+            exoPlayer.stop()
+        } catch (_: Exception) {}
+        isPlaying = false
+        currentSong = null
+        activePlaylistId = null
+        activeArtistName = null
+        activeMixTitle = null
+        activeMixTracks = emptyList()
+    }
+
     fun shuffleAndPlay() {
         activePlaylistId = null
         activeArtistName = null
@@ -2322,6 +2334,7 @@ fun MusicHubApp() {
                                     currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
                                     saveSongs(context, songsList)
                                 },
+                                onDismiss = { dismissMiniPlayer() },
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                             )
                         }
@@ -2704,6 +2717,7 @@ fun MusicHubApp() {
                 onShareSong = { song -> shareSongFile(context, song) },
                 onMiniPlayerClick = { showNowPlayingModal = true },
                 onTogglePlay = { togglePlayPause() },
+                onMiniPlayerDismiss = { dismissMiniPlayer() },
                 onDismiss = { showOfflineLibraryModal = false }
             )
         }
@@ -2767,6 +2781,7 @@ fun MusicHubApp() {
                 onShareSong = { song -> shareSongFile(context, song) },
                 onMiniPlayerClick = { showNowPlayingModal = true },
                 onTogglePlay = { togglePlayPause() },
+                onMiniPlayerDismiss = { dismissMiniPlayer() },
                 onDismiss = { viewingMix = null }
             )
         }
@@ -3094,6 +3109,7 @@ fun MusicHubApp() {
                 },
                 onMiniPlayerClick = { showNowPlayingModal = true },
                 onTogglePlay = { togglePlayPause() },
+                onMiniPlayerDismiss = { dismissMiniPlayer() },
                 onDismiss = { viewingPlaylist = null }
             )
         }
@@ -3165,6 +3181,7 @@ fun MusicHubApp() {
                 onShareSong = { song -> shareSongFile(context, song) },
                 onMiniPlayerClick = { showNowPlayingModal = true },
                 onTogglePlay = { togglePlayPause() },
+                onMiniPlayerDismiss = { dismissMiniPlayer() },
                 onDismiss = { viewingArtist = null }
             )
         }
@@ -3943,6 +3960,7 @@ fun PlaylistDetailDialog(
     onFavoriteToggle: (SongItem) -> Unit = {},
     onMiniPlayerClick: () -> Unit = {},
     onTogglePlay: () -> Unit = {},
+    onMiniPlayerDismiss: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var showSelectSongsDialog by remember { mutableStateOf(false) }
@@ -4330,6 +4348,7 @@ fun PlaylistDetailDialog(
                         onSongClick = onMiniPlayerClick,
                         onTogglePlay = onTogglePlay,
                         onFavoriteToggle = { onFavoriteToggle(currentSong) },
+                        onDismiss = onMiniPlayerDismiss,
                         modifier = Modifier.padding(top = 4.dp)
                     )
                 }
@@ -4359,6 +4378,7 @@ fun ArtistDetailDialog(
     onShareSong: (SongItem) -> Unit,
     onMiniPlayerClick: () -> Unit = {},
     onTogglePlay: () -> Unit = {},
+    onMiniPlayerDismiss: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val isDark = LocalDarkMode.current
@@ -4666,6 +4686,7 @@ fun ArtistDetailDialog(
                         onSongClick = onMiniPlayerClick,
                         onTogglePlay = onTogglePlay,
                         onFavoriteToggle = { onFavoriteToggle(currentSong) },
+                        onDismiss = onMiniPlayerDismiss,
                         modifier = Modifier.padding(top = 4.dp)
                     )
                 }
@@ -4694,6 +4715,7 @@ fun OfflineLibraryDialog(
     onShareSong: (SongItem) -> Unit,
     onMiniPlayerClick: () -> Unit = {},
     onTogglePlay: () -> Unit = {},
+    onMiniPlayerDismiss: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val isDark = LocalDarkMode.current
@@ -4899,6 +4921,7 @@ fun OfflineLibraryDialog(
                         onSongClick = onMiniPlayerClick,
                         onTogglePlay = onTogglePlay,
                         onFavoriteToggle = { onFavoriteToggle(currentSong) },
+                        onDismiss = onMiniPlayerDismiss,
                         modifier = Modifier.padding(top = 4.dp)
                     )
                 }
@@ -4970,7 +4993,7 @@ fun AnimatedEqualizer(
     }
 }
 
-// Reusable Mini-Player Card docked or floating
+// Reusable Mini-Player Card docked or floating with swipe-to-dismiss (down, right, left)
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun MiniPlayerCard(
@@ -4979,14 +5002,115 @@ fun MiniPlayerCard(
     onSongClick: () -> Unit,
     onTogglePlay: () -> Unit,
     onFavoriteToggle: () -> Unit,
+    onDismiss: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val coroutineScope = rememberCoroutineScope()
+    val animOffsetX = remember { Animatable(0f) }
+    val animOffsetY = remember { Animatable(0f) }
+    val animAlpha = remember { Animatable(1f) }
+    val density = LocalDensity.current
+
+    LaunchedEffect(song.id) {
+        animOffsetX.snapTo(0f)
+        animOffsetY.snapTo(0f)
+        animAlpha.snapTo(1f)
+    }
+
     Surface(
         modifier = modifier
             .fillMaxWidth()
+            .graphicsLayer {
+                translationX = animOffsetX.value
+                translationY = animOffsetY.value
+                alpha = animAlpha.value
+            }
             .shadow(12.dp, RoundedCornerShape(26.dp))
             .clip(RoundedCornerShape(26.dp))
-            .clickable { onSongClick() },
+            .pointerInput(song.id) {
+                val touchSlop = viewConfiguration.touchSlop
+                val dismissXThreshold = with(density) { 80.dp.toPx() }
+                val dismissYThreshold = with(density) { 45.dp.toPx() }
+
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var isDragging = false
+                    var totalDragX = 0f
+                    var totalDragY = 0f
+                    val pointerId = down.id
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+
+                        if (!change.pressed) {
+                            // Pointer released
+                            if (isDragging) {
+                                coroutineScope.launch {
+                                    val currentX = animOffsetX.value
+                                    val currentY = animOffsetY.value
+
+                                    if (currentY > dismissYThreshold) {
+                                        // Swipe DOWN to dismiss
+                                        launch { animOffsetY.animateTo(currentY + 350f, tween(160)) }
+                                        launch { animAlpha.animateTo(0f, tween(160)) }
+                                        delay(160)
+                                        onDismiss()
+                                    } else if (currentX > dismissXThreshold) {
+                                        // Swipe RIGHT to dismiss
+                                        launch { animOffsetX.animateTo(currentX + 900f, tween(160)) }
+                                        launch { animAlpha.animateTo(0f, tween(160)) }
+                                        delay(160)
+                                        onDismiss()
+                                    } else if (currentX < -dismissXThreshold) {
+                                        // Swipe LEFT to dismiss
+                                        launch { animOffsetX.animateTo(currentX - 900f, tween(160)) }
+                                        launch { animAlpha.animateTo(0f, tween(160)) }
+                                        delay(160)
+                                        onDismiss()
+                                    } else {
+                                        // Snap back if threshold not reached
+                                        launch { animOffsetX.animateTo(0f, spring(dampingRatio = 0.75f, stiffness = 450f)) }
+                                        launch { animOffsetY.animateTo(0f, spring(dampingRatio = 0.75f, stiffness = 450f)) }
+                                        launch { animAlpha.animateTo(1f, tween(100)) }
+                                    }
+                                }
+                            } else {
+                                // Tap: only fire if not consumed by a child button (favorite / play-pause)
+                                if (!change.isConsumed) {
+                                    onSongClick()
+                                }
+                            }
+                            break
+                        } else {
+                            // Pointer moved
+                            val delta = change.position - change.previousPosition
+                            totalDragX += delta.x
+                            totalDragY += delta.y
+
+                            if (!isDragging) {
+                                if (Math.abs(totalDragX) > touchSlop || totalDragY > touchSlop) {
+                                    isDragging = true
+                                    change.consume()
+                                }
+                            } else {
+                                change.consume()
+                                // Downward drag has full motion, upward drag has heavy resistance
+                                val effectiveY = if (totalDragY > 0) totalDragY else (totalDragY * 0.15f).coerceAtLeast(-25f)
+                                coroutineScope.launch {
+                                    animOffsetX.snapTo(totalDragX)
+                                    animOffsetY.snapTo(effectiveY)
+                                    val progress = maxOf(
+                                        Math.abs(totalDragX) / (dismissXThreshold * 2.2f),
+                                        (effectiveY / (dismissYThreshold * 2.2f)).coerceAtLeast(0f)
+                                    )
+                                    animAlpha.snapTo((1f - progress * 0.6f).coerceIn(0.2f, 1f))
+                                }
+                            }
+                        }
+                    }
+                }
+            },
         color = Color(0xFF14161D)
     ) {
         Row(

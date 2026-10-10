@@ -341,6 +341,19 @@ The app requests only required permissions:
 - Full Dark Mode Theming Support for Dialogs: Unified `PlaylistDetailDialog`, `SelectPlaylistSongsDialog`, `MediaLinkDownloadDialog`, and `EqualizerDialog` with dynamic `LocalDarkMode` palette adaptations for surfaces, cards, borders, text, and interactive buttons.
 - Bumped `versionCode = 26` and `versionName = "1.0.26"` in `app/build.gradle.kts`.
 
+### Version 1.0.51
+- Multi-Directional Swipe-to-Dismiss on Mini-Player (Now Playing card):
+  - Users can now dismiss and close the Mini-Player card by dragging downwards, swiping right, or swiping left.
+  - Interactive physics with real-time translation offset and alpha fade-out during dragging.
+  - Directional exit animation when release exceeds the swipe threshold (down, right, or left), smoothly animating off-screen before dismissal.
+  - Graceful spring return animation back to resting position `(0, 0)` with full opacity if drag does not meet the threshold.
+  - Complete playback cleanup on dismissal: stops audio playback (`exoPlayer.stop()`), resets `isPlaying = false`, and clears `currentSong = null` across the entire app so no hidden background audio persists.
+  - Child touch safety: Play/Pause pill and Favorite heart buttons consume their own click events and do not trigger card dismissal or modal expansion.
+  - Tap-to-expand: Tapping any neutral area of the card opens the full Now Playing player modal without false dismissal triggers.
+  - Supported everywhere: The dismissible gesture is fully supported in the bottom scaffold Mini-Player as well as within all overlay modals (`OfflineLibraryDialog`, `PlaylistDetailDialog`, and `ArtistDetailDialog`).
+- Strict zero-emoji policy maintained across all strings, labels, and UI elements.
+- Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
+
 ### Version 1.0.50
 - Fixed "Recommended for You" card interaction on the Home screen: Wired up `onRecommendedPlay` and `onRecommendedDownload` handlers in `MainActivity.kt`. Tapping a recommended card instantly plays the matching local song or streams a preview sample with live equalizer animation overlay, and tapping the download overlay button prefills and opens the downloader.
 - Universal Mini-Player (Now Playing card) across all screens and modals: Extracted reusable `MiniPlayerCard` and integrated it at the bottom of all full-screen browsing dialogs (`OfflineLibraryDialog` for Offline Library and Your Mix / My Mix, `PlaylistDetailDialog`, and `ArtistDetailDialog`). Users can now always see the currently playing track and control playback (play/pause, favorite, tap to open full player) no matter what screen or panel is open.
