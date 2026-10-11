@@ -4128,6 +4128,7 @@ fun PlaylistDetailDialog(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
                                 .clickable { onLoopModeToggle() },
+                            shape = RoundedCornerShape(10.dp),
                             color = if (loopMode != LoopMode.OFF) activeBtnBg else (if (isDark) Color(0xFF1B1E25) else Color.White),
                             border = androidx.compose.foundation.BorderStroke(
                                 1.dp,
@@ -4329,6 +4330,7 @@ fun PlaylistDetailDialog(
                                     }
                                     .clip(RoundedCornerShape(10.dp))
                                     .clickable(enabled = draggingSongId == null) { onSongClick(song) },
+                                shape = RoundedCornerShape(10.dp),
                                 color = when {
                                     isDraggingThis -> if (isDark) Color(0xFF252934) else Color.White
                                     isCurrentSong -> if (isDark) Color(0xFF1B1E25) else Color.White
@@ -5128,6 +5130,7 @@ fun OfflineLibraryDialog(
                         modifier = Modifier
                             .clip(RoundedCornerShape(10.dp))
                             .clickable { onLoopModeToggle() },
+                        shape = RoundedCornerShape(10.dp),
                         color = if (loopMode != LoopMode.OFF) primaryBtnBg else (if (isDark) Color(0xFF1B1E25) else Color.White),
                         border = androidx.compose.foundation.BorderStroke(
                             1.dp,
@@ -5401,6 +5404,7 @@ fun MiniPlayerCard(
                     }
                 }
             },
+        shape = RoundedCornerShape(12.dp),
         color = if (LocalDarkMode.current) Color(0xFF20232B) else Color(0xFF14161D),
         border = if (LocalDarkMode.current) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF2E323D)) else null
     ) {
@@ -5633,8 +5637,9 @@ fun HomeScreen(
                     // Language Switcher Pill
                     Surface(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(18.dp))
+                            .clip(RoundedCornerShape(10.dp))
                             .clickable { onLanguageToggle() },
+                        shape = RoundedCornerShape(10.dp),
                         color = MaterialTheme.colorScheme.surface,
                         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                     ) {
@@ -5653,6 +5658,7 @@ fun HomeScreen(
                             .size(38.dp)
                             .clip(CircleShape)
                             .clickable { onImportClick() },
+                        shape = CircleShape,
                         color = MaterialTheme.colorScheme.surface,
                         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                     ) {
@@ -6301,6 +6307,7 @@ fun HomeScreen(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
                                 .clickable { onCreatePlaylistClick() },
+                            shape = RoundedCornerShape(10.dp),
                             color = MaterialTheme.colorScheme.surface,
                             border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                         ) {
@@ -7607,6 +7614,7 @@ fun LibraryScreen(
                             .size(34.dp)
                             .clip(CircleShape)
                             .clickable { onRescanLibrary() },
+                        shape = CircleShape,
                         color = MaterialTheme.colorScheme.surface,
                         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                     ) {
@@ -7626,6 +7634,7 @@ fun LibraryScreen(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
                                 .clickable { onCreatePlaylistClick() },
+                            shape = RoundedCornerShape(10.dp),
                             color = if (LocalDarkMode.current) Color.White else Color(0xFF14161D)
                         ) {
                             Row(
@@ -7640,7 +7649,7 @@ fun LibraryScreen(
                                 )
                                 Spacer(modifier = Modifier.width(3.dp))
                                 Text(
-                                    text = if (isKhmer) "បញ្ជីចម្រៀង" else "+ List",
+                                    text = if (isKhmer) "បញ្ជីចម្រៀង" else "List",
                                     color = if (LocalDarkMode.current) Color(0xFF0C0E12) else Color.White,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
@@ -7656,6 +7665,7 @@ fun LibraryScreen(
                         modifier = Modifier
                             .clip(RoundedCornerShape(10.dp))
                             .clickable { onImportClick() },
+                        shape = RoundedCornerShape(10.dp),
                         color = if (isPlaylistsTab) MaterialTheme.colorScheme.surface else (if (LocalDarkMode.current) Color.White else Color(0xFF14161D)),
                         border = if (isPlaylistsTab) androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline) else null
                     ) {
@@ -8706,6 +8716,7 @@ fun UnifiedExpandablePlayerCard(
                         }
                     }
                 },
+            shape = RoundedCornerShape(cornerRadius),
             color = cardBaseColor,
             border = if (isDark && p < 0.98f) {
                 androidx.compose.foundation.BorderStroke(

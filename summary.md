@@ -382,6 +382,13 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.66
+- Smooth Shape-Matched Button Borders & Single `+` on Library Create Playlist Button:
+  - Added explicit `shape` parameters (`RoundedCornerShape` / `CircleShape`) directly to all bordered `Surface` components (`EN` language pill, `+` import button, `Loop Off` toggle button, `+ New` playlist button, Rescan button, `MiniPlayerCard`, and `UnifiedExpandablePlayerCard`) so `BorderStroke` renders smoothly around every curved edge instead of clipping a rectangular border.
+  - Removed the duplicate `+` from the `"List"` label inside the Library Playlists creation button (`Icons.Default.Add` + `"List"` instead of `+ + List`).
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 66` and `versionName = "1.0.66"` in `app/build.gradle.kts`.
+
 ### Version 1.0.65
 - Reduced Corner Roundness Across All Cards & Song Artwork Thumbnails, Bright White Dark Mode Accent Palette, Removed Right-Side Section Subtitles on Home, and Brief Hold Before Playlist Drag-and-Drop:
   - Reduced `RoundedCornerShape` across all cards (`10.dp`–`12.dp` for Hero Card, Mix cards, Recommended cards, Playlist cards, Artist cards, Track rows, Mini-Player card, Settings cards, and Dialog cards) and all song artwork thumbnails (`8.dp`–`12.dp` for large/medium card covers, `6.dp` for track row and Mini-Player thumbnails).
