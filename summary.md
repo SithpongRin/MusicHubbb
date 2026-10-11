@@ -382,6 +382,15 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.65
+- Reduced Corner Roundness Across All Cards & Song Artwork Thumbnails, Bright White Dark Mode Accent Palette, Removed Right-Side Section Subtitles on Home, and Brief Hold Before Playlist Drag-and-Drop:
+  - Reduced `RoundedCornerShape` across all cards (`10.dp`–`12.dp` for Hero Card, Mix cards, Recommended cards, Playlist cards, Artist cards, Track rows, Mini-Player card, Settings cards, and Dialog cards) and all song artwork thumbnails (`8.dp`–`12.dp` for large/medium card covers, `6.dp` for track row and Mini-Player thumbnails).
+  - Replaced blue/indigo (`#6366F1` / `#818CF8`) accents in Dark Mode with crisp bright white (`Color.White` with dark `Color(0xFF0C0E12)` foreground contrast on solid buttons/chips, and `Color.White` for selected Bottom Navigation tab, waveform scrubber, equalizer bars, active track titles/indices, Now Playing main Play/Pause button, Settings controls, and Download dialog).
+  - Removed the 3 right-side section subtitle labels on the Home screen (`"Made For You"` / `"ជ្រើសរើសសម្រាប់អ្នក"`, `"Similar Vibe"` / `"ស្រដៀងគ្នា"`, and `"New & Trending"` / `"ថ្មីៗ • Trending"`).
+  - Updated playlist song reordering (`=`) in `PlaylistDetailDialog` to require a brief press-and-hold (`220ms` within `touchSlop`) before activating drag-and-drop so normal list scrolling is never hijacked.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 65` and `versionName = "1.0.65"` in `app/build.gradle.kts`.
+
 ### Version 1.0.64
 - Instant Touch-and-Drag Playlist Song Reordering & Full `...` Options Menu in `PlaylistDetailDialog`:
   - Replaced the single-step `^`/`v` arrows and `X` button on playlist song rows with a clean 2-button right layout: **`=` (`DragHandle`)** + **`...` (`MoreHoriz`)**.

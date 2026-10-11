@@ -90,6 +90,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -2335,13 +2336,13 @@ fun MusicHubApp() {
 
     val colorScheme = if (isDarkMode) {
         darkColorScheme(
-            primary = Color(0xFF818CF8),
-            secondary = Color(0xFF6366F1),
+            primary = Color.White,
+            secondary = Color.White,
             background = Color(0xFF0C0E12),
             surface = Color(0xFF1B1E25),
             surfaceVariant = Color(0xFF252932),
             surfaceTint = Color.Transparent,
-            onPrimary = Color.White,
+            onPrimary = Color(0xFF0C0E12),
             onBackground = Color(0xFFFAFAFA),
             onSurface = Color(0xFFFAFAFA),
             onSurfaceVariant = Color(0xFFA6ABB6),
@@ -2407,8 +2408,8 @@ fun MusicHubApp() {
                                 selected = currentScreen == screen,
                                 onClick = { currentScreen = screen },
                                 colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = if (isDarkMode) Color(0xFF818CF8) else Color(0xFF14161D),
-                                    selectedTextColor = if (isDarkMode) Color(0xFF818CF8) else Color(0xFF14161D),
+                                    selectedIconColor = if (isDarkMode) Color.White else Color(0xFF14161D),
+                                    selectedTextColor = if (isDarkMode) Color.White else Color(0xFF14161D),
                                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                     indicatorColor = if (isDarkMode) Color(0xFF252932) else MaterialTheme.colorScheme.surfaceVariant
@@ -3376,7 +3377,7 @@ fun AnimatedEqualizerBars() {
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.Bottom
     ) {
-        val barColor = if (LocalDarkMode.current) Color(0xFF818CF8) else Color(0xFF14161D)
+        val barColor = if (LocalDarkMode.current) Color.White else Color(0xFF14161D)
         Box(
             modifier = Modifier
                 .width(4.dp)
@@ -3478,7 +3479,7 @@ fun WaveformScrubber(
                             .clip(RoundedCornerShape(3.dp))
                             .background(
                                 if (isPlayed) {
-                                    if (LocalDarkMode.current) Color(0xFF818CF8) else Color(0xFF14161D)
+                                    if (LocalDarkMode.current) Color.White else Color(0xFF14161D)
                                 } else {
                                     if (LocalDarkMode.current) Color(0xFF2E3344) else Color(0xFFDCE0E8)
                                 }
@@ -3496,7 +3497,7 @@ fun WaveformScrubber(
                     .height(48.dp)
                     .shadow(3.dp, RoundedCornerShape(2.dp))
                     .clip(RoundedCornerShape(2.dp))
-                    .background(if (LocalDarkMode.current) Color(0xFF818CF8) else Color(0xFF14161D))
+                    .background(if (LocalDarkMode.current) Color.White else Color(0xFF14161D))
             )
         }
 
@@ -3590,7 +3591,7 @@ fun EditSongDialog(
                 onClick = { onSave(title, artist, album) },
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
             ) {
-                Text(text = if (isKhmer) "រក្សាទុក" else "Save", color = Color.White)
+                Text(text = if (isKhmer) "រក្សាទុក" else "Save", color = MaterialTheme.colorScheme.onPrimary)
             }
         },
         dismissButton = {
@@ -3642,7 +3643,7 @@ fun CreatePlaylistDialog(
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
             ) {
-                Text(if (isKhmer) "បង្កើត" else "Create", color = Color.White)
+                Text(if (isKhmer) "បង្កើត" else "Create", color = MaterialTheme.colorScheme.onPrimary)
             }
         },
         dismissButton = {
@@ -3696,7 +3697,7 @@ fun AddToPlaylistDialog(
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(8.dp))
                         .clickable {
                             onDismiss()
                             onCreateNewPlaylist()
@@ -3735,7 +3736,7 @@ fun AddToPlaylistDialog(
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
+                                    .clip(RoundedCornerShape(8.dp))
                                     .clickable {
                                         onAddToPlaylist(playlist)
                                     },
@@ -3808,7 +3809,7 @@ fun SelectPlaylistSongsDialog(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(16.dp),
-            shape = RoundedCornerShape(24.dp),
+            shape = RoundedCornerShape(14.dp),
             color = if (isDark) Color(0xFF1B1E25) else Color.White
         ) {
             Column(
@@ -3842,9 +3843,9 @@ fun SelectPlaylistSongsDialog(
                     placeholder = { Text(if (isKhmer) "ស្វែងរកបទចម្រៀង..." else "Search tracks...", fontSize = 13.sp) },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8), modifier = Modifier.size(20.dp)) },
                     singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(10.dp),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D),
+                        focusedBorderColor = if (isDark) Color.White else Color(0xFF14161D),
                         unfocusedBorderColor = if (isDark) Color(0xFF334155) else Color(0xFFE2E8F0)
                     ),
                     modifier = Modifier.fillMaxWidth()
@@ -3869,7 +3870,7 @@ fun SelectPlaylistSongsDialog(
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(8.dp))
                                 .clickable {
                                     selectedIds = if (isSelected) {
                                         selectedIds.filter { it != song.id }
@@ -3880,7 +3881,7 @@ fun SelectPlaylistSongsDialog(
                             color = if (isSelected) (if (isDark) Color(0xFF282F3E) else Color(0xFFF1F5F9)) else (if (isDark) Color(0xFF1B1E25) else Color.White),
                             border = androidx.compose.foundation.BorderStroke(
                                 1.dp,
-                                if (isSelected) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFE2E8F0))
+                                if (isSelected) (if (isDark) Color.White else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFE2E8F0))
                             )
                         ) {
                             Row(
@@ -3894,13 +3895,13 @@ fun SelectPlaylistSongsDialog(
                                     modifier = Modifier
                                         .size(28.dp)
                                         .clip(CircleShape)
-                                        .background(if (isSelected) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFECEEF2))),
+                                        .background(if (isSelected) (if (isDark) Color.White else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFECEEF2))),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     if (isSelected && orderIndex != null) {
                                         Text(
                                             text = "$orderIndex",
-                                            color = Color.White,
+                                            color = if (isDark) Color(0xFF0C0E12) else Color.White,
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold
                                         )
@@ -3944,7 +3945,8 @@ fun SelectPlaylistSongsDialog(
                                         }
                                     },
                                     colors = CheckboxDefaults.colors(
-                                        checkedColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)
+                                        checkedColor = if (isDark) Color.White else Color(0xFF14161D),
+                                        checkmarkColor = if (isDark) Color(0xFF0C0E12) else Color.White
                                     )
                                 )
                             }
@@ -3962,7 +3964,7 @@ fun SelectPlaylistSongsDialog(
                     OutlinedButton(
                         onClick = onDismiss,
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(16.dp)
+                        shape = RoundedCornerShape(10.dp)
                     ) {
                         Text(if (isKhmer) "បោះបង់" else "Cancel")
                     }
@@ -3972,10 +3974,17 @@ fun SelectPlaylistSongsDialog(
                             onDismiss()
                         },
                         modifier = Modifier.weight(1.5f),
-                        shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D))
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isDark) Color.White else Color(0xFF14161D),
+                            contentColor = if (isDark) Color(0xFF0C0E12) else Color.White
+                        )
                     ) {
-                        Text(if (isKhmer) "រក្សាទុក (${selectedIds.size} បទ)" else "Save (${selectedIds.size})")
+                        Text(
+                            text = if (isKhmer) "រក្សាទុក (${selectedIds.size} បទ)" else "Save (${selectedIds.size})",
+                            color = if (isDark) Color(0xFF0C0E12) else Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
@@ -4113,14 +4122,16 @@ fun PlaylistDetailDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         // Loop Mode Toggle Button
+                        val activeBtnBg = if (isDark) Color.White else Color(0xFF14161D)
+                        val activeBtnFg = if (isDark) Color(0xFF0C0E12) else Color.White
                         Surface(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(20.dp))
+                                .clip(RoundedCornerShape(10.dp))
                                 .clickable { onLoopModeToggle() },
-                            color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF1B1E25) else Color.White),
+                            color = if (loopMode != LoopMode.OFF) activeBtnBg else (if (isDark) Color(0xFF1B1E25) else Color.White),
                             border = androidx.compose.foundation.BorderStroke(
                                 1.dp,
-                                if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
+                                if (loopMode != LoopMode.OFF) activeBtnBg else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
                             )
                         ) {
                             Row(
@@ -4130,7 +4141,7 @@ fun PlaylistDetailDialog(
                                 Icon(
                                     imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
                                     contentDescription = "Loop",
-                                    tint = if (loopMode != LoopMode.OFF) Color.White else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
+                                    tint = if (loopMode != LoopMode.OFF) activeBtnFg else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
@@ -4142,7 +4153,7 @@ fun PlaylistDetailDialog(
                                     },
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (loopMode != LoopMode.OFF) Color.White else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B))
+                                    color = if (loopMode != LoopMode.OFF) activeBtnFg else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B))
                                 )
                             }
                         }
@@ -4151,13 +4162,16 @@ fun PlaylistDetailDialog(
                         if (playlistSongs.isNotEmpty()) {
                             Button(
                                 onClick = onPlayAll,
-                                shape = RoundedCornerShape(20.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = activeBtnBg,
+                                    contentColor = activeBtnFg
+                                ),
                                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)
                             ) {
-                                Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = activeBtnFg, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text(text = if (isKhmer) "ចាក់ទាំងអស់" else "Play All", fontSize = 12.sp)
+                                Text(text = if (isKhmer) "ចាក់ទាំងអស់" else "Play All", fontSize = 12.sp, color = activeBtnFg, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -4183,12 +4197,15 @@ fun PlaylistDetailDialog(
                             Spacer(modifier = Modifier.height(16.dp))
                             Button(
                                 onClick = { showSelectSongsDialog = true },
-                                shape = RoundedCornerShape(20.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D))
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isDark) Color.White else Color(0xFF14161D),
+                                    contentColor = if (isDark) Color(0xFF0C0E12) else Color.White
+                                )
                             ) {
-                                Icon(Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.Add, contentDescription = null, tint = if (isDark) Color(0xFF0C0E12) else Color.White, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text(text = if (isKhmer) "ជ្រើសរើសបទចម្រៀង" else "Add Songs")
+                                Text(text = if (isKhmer) "ជ្រើសរើសបទចម្រៀង" else "Add Songs", color = if (isDark) Color(0xFF0C0E12) else Color.White, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -4215,58 +4232,78 @@ fun PlaylistDetailDialog(
                                         }
                                         val activeId = hitItem?.key as? String
                                         if (activeId != null) {
-                                            // Instant touch-and-drag on '=' handle without waiting for long press
-                                            down.consume()
-                                            draggingSongId = activeId
-                                            draggingDeltaY = 0f
                                             val pointerId = down.id
-
-                                            while (true) {
-                                                val event = awaitPointerEvent(PointerEventPass.Initial)
-                                                val change = event.changes.firstOrNull { it.id == pointerId } ?: break
-
-                                                if (!change.pressed) {
-                                                    change.consume()
-                                                    draggingSongId = null
-                                                    draggingDeltaY = 0f
-                                                    currentOnSaveState.value(currentSongsOrderState.value)
-                                                    break
-                                                } else {
-                                                    val dy = change.positionChangeIgnoreConsumed().y
-                                                    change.consume()
-                                                    if (dy != 0f) {
-                                                        draggingDeltaY += dy
+                                            val startPos = down.position
+                                            val touchSlop = viewConfiguration.touchSlop
+                                            // Require a brief hold (~220ms) before activating drag-and-drop so normal scrolling is never hijacked
+                                            val cancelledBeforeHold = withTimeoutOrNull(220L) {
+                                                while (true) {
+                                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                    val change = event.changes.firstOrNull { it.id == pointerId }
+                                                    if (change == null || !change.pressed) {
+                                                        return@withTimeoutOrNull true
                                                     }
+                                                    val dx = change.position.x - startPos.x
+                                                    val dy = change.position.y - startPos.y
+                                                    if (dx * dx + dy * dy > touchSlop * touchSlop) {
+                                                        return@withTimeoutOrNull true
+                                                    }
+                                                }
+                                                @Suppress("UNREACHABLE_CODE")
+                                                false
+                                            } ?: false
 
-                                                    val currentInfo = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == activeId }
-                                                    if (currentInfo != null) {
-                                                        val currentCenterY = currentInfo.offset + (currentInfo.size / 2f) + draggingDeltaY
-                                                        val targetInfo = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { other ->
-                                                            other.key != activeId && (
-                                                                (draggingDeltaY < 0f && other.index < currentInfo.index && currentCenterY < other.offset + other.size * 0.55f) ||
-                                                                (draggingDeltaY > 0f && other.index > currentInfo.index && currentCenterY > other.offset + other.size * 0.45f)
-                                                            )
+                                            if (!cancelledBeforeHold) {
+                                                draggingSongId = activeId
+                                                draggingDeltaY = 0f
+
+                                                while (true) {
+                                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                    val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+
+                                                    if (!change.pressed) {
+                                                        change.consume()
+                                                        draggingSongId = null
+                                                        draggingDeltaY = 0f
+                                                        currentOnSaveState.value(currentSongsOrderState.value)
+                                                        break
+                                                    } else {
+                                                        val dy = change.positionChangeIgnoreConsumed().y
+                                                        change.consume()
+                                                        if (dy != 0f) {
+                                                            draggingDeltaY += dy
                                                         }
 
-                                                        if (targetInfo != null) {
-                                                            val targetId = targetInfo.key as? String
-                                                            val mutable = currentSongsOrderState.value.toMutableList()
-                                                            val fromIdx = mutable.indexOf(activeId)
-                                                            val toIdx = if (targetId != null) mutable.indexOf(targetId) else -1
-                                                            if (fromIdx != -1 && toIdx != -1 && fromIdx != toIdx) {
-                                                                val moved = mutable.removeAt(fromIdx)
-                                                                mutable.add(toIdx, moved)
-                                                                songsOrder = mutable
-                                                                currentOnSaveState.value(mutable)
-                                                                draggingDeltaY += (currentInfo.offset - targetInfo.offset)
+                                                        val currentInfo = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == activeId }
+                                                        if (currentInfo != null) {
+                                                            val currentCenterY = currentInfo.offset + (currentInfo.size / 2f) + draggingDeltaY
+                                                            val targetInfo = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { other ->
+                                                                other.key != activeId && (
+                                                                    (draggingDeltaY < 0f && other.index < currentInfo.index && currentCenterY < other.offset + other.size * 0.55f) ||
+                                                                    (draggingDeltaY > 0f && other.index > currentInfo.index && currentCenterY > other.offset + other.size * 0.45f)
+                                                                )
+                                                            }
+
+                                                            if (targetInfo != null) {
+                                                                val targetId = targetInfo.key as? String
+                                                                val mutable = currentSongsOrderState.value.toMutableList()
+                                                                val fromIdx = mutable.indexOf(activeId)
+                                                                val toIdx = if (targetId != null) mutable.indexOf(targetId) else -1
+                                                                if (fromIdx != -1 && toIdx != -1 && fromIdx != toIdx) {
+                                                                    val moved = mutable.removeAt(fromIdx)
+                                                                    mutable.add(toIdx, moved)
+                                                                    songsOrder = mutable
+                                                                    currentOnSaveState.value(mutable)
+                                                                    draggingDeltaY += (currentInfo.offset - targetInfo.offset)
+                                                                }
                                                             }
                                                         }
-                                                    }
 
-                                                    if (change.position.y < edgeScrollZonePx && lazyListState.canScrollBackward) {
-                                                        coroutineScope.launch { lazyListState.scrollBy(-12f) }
-                                                    } else if (change.position.y > size.height - edgeScrollZonePx && lazyListState.canScrollForward) {
-                                                        coroutineScope.launch { lazyListState.scrollBy(12f) }
+                                                        if (change.position.y < edgeScrollZonePx && lazyListState.canScrollBackward) {
+                                                            coroutineScope.launch { lazyListState.scrollBy(-12f) }
+                                                        } else if (change.position.y > size.height - edgeScrollZonePx && lazyListState.canScrollForward) {
+                                                            coroutineScope.launch { lazyListState.scrollBy(12f) }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -4290,7 +4327,7 @@ fun PlaylistDetailDialog(
                                         scaleY = if (isDraggingThis) 1.02f else 1f
                                         shadowElevation = if (isDraggingThis) 18f else 0f
                                     }
-                                    .clip(RoundedCornerShape(14.dp))
+                                    .clip(RoundedCornerShape(10.dp))
                                     .clickable(enabled = draggingSongId == null) { onSongClick(song) },
                                 color = when {
                                     isDraggingThis -> if (isDark) Color(0xFF252934) else Color.White
@@ -4298,7 +4335,7 @@ fun PlaylistDetailDialog(
                                     else -> Color.Transparent
                                 },
                                 border = if (isDraggingThis) {
-                                    androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.7f))
+                                    androidx.compose.foundation.BorderStroke(1.dp, (if (isDark) Color.White else Color(0xFF14161D)).copy(alpha = 0.7f))
                                 } else null
                             ) {
                                 Row(
@@ -4310,7 +4347,7 @@ fun PlaylistDetailDialog(
                                     Text(
                                         text = String.format("%02d", index + 1),
                                         fontSize = 12.sp,
-                                        color = if (isCurrentSong) Color(0xFF818CF8) else (if (isDark) Color(0xFF64748B) else Color(0xFF8A909E)),
+                                        color = if (isCurrentSong) (if (isDark) Color.White else Color(0xFF14161D)) else (if (isDark) Color(0xFF64748B) else Color(0xFF8A909E)),
                                         fontWeight = if (isCurrentSong) FontWeight.Bold else FontWeight.Medium,
                                         modifier = Modifier.width(24.dp)
                                     )
@@ -4318,7 +4355,7 @@ fun PlaylistDetailDialog(
                                     Box(
                                         modifier = Modifier
                                             .size(42.dp)
-                                            .clip(RoundedCornerShape(10.dp))
+                                            .clip(RoundedCornerShape(6.dp))
                                             .background(if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2)),
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -4341,7 +4378,7 @@ fun PlaylistDetailDialog(
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 AnimatedEqualizer(
-                                                    barColor = Color(0xFF818CF8),
+                                                    barColor = Color.White,
                                                     isPlaying = true
                                                 )
                                             }
@@ -4355,7 +4392,7 @@ fun PlaylistDetailDialog(
                                             text = song.title,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 13.sp,
-                                            color = if (isCurrentSong) (if (isDark) Color(0xFF818CF8) else Color(0xFF14161D)) else (if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)),
+                                            color = if (isCurrentSong) (if (isDark) Color.White else Color(0xFF14161D)) else (if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)),
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
@@ -4376,7 +4413,7 @@ fun PlaylistDetailDialog(
                                         Icon(
                                             imageVector = Icons.Default.DragHandle,
                                             contentDescription = "Drag to Reorder",
-                                            tint = if (isDraggingThis) Color(0xFF818CF8) else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
+                                            tint = if (isDraggingThis) (if (isDark) Color.White else Color(0xFF14161D)) else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
                                             modifier = Modifier.size(22.dp)
                                         )
                                     }
@@ -4698,7 +4735,7 @@ fun ArtistDetailDialog(
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(22.dp)),
+                        .clip(RoundedCornerShape(12.dp)),
                     color = if (isDark) Color(0xFF1B1E25) else Color.White,
                     shadowElevation = 2.dp
                 ) {
@@ -4716,7 +4753,7 @@ fun ArtistDetailDialog(
                                 .background(if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2))
                                 .border(
                                     width = if (isThisArtistPlaying) 2.5.dp else 0.dp,
-                                    color = if (isThisArtistPlaying) Color(0xFF818CF8).copy(alpha = pulseGlow) else Color.Transparent,
+                                    color = if (isThisArtistPlaying) (if (isDark) Color.White else Color(0xFF14161D)).copy(alpha = pulseGlow) else Color.Transparent,
                                     shape = CircleShape
                                 ),
                             contentAlignment = Alignment.Center
@@ -4734,7 +4771,7 @@ fun ArtistDetailDialog(
                                 Icon(
                                     imageVector = Icons.Default.Person,
                                     contentDescription = null,
-                                    tint = if (isDark) Color(0xFF818CF8) else Color(0xFF14161D),
+                                    tint = if (isDark) Color.White else Color(0xFF14161D),
                                     modifier = Modifier.size(36.dp)
                                 )
                             }
@@ -4747,7 +4784,7 @@ fun ArtistDetailDialog(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     AnimatedEqualizer(
-                                        barColor = Color(0xFF818CF8),
+                                        barColor = Color.White,
                                         isPlaying = true
                                     )
                                 }
@@ -4769,9 +4806,10 @@ fun ArtistDetailDialog(
                                 )
                                 if (isThisArtistPlaying) {
                                     Spacer(modifier = Modifier.width(8.dp))
+                                    val badgeAccent = if (isDark) Color.White else Color(0xFF14161D)
                                     Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = Color(0xFF818CF8).copy(alpha = 0.2f)
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = badgeAccent.copy(alpha = 0.16f)
                                     ) {
                                         Row(
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
@@ -4782,13 +4820,13 @@ fun ArtistDetailDialog(
                                                 modifier = Modifier
                                                     .size(6.dp)
                                                     .clip(CircleShape)
-                                                    .background(Color(0xFF818CF8))
+                                                    .background(badgeAccent)
                                             )
                                             Text(
                                                 text = if (isKhmer) "កំពុងចាក់" else "Playing",
                                                 fontSize = 10.sp,
                                                 fontWeight = FontWeight.Bold,
-                                                color = Color(0xFF818CF8)
+                                                color = badgeAccent
                                             )
                                         }
                                     }
@@ -4807,6 +4845,8 @@ fun ArtistDetailDialog(
                 Spacer(modifier = Modifier.height(14.dp))
 
                 // Play All & Shuffle Buttons
+                val primaryBtnBg = if (isDark) Color.White else Color(0xFF14161D)
+                val primaryBtnFg = if (isDark) Color(0xFF0C0E12) else Color.White
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -4816,19 +4856,22 @@ fun ArtistDetailDialog(
                         modifier = Modifier
                             .weight(1f)
                             .height(44.dp),
-                        shape = RoundedCornerShape(22.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = if (isThisArtistPlaying) Color(0xFF4F46E5) else (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)))
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = primaryBtnBg,
+                            contentColor = primaryBtnFg
+                        )
                     ) {
                         Icon(
                             imageVector = if (isThisArtistPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                             contentDescription = null,
-                            tint = Color.White,
+                            tint = primaryBtnFg,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = if (isThisArtistPlaying) (if (isKhmer) "ផ្អាក" else "Pause") else (if (isKhmer) "ចាក់ទាំងអស់" else "Play"),
-                            color = Color.White,
+                            color = primaryBtnFg,
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp
                         )
@@ -4839,7 +4882,7 @@ fun ArtistDetailDialog(
                         modifier = Modifier
                             .weight(1f)
                             .height(44.dp),
-                        shape = RoundedCornerShape(22.dp),
+                        shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = if (isDark) Color(0xFF282F3E) else Color(0xFFE2E8F0))
                     ) {
                         Icon(imageVector = Icons.Default.Shuffle, contentDescription = null, tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D), modifier = Modifier.size(18.dp))
@@ -4866,12 +4909,12 @@ fun ArtistDetailDialog(
                     // Loop Mode Toggle Button
                     Surface(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
+                            .clip(RoundedCornerShape(10.dp))
                             .clickable { onLoopModeToggle() },
-                        color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF1B1E25) else Color.White),
+                        color = if (loopMode != LoopMode.OFF) primaryBtnBg else (if (isDark) Color(0xFF1B1E25) else Color.White),
                         border = androidx.compose.foundation.BorderStroke(
                             1.dp,
-                            if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
+                            if (loopMode != LoopMode.OFF) primaryBtnBg else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
                         )
                     ) {
                         Row(
@@ -4881,7 +4924,7 @@ fun ArtistDetailDialog(
                             Icon(
                                 imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
                                 contentDescription = "Loop",
-                                tint = if (loopMode != LoopMode.OFF) Color.White else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
+                                tint = if (loopMode != LoopMode.OFF) primaryBtnFg else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
@@ -4893,7 +4936,7 @@ fun ArtistDetailDialog(
                                 },
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = if (loopMode != LoopMode.OFF) Color.White else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B))
+                                color = if (loopMode != LoopMode.OFF) primaryBtnFg else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B))
                             )
                         }
                     }
@@ -5007,6 +5050,8 @@ fun OfflineLibraryDialog(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 // Play All & Shuffle Buttons
+                val primaryBtnBg = if (isDark) Color.White else Color(0xFF14161D)
+                val primaryBtnFg = if (isDark) Color(0xFF0C0E12) else Color.White
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -5016,21 +5061,22 @@ fun OfflineLibraryDialog(
                         modifier = Modifier
                             .weight(1f)
                             .height(44.dp),
-                        shape = RoundedCornerShape(22.dp),
+                        shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)
+                            containerColor = primaryBtnBg,
+                            contentColor = primaryBtnFg
                         )
                     ) {
                         Icon(
                             imageVector = Icons.Default.PlayArrow,
                             contentDescription = null,
-                            tint = Color.White,
+                            tint = primaryBtnFg,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = if (isKhmer) "ចាក់ទាំងអស់" else "Play All",
-                            color = Color.White,
+                            color = primaryBtnFg,
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp
                         )
@@ -5041,7 +5087,7 @@ fun OfflineLibraryDialog(
                         modifier = Modifier
                             .weight(1f)
                             .height(44.dp),
-                        shape = RoundedCornerShape(22.dp),
+                        shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (isDark) Color(0xFF282F3E) else Color(0xFFE2E8F0)
                         )
@@ -5080,12 +5126,12 @@ fun OfflineLibraryDialog(
                     // Loop Mode Toggle Button
                     Surface(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
+                            .clip(RoundedCornerShape(10.dp))
                             .clickable { onLoopModeToggle() },
-                        color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF1B1E25) else Color.White),
+                        color = if (loopMode != LoopMode.OFF) primaryBtnBg else (if (isDark) Color(0xFF1B1E25) else Color.White),
                         border = androidx.compose.foundation.BorderStroke(
                             1.dp,
-                            if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
+                            if (loopMode != LoopMode.OFF) primaryBtnBg else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
                         )
                     ) {
                         Row(
@@ -5095,7 +5141,7 @@ fun OfflineLibraryDialog(
                             Icon(
                                 imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
                                 contentDescription = "Loop",
-                                tint = if (loopMode != LoopMode.OFF) Color.White else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
+                                tint = if (loopMode != LoopMode.OFF) primaryBtnFg else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
@@ -5107,7 +5153,7 @@ fun OfflineLibraryDialog(
                                 },
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = if (loopMode != LoopMode.OFF) Color.White else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B))
+                                color = if (loopMode != LoopMode.OFF) primaryBtnFg else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B))
                             )
                         }
                     }
@@ -5166,7 +5212,7 @@ fun OfflineLibraryDialog(
 @Composable
 fun AnimatedEqualizer(
     modifier: Modifier = Modifier,
-    barColor: Color = Color(0xFF818CF8),
+    barColor: Color = Color.White,
     isPlaying: Boolean = true
 ) {
     val transition = rememberInfiniteTransition(label = "eq_anim")
@@ -5258,8 +5304,8 @@ fun MiniPlayerCard(
                 translationY = animOffsetY.value
                 alpha = animAlpha.value
             }
-            .shadow(12.dp, RoundedCornerShape(26.dp))
-            .clip(RoundedCornerShape(26.dp))
+            .shadow(12.dp, RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(12.dp))
             .pointerInput(song.id) {
                 val touchSlop = viewConfiguration.touchSlop
                 val dismissXThreshold = with(density) { 80.dp.toPx() }
@@ -5364,11 +5410,11 @@ fun MiniPlayerCard(
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Circular Thumbnail with Full-Bleed Crop
+            // Rounded Square Thumbnail with Full-Bleed Crop
             Box(
                 modifier = Modifier
                     .size(46.dp)
-                    .clip(CircleShape)
+                    .clip(RoundedCornerShape(6.dp))
                     .background(Color(0xFF2E3244)),
                 contentAlignment = Alignment.Center
             ) {
@@ -5437,7 +5483,7 @@ fun MiniPlayerCard(
             // Play / Pause Pill with Spring Motion
             Surface(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(16.dp))
+                    .clip(RoundedCornerShape(10.dp))
                     .clickable { onTogglePlay() },
                 color = Color.White
             ) {
@@ -5621,18 +5667,19 @@ fun HomeScreen(
                     }
 
                     // Download by Link Button
+                    val isDarkHeader = LocalDarkMode.current
                     Surface(
                         modifier = Modifier
                             .size(38.dp)
                             .clip(CircleShape)
                             .clickable { onDownloadClick() },
-                        color = if (LocalDarkMode.current) Color(0xFF6366F1) else Color(0xFF14161D)
+                        color = if (isDarkHeader) Color.White else Color(0xFF14161D)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Default.Download,
                                 contentDescription = "Download",
-                                tint = Color.White,
+                                tint = if (isDarkHeader) Color(0xFF0C0E12) else Color.White,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -5643,10 +5690,11 @@ fun HomeScreen(
 
         // Hero Section (Click opens all offline songs dialog)
         item {
+            val isDarkHero = LocalDarkMode.current
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(26.dp))
+                    .clip(RoundedCornerShape(12.dp))
                     .clickable { onHeroClick() },
                 color = MaterialTheme.colorScheme.surface
             ) {
@@ -5656,14 +5704,14 @@ fun HomeScreen(
                         Box(
                             modifier = Modifier
                                 .size(92.dp)
-                                .shadow(6.dp, RoundedCornerShape(22.dp))
-                                .clip(RoundedCornerShape(22.dp))
+                                .shadow(6.dp, RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(8.dp))
                                 .background(Color(0xFF1E212D))
                                 .then(
                                     if (isHeroAnimating) Modifier.border(
                                         width = 2.dp,
-                                        color = Color(0xFF818CF8).copy(alpha = heroGlowAlpha),
-                                        shape = RoundedCornerShape(22.dp)
+                                        color = (if (isDarkHero) Color.White else Color(0xFF14161D)).copy(alpha = heroGlowAlpha),
+                                        shape = RoundedCornerShape(8.dp)
                                     ) else Modifier
                                 ),
                             contentAlignment = Alignment.Center
@@ -5687,7 +5735,7 @@ fun HomeScreen(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     AnimatedEqualizer(
-                                        barColor = Color(0xFF818CF8),
+                                        barColor = Color.White,
                                         isPlaying = true
                                     )
                                 }
@@ -5731,6 +5779,8 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.height(18.dp))
 
                     // Play & Shuffle Action Pills
+                    val heroPlayBg = if (isDarkHero) Color.White else Color(0xFF14161D)
+                    val heroPlayFg = if (isDarkHero) Color(0xFF0C0E12) else Color.White
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -5740,12 +5790,15 @@ fun HomeScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .height(44.dp),
-                            shape = RoundedCornerShape(22.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = if (LocalDarkMode.current) Color(0xFF6366F1) else Color(0xFF14161D))
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = heroPlayBg,
+                                contentColor = heroPlayFg
+                            )
                         ) {
-                            Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                            Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = heroPlayFg, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(text = if (isKhmer) "ចាក់ទាំងអស់" else "Play", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(text = if (isKhmer) "ចាក់ទាំងអស់" else "Play", color = heroPlayFg, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
 
                         Button(
@@ -5753,7 +5806,7 @@ fun HomeScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .height(44.dp),
-                            shape = RoundedCornerShape(22.dp),
+                            shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                         ) {
                             Icon(imageVector = Icons.Default.Shuffle, contentDescription = null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
@@ -5782,12 +5835,6 @@ fun HomeScreen(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
-                        Text(
-                            text = if (isKhmer) "ជ្រើសរើសសម្រាប់អ្នក" else "Made For You",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.SemiBold
-                        )
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
@@ -5804,7 +5851,7 @@ fun HomeScreen(
                             Surface(
                                 modifier = Modifier
                                     .width(136.dp)
-                                    .clip(RoundedCornerShape(18.dp))
+                                    .clip(RoundedCornerShape(10.dp))
                                     .clickable {
                                         onMixClick(mixTitle, myMixTracks)
                                     },
@@ -5816,7 +5863,7 @@ fun HomeScreen(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .height(116.dp)
-                                            .clip(RoundedCornerShape(14.dp))
+                                            .clip(RoundedCornerShape(8.dp))
                                             .background(
                                                 Brush.linearGradient(
                                                     listOf(Color(0xFF6366F1), Color(0xFF1E1B4B))
@@ -5825,8 +5872,8 @@ fun HomeScreen(
                                             .then(
                                                 if (isMyMixPlaying) Modifier.border(
                                                     width = 2.dp,
-                                                    color = Color(0xFF818CF8).copy(alpha = heroGlowAlpha),
-                                                    shape = RoundedCornerShape(14.dp)
+                                                    color = MaterialTheme.colorScheme.primary.copy(alpha = heroGlowAlpha),
+                                                    shape = RoundedCornerShape(8.dp)
                                                 ) else Modifier
                                             ),
                                         contentAlignment = Alignment.Center
@@ -5855,7 +5902,7 @@ fun HomeScreen(
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 AnimatedEqualizer(
-                                                    barColor = Color(0xFF818CF8),
+                                                    barColor = Color.White,
                                                     isPlaying = true
                                                 )
                                             }
@@ -5866,7 +5913,7 @@ fun HomeScreen(
                                             modifier = Modifier
                                                 .align(Alignment.BottomEnd)
                                                 .padding(6.dp)
-                                                .clip(RoundedCornerShape(8.dp))
+                                                .clip(RoundedCornerShape(6.dp))
                                                 .background(Color(0xCC000000))
                                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                                         ) {
@@ -5912,7 +5959,7 @@ fun HomeScreen(
                                 Surface(
                                     modifier = Modifier
                                         .width(136.dp)
-                                        .clip(RoundedCornerShape(18.dp))
+                                        .clip(RoundedCornerShape(10.dp))
                                     .clickable {
                                         onMixClick(mixTitle, artistMixTracks)
                                     },
@@ -5924,7 +5971,7 @@ fun HomeScreen(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .height(116.dp)
-                                                .clip(RoundedCornerShape(14.dp))
+                                                .clip(RoundedCornerShape(8.dp))
                                                 .background(
                                                     Brush.linearGradient(
                                                         listOf(Color(0xFF3B82F6), Color(0xFF1E293B))
@@ -5933,8 +5980,8 @@ fun HomeScreen(
                                                 .then(
                                                     if (isArtistMixPlaying) Modifier.border(
                                                         width = 2.dp,
-                                                        color = Color(0xFF818CF8).copy(alpha = heroGlowAlpha),
-                                                        shape = RoundedCornerShape(14.dp)
+                                                        color = MaterialTheme.colorScheme.primary.copy(alpha = heroGlowAlpha),
+                                                        shape = RoundedCornerShape(8.dp)
                                                     ) else Modifier
                                                 ),
                                             contentAlignment = Alignment.Center
@@ -5963,7 +6010,7 @@ fun HomeScreen(
                                                     contentAlignment = Alignment.Center
                                                 ) {
                                                     AnimatedEqualizer(
-                                                        barColor = Color(0xFF818CF8),
+                                                        barColor = Color.White,
                                                         isPlaying = true
                                                     )
                                                 }
@@ -5974,7 +6021,7 @@ fun HomeScreen(
                                                 modifier = Modifier
                                                     .align(Alignment.BottomEnd)
                                                     .padding(6.dp)
-                                                .clip(RoundedCornerShape(8.dp))
+                                                .clip(RoundedCornerShape(6.dp))
                                                 .background(Color(0xCC000000))
                                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                                             ) {
@@ -6037,13 +6084,6 @@ fun HomeScreen(
                             lineHeight = 20.sp,
                             modifier = Modifier.weight(1f)
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (isKhmer) "ស្រដៀងគ្នា" else "Similar Vibe",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.SemiBold
-                        )
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
@@ -6057,7 +6097,7 @@ fun HomeScreen(
                             Surface(
                                 modifier = Modifier
                                     .width(140.dp)
-                                    .clip(RoundedCornerShape(18.dp))
+                                    .clip(RoundedCornerShape(10.dp))
                                     .clickable { onSongClick(song) },
                                 color = MaterialTheme.colorScheme.surface,
                                 shadowElevation = 2.dp
@@ -6067,7 +6107,7 @@ fun HomeScreen(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .height(120.dp)
-                                            .clip(RoundedCornerShape(14.dp))
+                                            .clip(RoundedCornerShape(8.dp))
                                             .background(Color(0xFF232733)),
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -6086,7 +6126,7 @@ fun HomeScreen(
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 AnimatedEqualizer(
-                                                    barColor = Color(0xFF818CF8),
+                                                    barColor = Color.White,
                                                     isPlaying = isPlaying
                                                 )
                                             }
@@ -6140,12 +6180,6 @@ fun HomeScreen(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
-                        Text(
-                            text = if (isKhmer) "ថ្មីៗ • Trending" else "New & Trending",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.SemiBold
-                        )
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
@@ -6159,7 +6193,7 @@ fun HomeScreen(
                             Surface(
                                 modifier = Modifier
                                     .width(140.dp)
-                                    .clip(RoundedCornerShape(18.dp))
+                                    .clip(RoundedCornerShape(10.dp))
                                     .clickable { onRecommendedPlay(track) },
                                 color = MaterialTheme.colorScheme.surface,
                                 shadowElevation = 2.dp
@@ -6169,7 +6203,7 @@ fun HomeScreen(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .height(120.dp)
-                                            .clip(RoundedCornerShape(14.dp))
+                                            .clip(RoundedCornerShape(8.dp))
                                             .background(Color(0xFF232733)),
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -6188,13 +6222,14 @@ fun HomeScreen(
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 AnimatedEqualizer(
-                                                    barColor = Color(0xFF818CF8),
+                                                    barColor = Color.White,
                                                     isPlaying = isPlaying
                                                 )
                                             }
                                         }
 
                                         // Action Button Overlay (Download)
+                                        val isDarkRec = LocalDarkMode.current
                                         Surface(
                                             modifier = Modifier
                                                 .align(Alignment.BottomEnd)
@@ -6202,13 +6237,13 @@ fun HomeScreen(
                                                 .size(28.dp)
                                                 .clip(CircleShape)
                                                 .clickable { onRecommendedDownload(track) },
-                                            color = if (LocalDarkMode.current) Color(0xFF6366F1) else Color(0xFF14161D)
+                                            color = if (isDarkRec) Color.White else Color(0xFF14161D)
                                         ) {
                                             Box(contentAlignment = Alignment.Center) {
                                                 Icon(
                                                     imageVector = Icons.Default.Download,
                                                     contentDescription = "Download",
-                                                    tint = Color.White,
+                                                    tint = if (isDarkRec) Color(0xFF0C0E12) else Color.White,
                                                     modifier = Modifier.size(14.dp)
                                                 )
                                             }
@@ -6264,7 +6299,7 @@ fun HomeScreen(
                         )
                         Surface(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(16.dp))
+                                .clip(RoundedCornerShape(10.dp))
                                 .clickable { onCreatePlaylistClick() },
                             color = MaterialTheme.colorScheme.surface,
                             border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
@@ -6301,7 +6336,7 @@ fun HomeScreen(
                             Surface(
                                 modifier = Modifier
                                     .width(136.dp)
-                                    .clip(RoundedCornerShape(18.dp))
+                                    .clip(RoundedCornerShape(10.dp))
                                     .clickable { onPlaylistClick(playlist) },
                                 color = MaterialTheme.colorScheme.surface,
                                 shadowElevation = 2.dp
@@ -6312,7 +6347,7 @@ fun HomeScreen(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .height(116.dp)
-                                            .clip(RoundedCornerShape(14.dp))
+                                            .clip(RoundedCornerShape(8.dp))
                                             .background(
                                                 Brush.linearGradient(
                                                     listOf(Color(0xFF232733), Color(0xFF14161D))
@@ -6321,8 +6356,8 @@ fun HomeScreen(
                                             .then(
                                                 if (isPlaylistPlaying) Modifier.border(
                                                     width = 2.dp,
-                                                    color = Color(0xFF818CF8).copy(alpha = heroGlowAlpha),
-                                                    shape = RoundedCornerShape(14.dp)
+                                                    color = MaterialTheme.colorScheme.primary.copy(alpha = heroGlowAlpha),
+                                                    shape = RoundedCornerShape(8.dp)
                                                 ) else Modifier
                                             ),
                                         contentAlignment = Alignment.Center
@@ -6351,7 +6386,7 @@ fun HomeScreen(
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 AnimatedEqualizer(
-                                                    barColor = Color(0xFF818CF8),
+                                                    barColor = Color.White,
                                                     isPlaying = true
                                                 )
                                             }
@@ -6362,7 +6397,7 @@ fun HomeScreen(
                                             modifier = Modifier
                                                 .align(Alignment.BottomEnd)
                                                 .padding(6.dp)
-                                                .clip(RoundedCornerShape(8.dp))
+                                                .clip(RoundedCornerShape(6.dp))
                                                 .background(Color(0xCC000000))
                                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                                         ) {
@@ -6439,7 +6474,7 @@ fun HomeScreen(
                             Surface(
                                 modifier = Modifier
                                     .width(104.dp)
-                                    .clip(RoundedCornerShape(16.dp))
+                                    .clip(RoundedCornerShape(10.dp))
                                     .clickable { onArtistClick(artistName, aSongs) },
                                 color = MaterialTheme.colorScheme.surface,
                                 shadowElevation = 1.dp
@@ -6459,7 +6494,7 @@ fun HomeScreen(
                                                 )
                                             )
                                             .then(
-                                                if (isThisArtistPlaying) Modifier.border(2.5.dp, Color(0xFF818CF8), CircleShape) else Modifier
+                                                if (isThisArtistPlaying) Modifier.border(2.5.dp, MaterialTheme.colorScheme.primary, CircleShape) else Modifier
                                             ),
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -6487,7 +6522,7 @@ fun HomeScreen(
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 AnimatedEqualizer(
-                                                    barColor = Color(0xFF818CF8),
+                                                    barColor = Color.White,
                                                     isPlaying = true
                                                 )
                                             }
@@ -6529,7 +6564,7 @@ fun HomeScreen(
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(24.dp)),
+                        .clip(RoundedCornerShape(12.dp)),
                     color = MaterialTheme.colorScheme.surface
                 ) {
                     Column(
@@ -6554,10 +6589,13 @@ fun HomeScreen(
                         Spacer(modifier = Modifier.height(18.dp))
                         Button(
                             onClick = onDownloadClick,
-                            shape = RoundedCornerShape(20.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            )
                         ) {
-                            Text(if (isKhmer) "ទាញយកតាមលីង" else "Download by Link", color = Color.White)
+                            Text(if (isKhmer) "ទាញយកតាមលីង" else "Download by Link", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -6588,7 +6626,7 @@ fun NumberedTrackRowItem(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(10.dp))
             .clickable(onClick = onClick),
         color = if (isCurrent) MaterialTheme.colorScheme.surface else Color.Transparent
     ) {
@@ -6607,17 +6645,17 @@ fun NumberedTrackRowItem(
                     text = String.format("%02d", index),
                     fontSize = 12.sp,
                     fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
-                    color = if (isCurrent) (if (LocalDarkMode.current) Color(0xFF818CF8) else Color(0xFF14161D)) else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             Spacer(modifier = Modifier.width(4.dp))
 
-            // Song Artwork Thumbnail (48x48 rounded squircle)
+            // Song Artwork Thumbnail (46x46 rounded square)
             Box(
                 modifier = Modifier
                     .size(46.dp)
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(6.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
             ) {
@@ -6645,7 +6683,7 @@ fun NumberedTrackRowItem(
                         contentAlignment = Alignment.Center
                     ) {
                         AnimatedEqualizer(
-                            barColor = Color(0xFF818CF8),
+                            barColor = Color.White,
                             isPlaying = true
                         )
                     }
@@ -6772,7 +6810,7 @@ fun OnlineTrackRowItem(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(10.dp))
             .clickable { onPlayClick() },
         color = MaterialTheme.colorScheme.surface,
         shadowElevation = 1.dp
@@ -6786,7 +6824,7 @@ fun OnlineTrackRowItem(
             Box(
                 modifier = Modifier
                     .size(54.dp)
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(6.dp))
                     .background(Color(0xFF232733)),
                 contentAlignment = Alignment.Center
             ) {
@@ -6805,7 +6843,7 @@ fun OnlineTrackRowItem(
                         contentAlignment = Alignment.Center
                     ) {
                         AnimatedEqualizer(
-                            barColor = Color(0xFF818CF8),
+                            barColor = Color.White,
                             isPlaying = true
                         )
                     }
@@ -6842,7 +6880,7 @@ fun OnlineTrackRowItem(
 
                     if (localMatch != null) {
                         Surface(
-                            shape = RoundedCornerShape(6.dp),
+                            shape = RoundedCornerShape(4.dp),
                             color = Color(0xFF10B981).copy(alpha = 0.15f)
                         ) {
                             Text(
@@ -7009,7 +7047,7 @@ fun SearchScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(10.dp))
                     .background(if (LocalDarkMode.current) Color(0xFF1E212B) else Color(0xFFE5E7EB))
                     .padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -7019,10 +7057,10 @@ fun SearchScreen(
                     modifier = Modifier
                         .weight(1f)
                         .height(38.dp)
-                        .clip(RoundedCornerShape(11.dp))
+                        .clip(RoundedCornerShape(8.dp))
                         .clickable { currentTab = SearchTab.OFFLINE },
                     color = if (currentTab == SearchTab.OFFLINE) MaterialTheme.colorScheme.primary else Color.Transparent,
-                    shape = RoundedCornerShape(11.dp)
+                    shape = RoundedCornerShape(8.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Row(
@@ -7033,13 +7071,13 @@ fun SearchScreen(
                                 imageVector = Icons.Default.Folder,
                                 contentDescription = null,
                                 modifier = Modifier.size(16.dp),
-                                tint = if (currentTab == SearchTab.OFFLINE) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                                tint = if (currentTab == SearchTab.OFFLINE) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
                                 text = if (isKhmer) "ក្នុងម៉ាស៊ីន (Offline)" else "Offline Tracks",
                                 fontSize = 13.sp,
                                 fontWeight = if (currentTab == SearchTab.OFFLINE) FontWeight.Bold else FontWeight.Medium,
-                                color = if (currentTab == SearchTab.OFFLINE) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (currentTab == SearchTab.OFFLINE) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -7050,7 +7088,7 @@ fun SearchScreen(
                     modifier = Modifier
                         .weight(1f)
                         .height(38.dp)
-                        .clip(RoundedCornerShape(11.dp))
+                        .clip(RoundedCornerShape(8.dp))
                         .clickable {
                             currentTab = SearchTab.ONLINE
                             if (onlineQuery.isBlank() && query.isNotBlank()) {
@@ -7059,7 +7097,7 @@ fun SearchScreen(
                             }
                         },
                     color = if (currentTab == SearchTab.ONLINE) MaterialTheme.colorScheme.primary else Color.Transparent,
-                    shape = RoundedCornerShape(11.dp)
+                    shape = RoundedCornerShape(8.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Row(
@@ -7070,13 +7108,13 @@ fun SearchScreen(
                                 imageVector = Icons.Default.Public,
                                 contentDescription = null,
                                 modifier = Modifier.size(16.dp),
-                                tint = if (currentTab == SearchTab.ONLINE) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                                tint = if (currentTab == SearchTab.ONLINE) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
                                 text = if (isKhmer) "លើអ៊ីនធឺណិត (Online)" else "Search Online",
                                 fontSize = 13.sp,
                                 fontWeight = if (currentTab == SearchTab.ONLINE) FontWeight.Bold else FontWeight.Medium,
-                                color = if (currentTab == SearchTab.ONLINE) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (currentTab == SearchTab.ONLINE) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -7154,7 +7192,7 @@ fun SearchScreen(
                     }
                 ),
                 singleLine = true,
-                shape = RoundedCornerShape(18.dp),
+                shape = RoundedCornerShape(10.dp),
                 modifier = Modifier.fillMaxWidth(),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = MaterialTheme.colorScheme.onSurface,
@@ -7171,7 +7209,7 @@ fun SearchScreen(
                 Button(
                     onClick = { executeOnlineSearch(onlineQuery) },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp)
+                    shape = RoundedCornerShape(10.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Search,
@@ -7211,7 +7249,7 @@ fun SearchScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 16.dp),
-                        shape = RoundedCornerShape(18.dp),
+                        shape = RoundedCornerShape(12.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                     ) {
                         Column(
@@ -7245,7 +7283,7 @@ fun SearchScreen(
                                     onlineQuery = query
                                     executeOnlineSearch(query)
                                 },
-                                shape = RoundedCornerShape(12.dp)
+                                shape = RoundedCornerShape(10.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Public,
@@ -7325,7 +7363,7 @@ fun SearchScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 20.dp),
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(10.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                     ) {
                         Column(
@@ -7341,7 +7379,7 @@ fun SearchScreen(
                             Spacer(modifier = Modifier.height(10.dp))
                             Button(
                                 onClick = { executeOnlineSearch(onlineQuery) },
-                                shape = RoundedCornerShape(12.dp)
+                                shape = RoundedCornerShape(10.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Refresh,
@@ -7378,13 +7416,13 @@ fun SearchScreen(
                                 Surface(
                                     modifier = Modifier
                                         .weight(1f)
-                                        .clip(RoundedCornerShape(12.dp))
+                                        .clip(RoundedCornerShape(8.dp))
                                         .clickable {
                                             onlineQuery = tag
                                             executeOnlineSearch(tag)
                                         },
                                     color = MaterialTheme.colorScheme.surfaceVariant,
-                                    shape = RoundedCornerShape(12.dp)
+                                    shape = RoundedCornerShape(8.dp)
                                 ) {
                                     Text(
                                         text = tag,
@@ -7405,13 +7443,13 @@ fun SearchScreen(
                                 Surface(
                                     modifier = Modifier
                                         .weight(1f)
-                                        .clip(RoundedCornerShape(12.dp))
+                                        .clip(RoundedCornerShape(8.dp))
                                         .clickable {
                                             onlineQuery = tag
                                             executeOnlineSearch(tag)
                                         },
                                     color = MaterialTheme.colorScheme.surfaceVariant,
-                                    shape = RoundedCornerShape(12.dp)
+                                    shape = RoundedCornerShape(8.dp)
                                 ) {
                                     Text(
                                         text = tag,
@@ -7586,9 +7624,9 @@ fun LibraryScreen(
                         // Create Playlist Button
                         Surface(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(20.dp))
+                                .clip(RoundedCornerShape(10.dp))
                                 .clickable { onCreatePlaylistClick() },
-                            color = if (LocalDarkMode.current) Color(0xFF6366F1) else Color(0xFF14161D)
+                            color = if (LocalDarkMode.current) Color.White else Color(0xFF14161D)
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
@@ -7597,13 +7635,13 @@ fun LibraryScreen(
                                 Icon(
                                     imageVector = Icons.Default.Add,
                                     contentDescription = null,
-                                    tint = Color.White,
+                                    tint = if (LocalDarkMode.current) Color(0xFF0C0E12) else Color.White,
                                     modifier = Modifier.size(14.dp)
                                 )
                                 Spacer(modifier = Modifier.width(3.dp))
                                 Text(
                                     text = if (isKhmer) "បញ្ជីចម្រៀង" else "+ List",
-                                    color = Color.White,
+                                    color = if (LocalDarkMode.current) Color(0xFF0C0E12) else Color.White,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,
@@ -7616,9 +7654,9 @@ fun LibraryScreen(
                     // Import Audio Button
                     Surface(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
+                            .clip(RoundedCornerShape(10.dp))
                             .clickable { onImportClick() },
-                        color = if (isPlaylistsTab) MaterialTheme.colorScheme.surface else (if (LocalDarkMode.current) Color(0xFF6366F1) else Color(0xFF14161D)),
+                        color = if (isPlaylistsTab) MaterialTheme.colorScheme.surface else (if (LocalDarkMode.current) Color.White else Color(0xFF14161D)),
                         border = if (isPlaylistsTab) androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline) else null
                     ) {
                         Row(
@@ -7628,13 +7666,13 @@ fun LibraryScreen(
                             Icon(
                                 imageVector = Icons.Default.Add,
                                 contentDescription = null,
-                                tint = if (isPlaylistsTab) MaterialTheme.colorScheme.onSurface else Color.White,
+                                tint = if (isPlaylistsTab) MaterialTheme.colorScheme.onSurface else (if (LocalDarkMode.current) Color(0xFF0C0E12) else Color.White),
                                 modifier = Modifier.size(14.dp)
                             )
                             Spacer(modifier = Modifier.width(3.dp))
                             Text(
                                 text = if (isKhmer) "នាំចូល" else "Import",
-                                color = if (isPlaylistsTab) MaterialTheme.colorScheme.onSurface else Color.White,
+                                color = if (isPlaylistsTab) MaterialTheme.colorScheme.onSurface else (if (LocalDarkMode.current) Color(0xFF0C0E12) else Color.White),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
@@ -7653,9 +7691,10 @@ fun LibraryScreen(
                         selected = selectedCategory == category,
                         onClick = { onCategorySelect(category) },
                         label = { Text(category, fontSize = 12.sp) },
+                        shape = RoundedCornerShape(8.dp),
                         colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = if (LocalDarkMode.current) Color(0xFF6366F1) else Color(0xFF14161D),
-                            selectedLabelColor = Color.White,
+                            selectedContainerColor = if (LocalDarkMode.current) Color.White else Color(0xFF14161D),
+                            selectedLabelColor = if (LocalDarkMode.current) Color(0xFF0C0E12) else Color.White,
                             containerColor = MaterialTheme.colorScheme.surface,
                             labelColor = MaterialTheme.colorScheme.onSurfaceVariant
                         ),
@@ -7672,7 +7711,7 @@ fun LibraryScreen(
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(22.dp)),
+                            .clip(RoundedCornerShape(12.dp)),
                         color = MaterialTheme.colorScheme.surface
                     ) {
                         Column(
@@ -7707,7 +7746,7 @@ fun LibraryScreen(
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(18.dp))
+                            .clip(RoundedCornerShape(10.dp))
                             .clickable { onArtistClick(artistName, aSongs) },
                         color = MaterialTheme.colorScheme.surface
                     ) {
@@ -7724,7 +7763,7 @@ fun LibraryScreen(
                                     .clip(CircleShape)
                                     .background(MaterialTheme.colorScheme.surfaceVariant)
                                     .then(
-                                        if (isThisArtistPlaying) Modifier.border(2.dp, Color(0xFF818CF8), CircleShape) else Modifier
+                                        if (isThisArtistPlaying) Modifier.border(2.dp, Color.White, CircleShape) else Modifier
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -7752,7 +7791,7 @@ fun LibraryScreen(
                                         contentAlignment = Alignment.Center
                                     ) {
                                         AnimatedEqualizer(
-                                            barColor = Color(0xFF818CF8),
+                                            barColor = Color.White,
                                             isPlaying = true
                                         )
                                     }
@@ -7795,7 +7834,7 @@ fun LibraryScreen(
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(22.dp)),
+                            .clip(RoundedCornerShape(12.dp)),
                         color = MaterialTheme.colorScheme.surface
                     ) {
                         Column(
@@ -7822,10 +7861,10 @@ fun LibraryScreen(
                             Spacer(modifier = Modifier.height(16.dp))
                             Button(
                                 onClick = onCreatePlaylistClick,
-                                shape = RoundedCornerShape(20.dp),
+                                shape = RoundedCornerShape(10.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                             ) {
-                                Text(if (isKhmer) "បង្កើត Playlist ថ្មី" else "+ Create Playlist", color = Color.White)
+                                Text(if (isKhmer) "បង្កើត Playlist ថ្មី" else "+ Create Playlist", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -7837,7 +7876,7 @@ fun LibraryScreen(
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(18.dp))
+                            .clip(RoundedCornerShape(10.dp))
                             .clickable { onPlaylistClick(playlist) },
                         color = MaterialTheme.colorScheme.surface
                     ) {
@@ -7850,10 +7889,10 @@ fun LibraryScreen(
                             Box(
                                 modifier = Modifier
                                     .size(54.dp)
-                                    .clip(RoundedCornerShape(14.dp))
+                                    .clip(RoundedCornerShape(8.dp))
                                     .background(Color(0xFF1E212D))
                                     .then(
-                                        if (isThisPlaylistPlaying) Modifier.border(2.dp, Color(0xFF818CF8), RoundedCornerShape(14.dp)) else Modifier
+                                        if (isThisPlaylistPlaying) Modifier.border(2.dp, Color.White, RoundedCornerShape(8.dp)) else Modifier
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -7876,7 +7915,7 @@ fun LibraryScreen(
                                         contentAlignment = Alignment.Center
                                     ) {
                                         AnimatedEqualizer(
-                                            barColor = Color(0xFF818CF8),
+                                            barColor = Color.White,
                                             isPlaying = true
                                         )
                                     }
@@ -7993,7 +8032,7 @@ fun SettingsScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(22.dp)),
+                    .clip(RoundedCornerShape(12.dp)),
                 color = MaterialTheme.colorScheme.surface
             ) {
                 Row(
@@ -8046,8 +8085,8 @@ fun SettingsScreen(
                         checked = isDarkMode,
                         onCheckedChange = { onDarkModeToggle() },
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = Color(0xFF6366F1),
+                            checkedThumbColor = Color(0xFF0C0E12),
+                            checkedTrackColor = Color.White,
                             uncheckedThumbColor = Color(0xFF8A909E),
                             uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
                         )
@@ -8061,7 +8100,7 @@ fun SettingsScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(22.dp)),
+                    .clip(RoundedCornerShape(12.dp)),
                 color = MaterialTheme.colorScheme.surface
             ) {
                 Column(
@@ -8082,7 +8121,7 @@ fun SettingsScreen(
                             Icon(
                                 imageVector = if (isVinylStyle) Icons.Default.Album else Icons.Default.CropSquare,
                                 contentDescription = "Artwork Style",
-                                tint = Color(0xFF6366F1),
+                                tint = if (isDarkMode) Color.White else Color(0xFF14161D),
                                 modifier = Modifier.size(20.dp)
                             )
                         }
@@ -8114,7 +8153,7 @@ fun SettingsScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
+                            .clip(RoundedCornerShape(10.dp))
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                             .padding(4.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -8123,9 +8162,9 @@ fun SettingsScreen(
                         Surface(
                             modifier = Modifier
                                 .weight(1f)
-                                .clip(RoundedCornerShape(11.dp))
+                                .clip(RoundedCornerShape(8.dp))
                                 .clickable { onVinylStyleChange(true) },
-                            color = if (isVinylStyle) Color(0xFF6366F1) else Color.Transparent
+                            color = if (isVinylStyle) MaterialTheme.colorScheme.primary else Color.Transparent
                         ) {
                             Row(
                                 modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp),
@@ -8135,7 +8174,7 @@ fun SettingsScreen(
                                 Icon(
                                     imageVector = Icons.Default.Album,
                                     contentDescription = null,
-                                    tint = if (isVinylStyle) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    tint = if (isVinylStyle) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -8143,7 +8182,7 @@ fun SettingsScreen(
                                     text = if (isKhmer) "ថាសចម្រៀង" else "Vinyl Disc",
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (isVinylStyle) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = if (isVinylStyle) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -8154,9 +8193,9 @@ fun SettingsScreen(
                         Surface(
                             modifier = Modifier
                                 .weight(1f)
-                                .clip(RoundedCornerShape(11.dp))
+                                .clip(RoundedCornerShape(8.dp))
                                 .clickable { onVinylStyleChange(false) },
-                            color = if (!isVinylStyle) Color(0xFF6366F1) else Color.Transparent
+                            color = if (!isVinylStyle) MaterialTheme.colorScheme.primary else Color.Transparent
                         ) {
                             Row(
                                 modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp),
@@ -8166,7 +8205,7 @@ fun SettingsScreen(
                                 Icon(
                                     imageVector = Icons.Default.CropSquare,
                                     contentDescription = null,
-                                    tint = if (!isVinylStyle) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    tint = if (!isVinylStyle) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -8174,7 +8213,7 @@ fun SettingsScreen(
                                     text = if (isKhmer) "កាតជ្រុង" else "Static Card",
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (!isVinylStyle) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = if (!isVinylStyle) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -8190,7 +8229,7 @@ fun SettingsScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(22.dp))
+                    .clip(RoundedCornerShape(12.dp))
                     .clickable(onClick = onLanguageToggle),
                 color = MaterialTheme.colorScheme.surface
             ) {
@@ -8239,7 +8278,7 @@ fun SettingsScreen(
                     TextButton(onClick = onLanguageToggle) {
                         Text(
                             text = if (isKhmer) "Switch to EN" else "ប្តូរទៅភាសាខ្មែរ",
-                            color = Color(0xFF6366F1),
+                            color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -8252,7 +8291,7 @@ fun SettingsScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(22.dp))
+                    .clip(RoundedCornerShape(12.dp))
                     .clickable(onClick = onOpenEqualizer),
                 color = MaterialTheme.colorScheme.surface
             ) {
@@ -8297,7 +8336,7 @@ fun SettingsScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(22.dp)),
+                    .clip(RoundedCornerShape(12.dp)),
                 color = MaterialTheme.colorScheme.surface
             ) {
                 Column(modifier = Modifier.padding(18.dp)) {
@@ -8345,7 +8384,7 @@ fun SettingsScreen(
                     ) {
                         Surface(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(8.dp))
                                 .clickable { onVolumeChange(0.60f) },
                             color = MaterialTheme.colorScheme.surfaceVariant
                         ) {
@@ -8384,8 +8423,8 @@ fun SettingsScreen(
                         onValueChange = onVolumeChange,
                         valueRange = 0.05f..1f,
                         colors = SliderDefaults.colors(
-                            thumbColor = if (isDarkMode) Color(0xFF818CF8) else Color(0xFF14161D),
-                            activeTrackColor = if (isDarkMode) Color(0xFF818CF8) else Color(0xFF14161D),
+                            thumbColor = if (isDarkMode) Color.White else Color(0xFF14161D),
+                            activeTrackColor = if (isDarkMode) Color.White else Color(0xFF14161D),
                             inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant
                         )
                     )
@@ -8398,7 +8437,7 @@ fun SettingsScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(22.dp)),
+                    .clip(RoundedCornerShape(12.dp)),
                 color = MaterialTheme.colorScheme.surface
             ) {
                 Row(
@@ -8426,19 +8465,19 @@ fun SettingsScreen(
 
                     Surface(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(20.dp))
+                            .clip(RoundedCornerShape(10.dp))
                             .clickable { onCheckUpdate() },
-                        color = if (isDarkMode) Color(0xFF6366F1) else Color(0xFF14161D)
+                        color = if (isDarkMode) Color.White else Color(0xFF14161D)
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(imageVector = Icons.Default.Refresh, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                            Icon(imageVector = Icons.Default.Refresh, contentDescription = null, tint = if (isDarkMode) Color(0xFF0C0E12) else Color.White, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = if (isKhmer) "ពិនិត្យមើល" else "Check Updates",
-                                color = Color.White,
+                                color = if (isDarkMode) Color(0xFF0C0E12) else Color.White,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1
@@ -8541,7 +8580,7 @@ fun UnifiedExpandablePlayerCard(
         val cardHeight = lerpDp(collapsedHeight, fullScreenHeight, p)
         val sidePadding = lerpDp(16.dp, 0.dp, p)
         val bottomPadding = lerpDp(collapsedBottomPadding, 0.dp, p)
-        val cornerRadius = lerpDp(26.dp, 0.dp, ((p - 0.85f) / 0.15f).coerceIn(0f, 1f))
+        val cornerRadius = lerpDp(12.dp, 0.dp, ((p - 0.85f) / 0.15f).coerceIn(0f, 1f))
         val expandDragRangePx = with(density) {
             (fullScreenHeight - collapsedHeight - collapsedBottomPadding).toPx().coerceAtLeast(300f)
         }
@@ -8843,14 +8882,14 @@ fun UnifiedExpandablePlayerCard(
                                 }
                             }
                         } else {
-                            // Enlarged Static Square Card (326.dp) with Rounded Corners
+                            // Enlarged Static Square Card (326.dp) with Reduced Rounded Corners
                             Box(
                                 modifier = Modifier
                                     .size(326.dp)
-                                    .shadow(24.dp, RoundedCornerShape(28.dp))
-                                    .clip(RoundedCornerShape(28.dp))
+                                    .shadow(24.dp, RoundedCornerShape(12.dp))
+                                    .clip(RoundedCornerShape(12.dp))
                                     .background(Color(0xFF1E212D))
-                                    .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(28.dp)),
+                                    .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(12.dp)),
                                 contentAlignment = Alignment.Center
                             ) {
                                 if (song.artworkUrl.isNotBlank()) {
@@ -8972,13 +9011,13 @@ fun UnifiedExpandablePlayerCard(
                                     .shadow(12.dp, CircleShape)
                                     .clip(CircleShape)
                                     .clickable(enabled = p > 0.5f) { onPlayPause() },
-                                color = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)
+                                color = if (isDark) Color.White else Color(0xFF14161D)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                         contentDescription = "Play/Pause",
-                                        tint = Color.White,
+                                        tint = if (isDark) Color(0xFF0C0E12) else Color.White,
                                         modifier = Modifier.size(36.dp)
                                     )
                                 }
@@ -9015,7 +9054,7 @@ fun UnifiedExpandablePlayerCard(
                         Box(
                             modifier = Modifier
                                 .size(46.dp)
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(6.dp))
                                 .background(Color(0xFF2E3244)),
                             contentAlignment = Alignment.Center
                         ) {
@@ -9083,7 +9122,7 @@ fun UnifiedExpandablePlayerCard(
 
                         Surface(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(16.dp))
+                                .clip(RoundedCornerShape(10.dp))
                                 .clickable(enabled = p < 0.25f) { onPlayPause() },
                             color = Color.White
                         ) {
@@ -9233,7 +9272,7 @@ fun MediaLinkDownloadDialog(
                                 .fillMaxWidth()
                                 .height(8.dp)
                                 .clip(RoundedCornerShape(4.dp)),
-                            color = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D),
+                            color = if (isDark) Color.White else Color(0xFF14161D),
                             trackColor = if (isDark) Color(0xFF334155) else Color(0xFFECEEF2)
                         )
                         val currentStep = when {
@@ -9256,10 +9295,10 @@ fun MediaLinkDownloadDialog(
                                     modifier = Modifier
                                         .size(18.dp)
                                         .clip(CircleShape)
-                                        .background(if (currentStep >= 1) Color(0xFF6366F1) else Color.Gray),
+                                        .background(if (currentStep >= 1) (if (isDark) Color.White else Color(0xFF14161D)) else Color.Gray),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Text("1", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                    Text("1", fontSize = 10.sp, color = if (currentStep >= 1 && isDark) Color(0xFF0C0E12) else Color.White, fontWeight = FontWeight.Bold)
                                 }
                                 Spacer(modifier = Modifier.width(3.dp))
                                 Text(
@@ -9278,10 +9317,10 @@ fun MediaLinkDownloadDialog(
                                     modifier = Modifier
                                         .size(18.dp)
                                         .clip(CircleShape)
-                                        .background(if (currentStep >= 2) Color(0xFF6366F1) else Color.Gray),
+                                        .background(if (currentStep >= 2) (if (isDark) Color.White else Color(0xFF14161D)) else Color.Gray),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Text("2", fontSize = 10.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                                    Text("2", fontSize = 10.sp, color = if (currentStep >= 2 && isDark) Color(0xFF0C0E12) else Color.White, fontWeight = FontWeight.Bold)
                                 }
                                 Spacer(modifier = Modifier.width(3.dp))
                                 Text(
@@ -9412,7 +9451,7 @@ fun MediaLinkDownloadDialog(
                                 Text(
                                     text = if (isKhmer) "កំពុងទាញយក Title ដើម..." else "Fetching title...",
                                     fontSize = 11.sp,
-                                    color = Color(0xFF6366F1)
+                                    color = if (isDark) Color.White else Color(0xFF14161D)
                                 )
                             }
                         }
@@ -9423,7 +9462,7 @@ fun MediaLinkDownloadDialog(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(110.dp)
-                                .clip(RoundedCornerShape(14.dp)),
+                                .clip(RoundedCornerShape(8.dp)),
                             color = if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2)
                         ) {
                             SmartArtworkImage(
@@ -9446,13 +9485,13 @@ fun MediaLinkDownloadDialog(
                                     .weight(1f)
                                     .clip(RoundedCornerShape(8.dp))
                                     .clickable { selectedFormat = fmt },
-                                color = if (selectedFormat == fmt) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2))
+                                color = if (selectedFormat == fmt) (if (isDark) Color.White else Color(0xFF14161D)) else (if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2))
                             ) {
                                 Text(
                                     text = fmt,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (selectedFormat == fmt) Color.White else (if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E)),
+                                    color = if (selectedFormat == fmt) (if (isDark) Color(0xFF0C0E12) else Color.White) else (if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E)),
                                     textAlign = TextAlign.Center,
                                     modifier = Modifier.padding(vertical = 8.dp)
                                 )
@@ -9504,11 +9543,15 @@ fun MediaLinkDownloadDialog(
                             )
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D))
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isDark) Color.White else Color(0xFF14161D),
+                        contentColor = if (isDark) Color(0xFF0C0E12) else Color.White
+                    )
                 ) {
-                    Icon(imageVector = Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(imageVector = Icons.Default.Download, contentDescription = null, tint = if (isDark) Color(0xFF0C0E12) else Color.White, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(if (isKhmer) "ទាញយក ($selectedFormat)" else "Download ($selectedFormat)")
+                    Text(if (isKhmer) "ទាញយក ($selectedFormat)" else "Download ($selectedFormat)", color = if (isDark) Color(0xFF0C0E12) else Color.White, fontWeight = FontWeight.Bold)
                 }
             }
         },
@@ -9644,7 +9687,7 @@ fun AppUpdateDialog(
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp)),
+                                .clip(RoundedCornerShape(10.dp)),
                             color = Color(0xFFF5F6F9)
                         ) {
                             Column(modifier = Modifier.padding(14.dp)) {
@@ -9671,7 +9714,7 @@ fun AppUpdateDialog(
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp)),
+                                    .clip(RoundedCornerShape(8.dp)),
                                 color = Color(0xFFFEF2F2)
                             ) {
                                 Column(modifier = Modifier.padding(10.dp)) {
@@ -9699,7 +9742,7 @@ fun AppUpdateDialog(
                                 }
                             },
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
+                            shape = RoundedCornerShape(10.dp)
                         ) {
                             Icon(imageVector = Icons.Default.Public, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
@@ -9751,6 +9794,7 @@ fun AppUpdateDialog(
                             }
                         }
                     },
+                    shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
                 ) {
                     Text(if (isKhmer) "ទាញយក និងដំឡើង" else "Download & Install")
@@ -9758,6 +9802,7 @@ fun AppUpdateDialog(
             } else if (!isChecking && !isDownloadingApk) {
                 Button(
                     onClick = onDismiss,
+                    shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
                 ) {
                     Text(if (isKhmer) "បិទ" else "Close")
@@ -9801,12 +9846,12 @@ fun EqualizerDialog(
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
+                            .clip(RoundedCornerShape(8.dp))
                             .clickable {
                                 onSelectPreset(preset)
                                 onDismiss()
                             },
-                        color = if (currentPreset == preset) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2))
+                        color = if (currentPreset == preset) (if (isDark) Color.White else Color(0xFF14161D)) else (if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2))
                     ) {
                         Row(
                             modifier = Modifier
@@ -9818,10 +9863,10 @@ fun EqualizerDialog(
                             Text(
                                 text = preset,
                                 fontWeight = if (currentPreset == preset) FontWeight.Bold else FontWeight.Normal,
-                                color = if (currentPreset == preset) Color.White else (if (isDark) Color(0xFFCBD5E1) else Color(0xFF14161D))
+                                color = if (currentPreset == preset) (if (isDark) Color(0xFF0C0E12) else Color.White) else (if (isDark) Color(0xFFCBD5E1) else Color(0xFF14161D))
                             )
                             if (currentPreset == preset) {
-                                Icon(imageVector = Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                                Icon(imageVector = Icons.Default.Check, contentDescription = null, tint = if (isDark) Color(0xFF0C0E12) else Color.White, modifier = Modifier.size(18.dp))
                             }
                         }
                     }
@@ -9830,7 +9875,7 @@ fun EqualizerDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text(if (isKhmer) "បិទ" else "Close", color = if (isDark) Color(0xFF818CF8) else Color(0xFF14161D))
+                Text(if (isKhmer) "បិទ" else "Close", color = if (isDark) Color.White else Color(0xFF14161D), fontWeight = FontWeight.Bold)
             }
         }
     )
