@@ -15,11 +15,16 @@ import android.provider.MediaStore
 import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.lerp as lerpColor
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.unit.lerp as lerpDp
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -2356,41 +2361,30 @@ fun MusicHubApp() {
 
     CompositionLocalProvider(LocalDarkMode provides isDarkMode) {
         MaterialTheme(colorScheme = colorScheme) {
-            Scaffold(
-                containerColor = MaterialTheme.colorScheme.background,
-            bottomBar = {
-                Column {
-                    // Floating Mini-Player (Connected with Now Playing: hides when expanded into Now Playing, smoothly reappears when minimized)
-                    AnimatedVisibility(
-                        visible = currentSong != null && !showNowPlayingModal,
-                        enter = slideInVertically(
-                            initialOffsetY = { it / 2 },
-                            animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing)
-                        ) + fadeIn(tween(180)),
-                        exit = slideOutVertically(
-                            targetOffsetY = { -it / 2 },
-                            animationSpec = tween(durationMillis = 160, easing = FastOutLinearInEasing)
-                        ) + fadeOut(tween(140))
-                    ) {
-                        currentSong?.let { song ->
-                            MiniPlayerCard(
-                                song = song,
-                                isPlaying = isPlaying,
-                                onSongClick = { showNowPlayingModal = true },
-                                onTogglePlay = { togglePlayPause() },
-                                onFavoriteToggle = { toggleFavorite(song) },
-                                onDismiss = { dismissMiniPlayer() },
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-                            )
-                        }
-                    }
+            val appDensity = LocalDensity.current
+            var navBarHeightDp by remember { mutableStateOf(80.dp) }
 
-                    // Bottom Navigation Bar
-                    NavigationBar(
-                        containerColor = if (isDarkMode) Color(0xFF14161B) else Color.White,
-                        tonalElevation = 0.dp,
-                        modifier = Modifier.shadow(if (isDarkMode) 0.dp else 12.dp)
-                    ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                Scaffold(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    bottomBar = {
+                        Column {
+                            // Reserve space for the unified expandable player card when a song is active
+                            if (currentSong != null) {
+                                Spacer(modifier = Modifier.height(78.dp))
+                            }
+
+                            // Bottom Navigation Bar
+                            NavigationBar(
+                                containerColor = if (isDarkMode) Color(0xFF14161B) else Color.White,
+                                tonalElevation = 0.dp,
+                                modifier = Modifier
+                                    .onGloballyPositioned { coords ->
+                                        val h = with(appDensity) { coords.size.height.toDp() }
+                                        if (h > 0.dp) navBarHeightDp = h
+                                    }
+                                    .shadow(if (isDarkMode) 0.dp else 12.dp)
+                            ) {
                         Screen.values().forEach { screen ->
                             NavigationBarItem(
                                 icon = {
@@ -3218,13 +3212,23 @@ fun MusicHubApp() {
             )
         }
 
-        // Now Playing Dialog with Custom Waveform Scrubber
-        if (showNowPlayingModal && currentSong != null) {
-            NowPlayingDialog(
+        // Unified Expandable Player Card (Mini-Player and Now Playing as ONE continuous morphing card)
+        if (currentSong != null) {
+            val isDetailOverlayOpen = showOfflineLibraryModal || viewingMix != null || viewingPlaylist != null || viewingArtist != null
+            val targetCollapsedBottomPadding by animateDpAsState(
+                targetValue = if (isDetailOverlayOpen) 20.dp else (navBarHeightDp + 6.dp),
+                animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                label = "collapsedBottomPadding"
+            )
+            val resolvedPlayerSong = songsList.find { it.id == currentSong?.id } ?: currentSong!!
+            UnifiedExpandablePlayerCard(
                 isKhmer = isKhmer,
-                song = currentSong!!,
+                song = resolvedPlayerSong,
                 isPlaying = isPlaying,
                 isVinylStyle = isVinylStyle,
+                isExpanded = showNowPlayingModal,
+                onExpandedChange = { showNowPlayingModal = it },
+                collapsedBottomPadding = targetCollapsedBottomPadding,
                 progress = playbackProgress,
                 positionMs = playbackPositionMs,
                 isShuffle = isShuffle,
@@ -3255,7 +3259,10 @@ fun MusicHubApp() {
                 onEditClick = { editingSong = currentSong },
                 onEqualizerClick = { showEqualizerModal = true },
                 onShareClick = { currentSong?.let { shareSongFile(context, it) } },
-                onDismiss = { showNowPlayingModal = false }
+                onDismissMiniPlayer = {
+                    showNowPlayingModal = false
+                    dismissMiniPlayer()
+                }
             )
         }
 
@@ -3296,6 +3303,7 @@ fun MusicHubApp() {
                 onDismiss = { editingSong = null }
             )
         }
+            }
         }
     }
 }
@@ -4011,9 +4019,11 @@ fun PlaylistDetailDialog(
         songsOrder.mapNotNull { id -> allSongs.find { it.id == id } }
     }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    BackHandler(onBack = onDismiss)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(5f)
     ) {
         val isDark = LocalDarkMode.current
         Surface(
@@ -4366,18 +4376,8 @@ fun PlaylistDetailDialog(
                     }
                 }
 
-                if (currentSong != null && !isNowPlayingOpen) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    val resolvedMiniSong = allSongs.find { it.id == currentSong.id } ?: currentSong
-                    MiniPlayerCard(
-                        song = resolvedMiniSong,
-                        isPlaying = isPlaying,
-                        onSongClick = onMiniPlayerClick,
-                        onTogglePlay = onTogglePlay,
-                        onFavoriteToggle = { onFavoriteToggle(resolvedMiniSong) },
-                        onDismiss = onMiniPlayerDismiss,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
+                if (currentSong != null) {
+                    Spacer(modifier = Modifier.height(78.dp))
                 }
             }
         }
@@ -4436,9 +4436,11 @@ fun ArtistDetailDialog(
         label = "pulseGlow"
     )
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    BackHandler(onBack = onDismiss)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(5f)
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
@@ -4706,18 +4708,8 @@ fun ArtistDetailDialog(
                     item { Spacer(modifier = Modifier.height(12.dp)) }
                 }
 
-                if (currentSong != null && !isNowPlayingOpen) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    val resolvedMiniSong = artistSongs.find { it.id == currentSong.id } ?: currentSong
-                    MiniPlayerCard(
-                        song = resolvedMiniSong,
-                        isPlaying = isPlaying,
-                        onSongClick = onMiniPlayerClick,
-                        onTogglePlay = onTogglePlay,
-                        onFavoriteToggle = { onFavoriteToggle(resolvedMiniSong) },
-                        onDismiss = onMiniPlayerDismiss,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
+                if (currentSong != null) {
+                    Spacer(modifier = Modifier.height(78.dp))
                 }
             }
         }
@@ -4750,9 +4742,11 @@ fun OfflineLibraryDialog(
 ) {
     val isDark = LocalDarkMode.current
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    BackHandler(onBack = onDismiss)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(5f)
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
@@ -4943,18 +4937,8 @@ fun OfflineLibraryDialog(
                     }
                 }
 
-                if (currentSong != null && !isNowPlayingOpen) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    val resolvedMiniSong = songs.find { it.id == currentSong.id } ?: currentSong
-                    MiniPlayerCard(
-                        song = resolvedMiniSong,
-                        isPlaying = isPlaying,
-                        onSongClick = onMiniPlayerClick,
-                        onTogglePlay = onTogglePlay,
-                        onFavoriteToggle = { onFavoriteToggle(resolvedMiniSong) },
-                        onDismiss = onMiniPlayerDismiss,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
+                if (currentSong != null) {
+                    Spacer(modifier = Modifier.height(78.dp))
                 }
             }
         }
@@ -8251,14 +8235,17 @@ fun SettingsScreen(
     }
 }
 
-// Now Playing Screen matching reference mockup
+// Unified Expandable Player Card: Mini-Player and Now Playing as ONE continuous morphing card
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun NowPlayingDialog(
+fun UnifiedExpandablePlayerCard(
     isKhmer: Boolean,
     song: SongItem,
     isPlaying: Boolean,
     isVinylStyle: Boolean = true,
+    isExpanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    collapsedBottomPadding: androidx.compose.ui.unit.Dp,
     progress: Float,
     positionMs: Long = 0L,
     isShuffle: Boolean,
@@ -8273,22 +8260,47 @@ fun NowPlayingDialog(
     onEditClick: () -> Unit,
     onEqualizerClick: () -> Unit,
     onShareClick: () -> Unit = {},
-    onDismiss: () -> Unit
+    onDismissMiniPlayer: () -> Unit
 ) {
     val isDark = LocalDarkMode.current
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
-    val dismissThresholdPx = remember(density) { with(density) { 105.dp.toPx() } }
-    val dragOffsetY = remember { Animatable(1350f) }
 
-    LaunchedEffect(Unit) {
-        dragOffsetY.animateTo(
-            targetValue = 0f,
-            animationSpec = spring(
-                dampingRatio = Spring.DampingRatioNoBouncy,
-                stiffness = Spring.StiffnessMediumLow
+    val expandProgress = remember { Animatable(if (isExpanded) 1f else 0f) }
+    val dismissOffsetX = remember { Animatable(0f) }
+    val dismissOffsetY = remember { Animatable(0f) }
+    val dismissAlpha = remember { Animatable(1f) }
+
+    LaunchedEffect(song.id) {
+        dismissOffsetX.snapTo(0f)
+        dismissOffsetY.snapTo(0f)
+        dismissAlpha.snapTo(1f)
+    }
+
+    LaunchedEffect(isExpanded) {
+        val target = if (isExpanded) 1f else 0f
+        if (Math.abs(expandProgress.value - target) > 0.01f) {
+            expandProgress.animateTo(
+                targetValue = target,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
             )
-        )
+        }
+    }
+
+    BackHandler(enabled = isExpanded || expandProgress.value > 0.5f) {
+        onExpandedChange(false)
+        coroutineScope.launch {
+            expandProgress.animateTo(
+                targetValue = 0f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            )
+        }
     }
 
     val artScale by animateFloatAsState(
@@ -8308,359 +8320,616 @@ fun NowPlayingDialog(
         }
     }
 
-    Dialog(
-        onDismissRequest = {
-            coroutineScope.launch {
-                dragOffsetY.animateTo(
-                    targetValue = 1600f,
-                    animationSpec = tween(durationMillis = 165, easing = FastOutLinearInEasing)
-                )
-                onDismiss()
-            }
-        },
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(20f)
     ) {
-        val dragFraction = (dragOffsetY.value / (dismissThresholdPx * 3.2f)).coerceIn(0f, 1f)
-        val topCornerRadius = (dragFraction * 32f).dp
+        val fullScreenHeight = maxHeight
+        val p = expandProgress.value.coerceIn(0f, 1f)
+        val collapsedHeight = 66.dp
+        val cardHeight = lerpDp(collapsedHeight, fullScreenHeight, p)
+        val sidePadding = lerpDp(16.dp, 0.dp, p)
+        val bottomPadding = lerpDp(collapsedBottomPadding, 0.dp, p)
+        val cornerRadius = lerpDp(26.dp, 0.dp, ((p - 0.85f) / 0.15f).coerceIn(0f, 1f))
+        val expandDragRangePx = with(density) {
+            (fullScreenHeight - collapsedHeight - collapsedBottomPadding).toPx().coerceAtLeast(300f)
+        }
+
+        // Background dim scrim as the card expands toward full screen
+        if (p > 0.01f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = (p * 0.55f).coerceIn(0f, 0.55f)))
+                    .then(
+                        if (p > 0.5f) {
+                            Modifier.pointerInput(Unit) {
+                                awaitEachGesture {
+                                    awaitFirstDown(requireUnconsumed = false)
+                                }
+                            }
+                        } else Modifier
+                    )
+            )
+        }
+
+        val cardBaseColor = if (isDark) {
+            lerpColor(Color(0xFF20232B), Color(0xFF0C0E12), p)
+        } else {
+            lerpColor(Color(0xFF14161D), MaterialTheme.colorScheme.background, (p * 1.25f).coerceIn(0f, 1f))
+        }
 
         Surface(
             modifier = Modifier
-                .fillMaxSize()
+                .align(Alignment.BottomCenter)
+                .padding(start = sidePadding, end = sidePadding, bottom = bottomPadding)
+                .fillMaxWidth()
+                .height(cardHeight)
                 .graphicsLayer {
-                    translationY = dragOffsetY.value
-                    val scaleFactor = 1f - (dragFraction * 0.04f)
-                    scaleX = scaleFactor
-                    scaleY = scaleFactor
+                    translationX = dismissOffsetX.value
+                    translationY = dismissOffsetY.value
+                    alpha = dismissAlpha.value
                 }
-                .clip(RoundedCornerShape(topStart = topCornerRadius, topEnd = topCornerRadius))
-                .pointerInput(Unit) {
-                    detectVerticalDragGestures(
-                        onVerticalDrag = { change, dragAmount ->
-                            if (dragAmount > 0f || dragOffsetY.value > 0f) {
-                                change.consume()
-                                val nextY = (dragOffsetY.value + dragAmount).coerceAtLeast(0f)
-                                coroutineScope.launch {
-                                    dragOffsetY.snapTo(nextY)
-                                }
-                            }
-                        },
-                        onDragEnd = {
-                            coroutineScope.launch {
-                                if (dragOffsetY.value > dismissThresholdPx) {
-                                    dragOffsetY.animateTo(
-                                        targetValue = 1600f,
-                                        animationSpec = tween(durationMillis = 165, easing = FastOutLinearInEasing)
-                                    )
-                                    onDismiss()
+                .shadow(lerpDp(12.dp, 24.dp, p), RoundedCornerShape(cornerRadius))
+                .clip(RoundedCornerShape(cornerRadius))
+                .pointerInput(song.id, expandDragRangePx, collapsedBottomPadding) {
+                    val touchSlop = viewConfiguration.touchSlop
+                    val dismissXThreshold = with(density) { 80.dp.toPx() }
+                    val dismissYThreshold = with(density) { 45.dp.toPx() }
+                    val collapsedBottomPx = with(density) { collapsedBottomPadding.toPx() }
+                    val collapsedSidePx = with(density) { 16.dp.toPx() }
+
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        if (down.isConsumed) {
+                            return@awaitEachGesture
+                        }
+                        val startP = expandProgress.value.coerceIn(0f, 1f)
+                        val startFingerFromBottom = (collapsedBottomPx * (1f - startP)) + (size.height - down.position.y)
+                        val startFingerFromLeft = (collapsedSidePx * (1f - startP)) + down.position.x
+                        var isDragging = false
+                        // 0 = undecided, 1 = expanding/collapsing morph, 2 = dismissing mini-player
+                        var gestureMode = 0
+                        var totalDragX = 0f
+                        var totalDragY = 0f
+                        val pointerId = down.id
+
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+
+                            if (!change.pressed) {
+                                if (isDragging) {
+                                    if (gestureMode == 1) {
+                                        val finalP = expandProgress.value
+                                        val shouldExpand = if (startP < 0.5f) finalP > 0.14f else finalP > 0.82f
+                                        onExpandedChange(shouldExpand)
+                                        coroutineScope.launch {
+                                            expandProgress.animateTo(
+                                                targetValue = if (shouldExpand) 1f else 0f,
+                                                animationSpec = spring(
+                                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                                    stiffness = Spring.StiffnessMediumLow
+                                                )
+                                            )
+                                        }
+                                    } else if (gestureMode == 2) {
+                                        coroutineScope.launch {
+                                            val currentX = dismissOffsetX.value
+                                            val currentY = dismissOffsetY.value
+                                            if (currentY > dismissYThreshold) {
+                                                launch { dismissOffsetY.animateTo(currentY + 350f, tween(160)) }
+                                                launch { dismissAlpha.animateTo(0f, tween(160)) }
+                                                delay(160)
+                                                onDismissMiniPlayer()
+                                            } else if (currentX > dismissXThreshold) {
+                                                launch { dismissOffsetX.animateTo(currentX + 900f, tween(160)) }
+                                                launch { dismissAlpha.animateTo(0f, tween(160)) }
+                                                delay(160)
+                                                onDismissMiniPlayer()
+                                            } else if (currentX < -dismissXThreshold) {
+                                                launch { dismissOffsetX.animateTo(currentX - 900f, tween(160)) }
+                                                launch { dismissAlpha.animateTo(0f, tween(160)) }
+                                                delay(160)
+                                                onDismissMiniPlayer()
+                                            } else {
+                                                launch { dismissOffsetX.animateTo(0f, spring(dampingRatio = 0.75f, stiffness = 450f)) }
+                                                launch { dismissOffsetY.animateTo(0f, spring(dampingRatio = 0.75f, stiffness = 450f)) }
+                                                launch { dismissAlpha.animateTo(1f, tween(100)) }
+                                            }
+                                        }
+                                    }
                                 } else {
-                                    dragOffsetY.animateTo(
-                                        targetValue = 0f,
-                                        animationSpec = spring(
-                                            dampingRatio = Spring.DampingRatioNoBouncy,
-                                            stiffness = Spring.StiffnessMedium
-                                        )
-                                    )
+                                    // Simple tap when collapsed -> smoothly expand the single card
+                                    if (!change.isConsumed && startP < 0.5f) {
+                                        onExpandedChange(true)
+                                        coroutineScope.launch {
+                                            expandProgress.animateTo(
+                                                targetValue = 1f,
+                                                animationSpec = spring(
+                                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                                    stiffness = Spring.StiffnessMediumLow
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                                break
+                            } else {
+                                if (!isDragging && change.isConsumed) {
+                                    break
+                                }
+                                val curP = expandProgress.value.coerceIn(0f, 1f)
+                                val curFingerFromBottom = (collapsedBottomPx * (1f - curP)) + (size.height - change.position.y)
+                                val curFingerFromLeft = (collapsedSidePx * (1f - curP)) + change.position.x
+                                totalDragX = curFingerFromLeft - startFingerFromLeft
+                                totalDragY = startFingerFromBottom - curFingerFromBottom
+
+                                if (!isDragging) {
+                                    if (startP < 0.5f) {
+                                        if (Math.abs(totalDragX) > touchSlop || Math.abs(totalDragY) > touchSlop) {
+                                            isDragging = true
+                                            change.consume()
+                                            gestureMode = if (totalDragY < 0f && Math.abs(totalDragY) >= Math.abs(totalDragX) * 0.65f) {
+                                                1 // Pull UP to expand into Now Playing
+                                            } else {
+                                                2 // Swipe DOWN / LEFT / RIGHT to dismiss Mini-Player
+                                            }
+                                        }
+                                    } else {
+                                        if (Math.abs(totalDragY) > touchSlop && Math.abs(totalDragY) > Math.abs(totalDragX)) {
+                                            isDragging = true
+                                            gestureMode = 1 // Pull DOWN to collapse into Mini-Player
+                                            change.consume()
+                                        } else if (Math.abs(totalDragX) > touchSlop * 1.5f) {
+                                            break
+                                        }
+                                    }
+                                } else {
+                                    change.consume()
+                                    if (gestureMode == 1) {
+                                        val nextP = (startP - (totalDragY / expandDragRangePx)).coerceIn(0f, 1f)
+                                        coroutineScope.launch {
+                                            expandProgress.snapTo(nextP)
+                                        }
+                                    } else if (gestureMode == 2) {
+                                        // If user started dragging down/sideways, but then pulled above 0, switch to expanding!
+                                        if (totalDragY < -touchSlop && Math.abs(totalDragX) < dismissXThreshold * 0.5f) {
+                                            gestureMode = 1
+                                            coroutineScope.launch {
+                                                dismissOffsetX.snapTo(0f)
+                                                dismissOffsetY.snapTo(0f)
+                                                dismissAlpha.snapTo(1f)
+                                                val nextP = (-totalDragY / expandDragRangePx).coerceIn(0f, 1f)
+                                                expandProgress.snapTo(nextP)
+                                            }
+                                        } else {
+                                            val effectiveY = totalDragY.coerceAtLeast(0f)
+                                            coroutineScope.launch {
+                                                dismissOffsetX.snapTo(totalDragX)
+                                                dismissOffsetY.snapTo(effectiveY)
+                                                val progressDismiss = maxOf(
+                                                    Math.abs(totalDragX) / (dismissXThreshold * 2.2f),
+                                                    (effectiveY / (dismissYThreshold * 2.2f)).coerceAtLeast(0f)
+                                                )
+                                                dismissAlpha.snapTo((1f - progressDismiss * 0.6f).coerceIn(0.2f, 1f))
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                        },
-                        onDragCancel = {
-                            coroutineScope.launch {
-                                dragOffsetY.animateTo(
-                                    targetValue = 0f,
-                                    animationSpec = spring(stiffness = Spring.StiffnessMedium)
-                                )
-                            }
                         }
-                    )
+                    }
                 },
-            color = MaterialTheme.colorScheme.background
+            color = cardBaseColor,
+            border = if (isDark && p < 0.98f) {
+                androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    Color(0xFF2E323D).copy(alpha = (1f - p).coerceIn(0f, 1f))
+                )
+            } else null
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .then(
-                        if (isDark) {
-                            Modifier.background(
-                                Brush.verticalGradient(
-                                    colorStops = arrayOf(
-                                        0.0f to Color(0xFF17232C),
-                                        0.32f to Color(0xFF10141A),
-                                        1.0f to Color(0xFF0C0E12)
-                                    )
-                                )
-                            )
-                        } else Modifier
-                    )
-                    .padding(horizontal = 24.dp, vertical = 18.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.SpaceBetween
-            ) {
-                // Balanced Symmetrical Top Header: Share on left, Now Playing centered, EQ on right
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = onShareClick) {
-                        Icon(
-                            imageVector = Icons.Default.Share,
-                            contentDescription = "Share",
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-
-                    Text(
-                        text = if (isKhmer) "កំពុងចាក់" else "Now Playing",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-
-                    IconButton(onClick = onEqualizerClick) {
-                        Icon(
-                            imageVector = Icons.Default.Tune,
-                            contentDescription = "EQ",
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
-
-                if (isVinylStyle) {
-                    // Enlarged Rotating Picture Disc (326.dp) with full-bleed artwork and center spindle hub
-                    Box(
-                        modifier = Modifier
-                            .size(326.dp)
-                            .scale(artScale)
-                            .shadow(24.dp, CircleShape)
-                            .clip(CircleShape)
-                            .background(Color(0xFF1E212D))
-                            .graphicsLayer { rotationZ = discRotation },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        // Full-bleed Album Artwork (fills the entire circular disc)
-                        if (song.artworkUrl.isNotBlank()) {
-                            SmartArtworkImage(
-                                artworkUrl = song.artworkUrl,
-                                contentDescription = song.title,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .scale(1.05f)
-                            )
-                        } else {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(Color(0xFF1E212D)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.MusicNote,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(76.dp)
-                                )
-                            }
-                        }
-
-                        // Disc Radial Sheen Reflection (authentic vinyl/CD sweep reflection under light)
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(
-                                    Brush.sweepGradient(
-                                        listOf(
-                                            Color.Transparent,
-                                            Color.White.copy(alpha = 0.08f),
-                                            Color.Transparent,
-                                            Color.White.copy(alpha = 0.04f),
-                                            Color.Transparent,
-                                            Color.White.copy(alpha = 0.08f),
-                                            Color.Transparent
-                                        )
-                                    )
-                                )
-                        )
-
-                        // Outer Disc Edge Border
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .border(1.5.dp, Color(0x35000000), CircleShape)
-                        )
-
-                        // Center Spindle Hub & Metallic Silver Ring
-                        Box(
-                            modifier = Modifier
-                                .size(76.dp)
-                                .shadow(8.dp, CircleShape)
-                                .clip(CircleShape)
-                                .background(Color(0xFF14161D))
-                                .border(3.5.dp, Color(0xFFE2E8F0), CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(34.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF0B0D12))
-                                    .border(1.2.dp, Color(0x70FFFFFF), CircleShape)
-                            )
-                        }
-                    }
-                } else {
-                    // Enlarged Static Square Card (326.dp) with Rounded Corners (No animation, full unobscured artwork)
-                    Box(
-                        modifier = Modifier
-                            .size(326.dp)
-                            .shadow(24.dp, RoundedCornerShape(28.dp))
-                            .clip(RoundedCornerShape(28.dp))
-                            .background(Color(0xFF1E212D))
-                            .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(28.dp)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (song.artworkUrl.isNotBlank()) {
-                            SmartArtworkImage(
-                                artworkUrl = song.artworkUrl,
-                                contentDescription = song.title,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        } else {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(Color(0xFF1E212D)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.MusicNote,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(76.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Song Info Row: Heart on left, Centered Title/Artist, Options on right
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    IconButton(onClick = onFavoriteToggle) {
-                        Icon(
-                            imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = "Favorite",
-                            tint = if (song.isFavorite) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
+            Box(modifier = Modifier.fillMaxSize()) {
+                // 1. Expanded Full-Screen Now Playing Layout inside the same card
+                if (p > 0.02f) {
+                    val expandedAlpha = ((p - 0.05f) / 0.42f).coerceIn(0f, 1f)
+                    val expandedScale = 0.92f + (0.08f * p)
 
                     Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .wrapContentHeight(align = Alignment.Top, unbounded = true)
+                            .height(fullScreenHeight)
+                            .graphicsLayer {
+                                alpha = expandedAlpha
+                                scaleX = expandedScale
+                                scaleY = expandedScale
+                                transformOrigin = TransformOrigin(0.5f, 0f)
+                            }
+                            .then(
+                                if (isDark) {
+                                    Modifier.background(
+                                        Brush.verticalGradient(
+                                            colorStops = arrayOf(
+                                                0.0f to Color(0xFF17232C).copy(alpha = p),
+                                                0.32f to Color(0xFF10141A).copy(alpha = p),
+                                                1.0f to Color(0xFF0C0E12).copy(alpha = p)
+                                            )
+                                        )
+                                    )
+                                } else Modifier
+                            )
+                            .padding(horizontal = 24.dp, vertical = 18.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.weight(1f)
+                        verticalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text(
-                            text = song.title,
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1,
-                            modifier = Modifier.basicMarquee(
-                                iterations = Int.MAX_VALUE,
-                                delayMillis = 1200,
-                                initialDelayMillis = 1500,
-                                velocity = 35.dp
-                            )
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = song.artist,
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1,
-                            modifier = Modifier.basicMarquee(
-                                iterations = Int.MAX_VALUE,
-                                delayMillis = 1200,
-                                initialDelayMillis = 1500,
-                                velocity = 35.dp
-                            )
-                        )
-                    }
+                        // Balanced Symmetrical Top Header: Share on left, Now Playing centered, EQ on right
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconButton(onClick = onShareClick, enabled = p > 0.5f) {
+                                Icon(
+                                    imageVector = Icons.Default.Share,
+                                    contentDescription = "Share",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
 
-                    IconButton(onClick = onEditClick) {
-                        Icon(
-                            imageVector = Icons.Default.MoreHoriz,
-                            contentDescription = "Options",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(24.dp)
+                            Text(
+                                text = if (isKhmer) "កំពុងចាក់" else "Now Playing",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+
+                            IconButton(onClick = onEqualizerClick, enabled = p > 0.5f) {
+                                Icon(
+                                    imageVector = Icons.Default.Tune,
+                                    contentDescription = "EQ",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+
+                        if (isVinylStyle) {
+                            // Enlarged Rotating Picture Disc (326.dp) with full-bleed artwork and center spindle hub
+                            Box(
+                                modifier = Modifier
+                                    .size(326.dp)
+                                    .scale(artScale)
+                                    .shadow(24.dp, CircleShape)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF1E212D))
+                                    .graphicsLayer { rotationZ = discRotation },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (song.artworkUrl.isNotBlank()) {
+                                    SmartArtworkImage(
+                                        artworkUrl = song.artworkUrl,
+                                        contentDescription = song.title,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .scale(1.05f)
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(Color(0xFF1E212D)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.MusicNote,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(76.dp)
+                                        )
+                                    }
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(
+                                            Brush.sweepGradient(
+                                                listOf(
+                                                    Color.Transparent,
+                                                    Color.White.copy(alpha = 0.08f),
+                                                    Color.Transparent,
+                                                    Color.White.copy(alpha = 0.04f),
+                                                    Color.Transparent,
+                                                    Color.White.copy(alpha = 0.08f),
+                                                    Color.Transparent
+                                                )
+                                            )
+                                        )
+                                )
+
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .border(1.5.dp, Color(0x35000000), CircleShape)
+                                )
+
+                                Box(
+                                    modifier = Modifier
+                                        .size(76.dp)
+                                        .shadow(8.dp, CircleShape)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF14161D))
+                                        .border(3.5.dp, Color(0xFFE2E8F0), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(34.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFF0B0D12))
+                                            .border(1.2.dp, Color(0x70FFFFFF), CircleShape)
+                                    )
+                                }
+                            }
+                        } else {
+                            // Enlarged Static Square Card (326.dp) with Rounded Corners
+                            Box(
+                                modifier = Modifier
+                                    .size(326.dp)
+                                    .shadow(24.dp, RoundedCornerShape(28.dp))
+                                    .clip(RoundedCornerShape(28.dp))
+                                    .background(Color(0xFF1E212D))
+                                    .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(28.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (song.artworkUrl.isNotBlank()) {
+                                    SmartArtworkImage(
+                                        artworkUrl = song.artworkUrl,
+                                        contentDescription = song.title,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(Color(0xFF1E212D)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.MusicNote,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(76.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Song Info Row: Heart on left, Centered Title/Artist, Options on right
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            IconButton(onClick = onFavoriteToggle, enabled = p > 0.5f) {
+                                Icon(
+                                    imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                    contentDescription = "Favorite",
+                                    tint = if (song.isFavorite) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = song.title,
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    modifier = Modifier.basicMarquee(
+                                        iterations = Int.MAX_VALUE,
+                                        delayMillis = 1200,
+                                        initialDelayMillis = 1500,
+                                        velocity = 35.dp
+                                    )
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = song.artist,
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    modifier = Modifier.basicMarquee(
+                                        iterations = Int.MAX_VALUE,
+                                        delayMillis = 1200,
+                                        initialDelayMillis = 1500,
+                                        velocity = 35.dp
+                                    )
+                                )
+                            }
+
+                            IconButton(onClick = onEditClick, enabled = p > 0.5f) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreHoriz,
+                                    contentDescription = "Options",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
+
+                        // Interactive Waveform Audio Scrubber
+                        WaveformScrubber(
+                            progress = progress,
+                            durationSec = song.durationSec,
+                            positionMs = positionMs,
+                            onSeek = onProgressChange
                         )
+
+                        // Controls Row: Shuffle, Prev, Big Play/Pause, Next, Loop Mode
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 14.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconButton(onClick = onShuffleToggle, enabled = p > 0.5f) {
+                                Icon(
+                                    imageVector = Icons.Default.Shuffle,
+                                    contentDescription = "Shuffle",
+                                    tint = if (isShuffle) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                )
+                            }
+
+                            IconButton(onClick = onPrevious, enabled = p > 0.5f, modifier = Modifier.size(48.dp)) {
+                                Icon(imageVector = Icons.Default.SkipPrevious, contentDescription = "Previous", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
+                            }
+
+                            // Main Big Circular Play/Pause Button
+                            Surface(
+                                modifier = Modifier
+                                    .size(74.dp)
+                                    .shadow(12.dp, CircleShape)
+                                    .clip(CircleShape)
+                                    .clickable(enabled = p > 0.5f) { onPlayPause() },
+                                color = if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                        contentDescription = "Play/Pause",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(36.dp)
+                                    )
+                                }
+                            }
+
+                            IconButton(onClick = onNext, enabled = p > 0.5f, modifier = Modifier.size(48.dp)) {
+                                Icon(imageVector = Icons.Default.SkipNext, contentDescription = "Next", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
+                            }
+
+                            IconButton(onClick = onLoopModeToggle, enabled = p > 0.5f) {
+                                Icon(
+                                    imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                                    contentDescription = "Loop Mode",
+                                    tint = if (loopMode != LoopMode.OFF) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
                     }
                 }
 
-                // Interactive Waveform Audio Scrubber
-                WaveformScrubber(
-                    progress = progress,
-                    durationSec = song.durationSec,
-                    positionMs = positionMs,
-                    onSeek = onProgressChange
-                )
-
-                // Controls Row: Shuffle, Prev, Big Play/Pause, Next, Loop Mode
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = onShuffleToggle) {
-                        Icon(
-                            imageVector = Icons.Default.Shuffle,
-                            contentDescription = "Shuffle",
-                            tint = if (isShuffle) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                        )
-                    }
-
-                    IconButton(onClick = onPrevious, modifier = Modifier.size(48.dp)) {
-                        Icon(imageVector = Icons.Default.SkipPrevious, contentDescription = "Previous", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
-                    }
-
-                    // Main Big Circular Play/Pause Button
-                    Surface(
+                // 2. Collapsed Mini-Player Row inside the top of the same card
+                val miniAlpha = (1f - (p / 0.28f)).coerceIn(0f, 1f)
+                if (miniAlpha > 0.01f) {
+                    Row(
                         modifier = Modifier
-                            .size(74.dp)
-                            .shadow(12.dp, CircleShape)
-                            .clip(CircleShape)
-                            .clickable { onPlayPause() },
-                        color = if (LocalDarkMode.current) Color(0xFF6366F1) else Color(0xFF14161D)
+                            .fillMaxWidth()
+                            .height(66.dp)
+                            .align(Alignment.TopCenter)
+                            .graphicsLayer { alpha = miniAlpha }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = "Play/Pause",
-                                tint = Color.White,
-                                modifier = Modifier.size(36.dp)
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF2E3244)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (song.artworkUrl.isNotBlank()) {
+                                SmartArtworkImage(
+                                    artworkUrl = song.artworkUrl,
+                                    contentDescription = song.title,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.MusicNote,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = song.title,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = Color.White,
+                                maxLines = 1,
+                                modifier = Modifier.basicMarquee(
+                                    iterations = Int.MAX_VALUE,
+                                    delayMillis = 1200,
+                                    initialDelayMillis = 1500,
+                                    velocity = 35.dp
+                                )
+                            )
+                            Text(
+                                text = song.artist,
+                                fontSize = 12.sp,
+                                color = Color(0xFF94A3B8),
+                                maxLines = 1,
+                                modifier = Modifier.basicMarquee(
+                                    iterations = Int.MAX_VALUE,
+                                    delayMillis = 1200,
+                                    initialDelayMillis = 1500,
+                                    velocity = 35.dp
+                                )
                             )
                         }
-                    }
 
-                    IconButton(onClick = onNext, modifier = Modifier.size(48.dp)) {
-                        Icon(imageVector = Icons.Default.SkipNext, contentDescription = "Next", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
-                    }
+                        IconButton(
+                            onClick = onFavoriteToggle,
+                            enabled = p < 0.25f,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = "Favorite",
+                                tint = if (song.isFavorite) Color(0xFFEF4444) else Color(0xFF94A3B8),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
 
-                    IconButton(onClick = onLoopModeToggle) {
-                        Icon(
-                            imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
-                            contentDescription = "Loop Mode",
-                            tint = if (loopMode != LoopMode.OFF) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                            modifier = Modifier.size(24.dp)
-                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        Surface(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .clickable(enabled = p < 0.25f) { onPlayPause() },
+                            color = Color.White
+                        ) {
+                            Box(
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = "Play/Pause",
+                                    tint = Color(0xFF14161D),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }

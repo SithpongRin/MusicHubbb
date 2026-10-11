@@ -382,6 +382,16 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.61
+- Single Unified Morphing Player Card (`UnifiedExpandablePlayerCard`):
+  - Combined `MiniPlayerCard` and `NowPlayingDialog` into **one single continuous morphing card (`Surface`)** driven by a unified `expandProgress` (`0f` = collapsed Mini-Player docked at bottom, `1f` = expanded Full-Screen Now Playing).
+  - Real-time 1:1 finger tracking and continuous geometry interpolation:
+    - Dragging the Mini-Player card UP stretches that exact same card's height (`lerpDp(66.dp, maxHeight, p)`), horizontal margins (`lerpDp(16.dp, 0.dp, p)`), bottom offset (`lerpDp(collapsedBottomPadding, 0.dp, p)`), and corner radius (`lerpDp(26.dp, 0.dp, ...)`), while smoothly crossfading the Mini-Player row into the Full-Screen Now Playing layout inside the same card.
+    - Dragging the Now Playing card DOWN shrinks that exact same card continuously under the user's finger right back into the `66.dp` Mini-Player pill at the bottom without opening or closing separate `Dialog` windows.
+  - Preserved multi-directional swipe-to-dismiss (down, left, right) on the collapsed Mini-Player, `WaveformScrubber` seeking, and seamless layering over `OfflineLibraryDialog`, `PlaylistDetailDialog`, and `ArtistDetailDialog`.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 61` and `versionName = "1.0.61"` in `app/build.gradle.kts`.
+
 ### Version 1.0.60
 - Connected Mini-Player and Now Playing Transition & YouTube Music Soft Charcoal Dark Theme:
   - Soft Charcoal Dark Mode Palette & Top Ambient Gradient: Updated `darkColorScheme` (`background = Color(0xFF0C0E12)`, `surface = Color(0xFF1B1E25)`, `surfaceVariant = Color(0xFF252932)`) and added a subtle vertical ambient top glow (`Color(0xFF16242D)` -> `Color(0xFF10141A)` -> `Color(0xFF0C0E12)`) across the main Scaffold and `NowPlayingDialog`, paired with harmonized `NavigationBar` (`Color(0xFF14161B)`) and `MiniPlayerCard` (`Color(0xFF20232B)` with `Color(0xFF2E323D)` border).
