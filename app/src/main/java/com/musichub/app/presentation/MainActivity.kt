@@ -1524,6 +1524,17 @@ fun MusicHubApp() {
         context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
             .edit().putBoolean("dark_mode", nextMode).apply()
     }
+    var isVinylStyle by remember {
+        mutableStateOf(
+            context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
+                .getBoolean("vinyl_style", true)
+        )
+    }
+    val onVinylStyleChange: (Boolean) -> Unit = { useVinyl ->
+        isVinylStyle = useVinyl
+        context.getSharedPreferences("musichub_prefs", Context.MODE_PRIVATE)
+            .edit().putBoolean("vinyl_style", useVinyl).apply()
+    }
     var currentScreen by remember { mutableStateOf(Screen.HOME) }
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf("All") }
@@ -2671,6 +2682,8 @@ fun MusicHubApp() {
                         onLanguageToggle = { isKhmer = !isKhmer },
                         isDarkMode = isDarkMode,
                         onDarkModeToggle = onDarkModeToggle,
+                        isVinylStyle = isVinylStyle,
+                        onVinylStyleChange = onVinylStyleChange,
                         audioQuality = audioQuality,
                         onQualityChange = { audioQuality = it },
                         selectedPreset = selectedPreset,
@@ -3182,6 +3195,7 @@ fun MusicHubApp() {
                 isKhmer = isKhmer,
                 song = currentSong!!,
                 isPlaying = isPlaying,
+                isVinylStyle = isVinylStyle,
                 progress = playbackProgress,
                 positionMs = playbackPositionMs,
                 isShuffle = isShuffle,
@@ -7694,6 +7708,8 @@ fun SettingsScreen(
     onLanguageToggle: () -> Unit,
     isDarkMode: Boolean,
     onDarkModeToggle: () -> Unit,
+    isVinylStyle: Boolean = true,
+    onVinylStyleChange: (Boolean) -> Unit = {},
     audioQuality: String,
     onQualityChange: (String) -> Unit,
     selectedPreset: String,
@@ -7792,6 +7808,135 @@ fun SettingsScreen(
                             uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
                         )
                     )
+                }
+            }
+        }
+
+        // Player Artwork Style Card (Spinning Vinyl vs Static Square Card)
+        item {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(22.dp)),
+                color = MaterialTheme.colorScheme.surface
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (isVinylStyle) Icons.Default.Album else Icons.Default.CropSquare,
+                                contentDescription = "Artwork Style",
+                                tint = Color(0xFF6366F1),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(14.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (isKhmer) "ស្ទីលរូបភាពចាក់ចម្រៀង" else "Player Artwork Style",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (isVinylStyle) {
+                                    if (isKhmer) "ថាសចម្រៀងវិល (Spinning Disc)" else "Spinning Vinyl Disc"
+                                } else {
+                                    if (isKhmer) "កាតជ្រុងគ្មានចលនា (Static Card)" else "Static Square Card"
+                                },
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Segmented Selector Row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .padding(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        // Option 1: Spinning Vinyl Disc
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(11.dp))
+                                .clickable { onVinylStyleChange(true) },
+                            color = if (isVinylStyle) Color(0xFF6366F1) else Color.Transparent
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Album,
+                                    contentDescription = null,
+                                    tint = if (isVinylStyle) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isKhmer) "ថាសចម្រៀង" else "Vinyl Disc",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isVinylStyle) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        // Option 2: Static Square Card
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(11.dp))
+                                .clickable { onVinylStyleChange(false) },
+                            color = if (!isVinylStyle) Color(0xFF6366F1) else Color.Transparent
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CropSquare,
+                                    contentDescription = null,
+                                    tint = if (!isVinylStyle) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isKhmer) "កាតជ្រុង" else "Static Card",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (!isVinylStyle) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -8071,6 +8216,7 @@ fun NowPlayingDialog(
     isKhmer: Boolean,
     song: SongItem,
     isPlaying: Boolean,
+    isVinylStyle: Boolean = true,
     progress: Float,
     positionMs: Long = 0L,
     isShuffle: Boolean,
@@ -8090,16 +8236,18 @@ fun NowPlayingDialog(
     onDismiss: () -> Unit
 ) {
     val artScale by animateFloatAsState(
-        targetValue = if (isPlaying) 1.0f else 0.95f,
+        targetValue = if (!isVinylStyle || isPlaying) 1.0f else 0.95f,
         animationSpec = spring(stiffness = Spring.StiffnessLow),
         label = "artScale"
     )
 
     var discRotation by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(isPlaying) {
-        while (isPlaying) {
-            withFrameMillis {
-                discRotation = (discRotation + 0.35f) % 360f
+    LaunchedEffect(isPlaying, isVinylStyle) {
+        if (isVinylStyle) {
+            while (isPlaying) {
+                withFrameMillis {
+                    discRotation = (discRotation + 0.35f) % 360f
+                }
             }
         }
     }
@@ -8146,86 +8294,122 @@ fun NowPlayingDialog(
                     }
                 }
 
-                // Rotating Picture Disc with full-bleed artwork and enlarged center spindle hub
-                Box(
-                    modifier = Modifier
-                        .size(290.dp)
-                        .scale(artScale)
-                        .shadow(24.dp, CircleShape)
-                        .clip(CircleShape)
-                        .background(Color(0xFF1E212D))
-                        .graphicsLayer { rotationZ = discRotation },
-                    contentAlignment = Alignment.Center
-                ) {
-                    // Full-bleed Album Artwork (fills the entire circular disc)
-                    if (song.artworkUrl.isNotBlank()) {
-                        SmartArtworkImage(
-                            artworkUrl = song.artworkUrl,
-                            contentDescription = song.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .scale(1.05f)
-                        )
-                    } else {
+                if (isVinylStyle) {
+                    // Rotating Picture Disc with full-bleed artwork and enlarged center spindle hub
+                    Box(
+                        modifier = Modifier
+                            .size(290.dp)
+                            .scale(artScale)
+                            .shadow(24.dp, CircleShape)
+                            .clip(CircleShape)
+                            .background(Color(0xFF1E212D))
+                            .graphicsLayer { rotationZ = discRotation },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        // Full-bleed Album Artwork (fills the entire circular disc)
+                        if (song.artworkUrl.isNotBlank()) {
+                            SmartArtworkImage(
+                                artworkUrl = song.artworkUrl,
+                                contentDescription = song.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .scale(1.05f)
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color(0xFF1E212D)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MusicNote,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(72.dp)
+                                )
+                            }
+                        }
+
+                        // Disc Radial Sheen Reflection (authentic vinyl/CD sweep reflection under light)
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .background(Color(0xFF1E212D)),
+                                .background(
+                                    Brush.sweepGradient(
+                                        listOf(
+                                            Color.Transparent,
+                                            Color.White.copy(alpha = 0.08f),
+                                            Color.Transparent,
+                                            Color.White.copy(alpha = 0.04f),
+                                            Color.Transparent,
+                                            Color.White.copy(alpha = 0.08f),
+                                            Color.Transparent
+                                        )
+                                    )
+                                )
+                        )
+
+                        // Outer Disc Edge Border
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .border(1.5.dp, Color(0x35000000), CircleShape)
+                        )
+
+                        // Center Spindle Hub & Metallic Silver Ring (further enlarged per user request)
+                        Box(
+                            modifier = Modifier
+                                .size(76.dp)
+                                .shadow(8.dp, CircleShape)
+                                .clip(CircleShape)
+                                .background(Color(0xFF14161D))
+                                .border(3.5.dp, Color(0xFFE2E8F0), CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.MusicNote,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(72.dp)
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF0B0D12))
+                                    .border(1.2.dp, Color(0x70FFFFFF), CircleShape)
                             )
                         }
                     }
-
-                    // Disc Radial Sheen Reflection (authentic vinyl/CD sweep reflection under light)
+                } else {
+                    // Static Square Card with Rounded Corners (No animation, full unobscured artwork)
                     Box(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.sweepGradient(
-                                    listOf(
-                                        Color.Transparent,
-                                        Color.White.copy(alpha = 0.08f),
-                                        Color.Transparent,
-                                        Color.White.copy(alpha = 0.04f),
-                                        Color.Transparent,
-                                        Color.White.copy(alpha = 0.08f),
-                                        Color.Transparent
-                                    )
-                                )
-                            )
-                    )
-
-                    // Outer Disc Edge Border
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .border(1.5.dp, Color(0x35000000), CircleShape)
-                    )
-
-                    // Center Spindle Hub & Metallic Silver Ring (further enlarged per user request)
-                    Box(
-                        modifier = Modifier
-                            .size(76.dp)
-                            .shadow(8.dp, CircleShape)
-                            .clip(CircleShape)
-                            .background(Color(0xFF14161D))
-                            .border(3.5.dp, Color(0xFFE2E8F0), CircleShape),
+                            .size(290.dp)
+                            .shadow(22.dp, RoundedCornerShape(28.dp))
+                            .clip(RoundedCornerShape(28.dp))
+                            .background(Color(0xFF1E212D))
+                            .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(28.dp)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFF0B0D12))
-                                .border(1.2.dp, Color(0x70FFFFFF), CircleShape)
-                        )
+                        if (song.artworkUrl.isNotBlank()) {
+                            SmartArtworkImage(
+                                artworkUrl = song.artworkUrl,
+                                contentDescription = song.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color(0xFF1E212D)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MusicNote,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(72.dp)
+                                )
+                            }
+                        }
                     }
                 }
 

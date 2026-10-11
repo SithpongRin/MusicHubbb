@@ -382,6 +382,15 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.56
+- Added "Player Artwork Style" setting in Settings screen (`SettingsScreen`):
+  - Allows users to switch between "Vinyl Disc" (Spinning Picture Disc with center spindle hub) and "Static Card" (290.dp rounded-corner square card without rotation or scale animation, showing full unobscured album cover).
+  - Persisted user choice in `SharedPreferences` (`vinyl_style` key) across app restarts.
+  - When "Static Card" is active, the frame-by-frame rotation loop in `NowPlayingDialog` is completely suspended for zero GPU/CPU animation overhead.
+  - Kept `NowPlayingDialog` completely free of extra buttons per user preference, managing the toggle cleanly inside Settings.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 56` and `versionName = "1.0.56"` in `app/build.gradle.kts`.
+
 ### Version 1.0.55
 - Fixed favorite state desynchronization in My Mix and all browsing modals:
   - Dynamically resolved mix track items in `viewingMix` against the reactive `songsList` state so changes to favorites immediately reflect in the active dialog list.
