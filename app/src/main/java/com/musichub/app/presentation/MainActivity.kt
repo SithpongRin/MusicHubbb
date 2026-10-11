@@ -8375,8 +8375,8 @@ fun UnifiedExpandablePlayerCard(
                 .clip(RoundedCornerShape(cornerRadius))
                 .pointerInput(song.id, expandDragRangePx, collapsedBottomPadding) {
                     val touchSlop = viewConfiguration.touchSlop
-                    val dismissXThreshold = with(density) { 80.dp.toPx() }
-                    val dismissYThreshold = with(density) { 45.dp.toPx() }
+                    val dismissXThreshold = with(density) { 65.dp.toPx() }
+                    val dismissYThreshold = with(density) { 38.dp.toPx() }
                     val collapsedBottomPx = with(density) { collapsedBottomPadding.toPx() }
                     val collapsedSidePx = with(density) { 16.dp.toPx() }
 
@@ -8389,10 +8389,8 @@ fun UnifiedExpandablePlayerCard(
                         val startFingerFromBottom = (collapsedBottomPx * (1f - startP)) + (size.height - down.position.y)
                         val startFingerFromLeft = (collapsedSidePx * (1f - startP)) + down.position.x
                         var isDragging = false
-                        // 0 = undecided, 1 = expanding/collapsing morph, 2 = dismissing mini-player
+                        // 0 = undecided, 1 = collapsing Now Playing down into Mini-Player, 2 = dismissing Mini-Player
                         var gestureMode = 0
-                        var totalDragX = 0f
-                        var totalDragY = 0f
                         val pointerId = down.id
 
                         while (true) {
@@ -8403,11 +8401,11 @@ fun UnifiedExpandablePlayerCard(
                                 if (isDragging) {
                                     if (gestureMode == 1) {
                                         val finalP = expandProgress.value
-                                        val shouldExpand = if (startP < 0.5f) finalP > 0.14f else finalP > 0.82f
-                                        onExpandedChange(shouldExpand)
+                                        val shouldStayExpanded = finalP > 0.82f
+                                        onExpandedChange(shouldStayExpanded)
                                         coroutineScope.launch {
                                             expandProgress.animateTo(
-                                                targetValue = if (shouldExpand) 1f else 0f,
+                                                targetValue = if (shouldStayExpanded) 1f else 0f,
                                                 animationSpec = spring(
                                                     dampingRatio = Spring.DampingRatioNoBouncy,
                                                     stiffness = Spring.StiffnessMediumLow
@@ -8441,7 +8439,7 @@ fun UnifiedExpandablePlayerCard(
                                         }
                                     }
                                 } else {
-                                    // Simple tap when collapsed -> smoothly expand the single card
+                                    // Tap when collapsed -> smoothly expand the single card into Now Playing
                                     if (!change.isConsumed && startP < 0.5f) {
                                         onExpandedChange(true)
                                         coroutineScope.launch {
@@ -8463,24 +8461,22 @@ fun UnifiedExpandablePlayerCard(
                                 val curP = expandProgress.value.coerceIn(0f, 1f)
                                 val curFingerFromBottom = (collapsedBottomPx * (1f - curP)) + (size.height - change.position.y)
                                 val curFingerFromLeft = (collapsedSidePx * (1f - curP)) + change.position.x
-                                totalDragX = curFingerFromLeft - startFingerFromLeft
-                                totalDragY = startFingerFromBottom - curFingerFromBottom
+                                val totalDragX = curFingerFromLeft - startFingerFromLeft
+                                val totalDragY = startFingerFromBottom - curFingerFromBottom
 
                                 if (!isDragging) {
                                     if (startP < 0.5f) {
-                                        if (Math.abs(totalDragX) > touchSlop || Math.abs(totalDragY) > touchSlop) {
+                                        // Mini-Player: any drag (left, right, or down) is dedicated to dismissing Mini-Player
+                                        if (Math.abs(totalDragX) > touchSlop || totalDragY > touchSlop) {
                                             isDragging = true
+                                            gestureMode = 2
                                             change.consume()
-                                            gestureMode = if (totalDragY < 0f && Math.abs(totalDragY) >= Math.abs(totalDragX) * 0.65f) {
-                                                1 // Pull UP to expand into Now Playing
-                                            } else {
-                                                2 // Swipe DOWN / LEFT / RIGHT to dismiss Mini-Player
-                                            }
                                         }
                                     } else {
+                                        // Expanded Now Playing: vertical drag down morphs card back into Mini-Player
                                         if (Math.abs(totalDragY) > touchSlop && Math.abs(totalDragY) > Math.abs(totalDragX)) {
                                             isDragging = true
-                                            gestureMode = 1 // Pull DOWN to collapse into Mini-Player
+                                            gestureMode = 1
                                             change.consume()
                                         } else if (Math.abs(totalDragX) > touchSlop * 1.5f) {
                                             break
@@ -8494,27 +8490,15 @@ fun UnifiedExpandablePlayerCard(
                                             expandProgress.snapTo(nextP)
                                         }
                                     } else if (gestureMode == 2) {
-                                        // If user started dragging down/sideways, but then pulled above 0, switch to expanding!
-                                        if (totalDragY < -touchSlop && Math.abs(totalDragX) < dismissXThreshold * 0.5f) {
-                                            gestureMode = 1
-                                            coroutineScope.launch {
-                                                dismissOffsetX.snapTo(0f)
-                                                dismissOffsetY.snapTo(0f)
-                                                dismissAlpha.snapTo(1f)
-                                                val nextP = (-totalDragY / expandDragRangePx).coerceIn(0f, 1f)
-                                                expandProgress.snapTo(nextP)
-                                            }
-                                        } else {
-                                            val effectiveY = totalDragY.coerceAtLeast(0f)
-                                            coroutineScope.launch {
-                                                dismissOffsetX.snapTo(totalDragX)
-                                                dismissOffsetY.snapTo(effectiveY)
-                                                val progressDismiss = maxOf(
-                                                    Math.abs(totalDragX) / (dismissXThreshold * 2.2f),
-                                                    (effectiveY / (dismissYThreshold * 2.2f)).coerceAtLeast(0f)
-                                                )
-                                                dismissAlpha.snapTo((1f - progressDismiss * 0.6f).coerceIn(0.2f, 1f))
-                                            }
+                                        val effectiveY = if (totalDragY > 0f) totalDragY else (totalDragY * 0.15f).coerceAtLeast(-20f)
+                                        coroutineScope.launch {
+                                            dismissOffsetX.snapTo(totalDragX)
+                                            dismissOffsetY.snapTo(effectiveY)
+                                            val progressDismiss = maxOf(
+                                                Math.abs(totalDragX) / (dismissXThreshold * 2.2f),
+                                                (effectiveY / (dismissYThreshold * 2.2f)).coerceAtLeast(0f)
+                                            )
+                                            dismissAlpha.snapTo((1f - progressDismiss * 0.6f).coerceIn(0.2f, 1f))
                                         }
                                     }
                                 }

@@ -382,6 +382,14 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.62
+- Refined `UnifiedExpandablePlayerCard` Mini-Player Dismissal & Expansion UX:
+  - Dedicated Mini-Player swipe gestures (left, right, and down) 100% to dismissing/closing the Mini-Player (`dismissXThreshold = 65.dp`, `dismissYThreshold = 38.dp`) and removed swipe-up-to-expand on the collapsed Mini-Player so diagonal or quick horizontal swipes never conflict with closing the Mini-Player.
+  - Preserved 1-tap on the Mini-Player to smoothly morph and expand the single card into Full-Screen Now Playing (`0f -> 1f`).
+  - Preserved real-time vertical drag-down (`1f -> 0f`) on Now Playing to smoothly shrink the single card right back into the Mini-Player dock.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 62` and `versionName = "1.0.62"` in `app/build.gradle.kts`.
+
 ### Version 1.0.61
 - Single Unified Morphing Player Card (`UnifiedExpandablePlayerCard`):
   - Combined `MiniPlayerCard` and `NowPlayingDialog` into **one single continuous morphing card (`Surface`)** driven by a unified `expandProgress` (`0f` = collapsed Mini-Player docked at bottom, `1f` = expanded Full-Screen Now Playing).
