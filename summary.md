@@ -382,6 +382,25 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.72
+- Self-Learning On-Device AI Mood Engine v2 (`AiAudioMoodEngine`), Anti-Contradiction Mood Classification, AI-Powered Internet Discovery (`RecommendationEngine`), and Non-Truncated Mix Card Typography:
+  - **AI-Powered Internet Recommendations (`Recommended for You`)**:
+    - Restored Internet discovery for `Recommended for You`: the On-Device AI analyzes the user's learned 7-dimensional mood taste vector, top played/favorited artists, learned artist affinities, and recent search queries (`SearchPreferenceTracker`) to synthesize targeted discovery queries and fetch new candidate tracks from the Internet (YouTube Music/Video via `LocalMediaExtractor.searchOnlineTracks` + iTunes API).
+    - Strictly filters out all songs already in the user's local library (`existingSongs`) so `Recommended for You` only recommends new songs from the Internet.
+    - Scores and ranks every Internet candidate deterministically using `AiAudioMoodEngine.classifyMetadataProfile` (zero `.shuffled()`).
+  - **High-Precision Acoustic & Semantic Mood Classification (Zero Randomness, Zero Wrong-Mood Padding)**:
+    - Eliminated `hashCode()` fallback randomness in `AiAudioMoodEngine`.
+    - Added real MPEG-1/2 Layer III (`0xFF 0xE0`) granule `global_gain` loudness scanning, WAV 16-bit PCM RMS analysis, M4A/AAC frame contour analysis across 3 segments of the audio file (`22%`, `50%`, `74%`), and `MediaMetadataRetriever` container genre/bitrate inspection.
+    - Added strict Valence/Arousal Anti-Contradiction Polarity Vetoes (`isSongCompatibleWithMood` + logit vetoes) and Artist Mood Propagation so upbeat/happy/party/workout songs never enter `Sad & Emotional` (and sad ballads never enter `Workout & Sport` or `Party & Remix`), and eliminated fallback padding with non-matching songs.
+  - **Real On-Device Online Machine Learning**:
+    - Added `recordListeningFeedback` (rewards `>= 20s` completions, penalizes `< 10s` early skips, and adjusts per-song mood bias when a song is skipped inside a specific Mood Mix), `recordFavoriteFeedback`, and `recordSearchFeedback` with persistent weights in `SharedPreferences`.
+  - **Clean Non-Truncated Mix Cards (`Your Mix`)**:
+    - Widened `Your Mix` cards to `156.dp`, refined mood titles (`Workout & Sport`, `Party & Remix`, `Chill & Lofi`, `Sad & Emotional`, `Romantic & Love`, `Focus & Study`, `Driving & Vibe`), and simplified all card subtitles to display only the song count (`25 songs` / `25 បទ`) so neither titles nor subtitles are ever cut off.
+  - **Playlist Shuffle Button (`PlaylistDetailDialog`)**:
+    - Added the side-by-side `Play All` (`ចាក់ទាំងអស់`) and `Shuffle` (`ច្របល់`) button row inside `PlaylistDetailDialog` (matching `OfflineLibraryDialog` and `ArtistDetailDialog`) and wired `onShufflePlay` so users can shuffle-play any playlist with one tap.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 72` and `versionName = "1.0.72"` in `app/build.gradle.kts`.
+
 ### Version 1.0.71
 - 100% On-Device AI Audio Mood, Sport & Activity Mix Engine (`AiAudioMoodEngine`) & On-Device Smart Recommendations (`RecommendationEngine`):
   - Replaced legacy crash-prone `MediaCodec` / `MediaExtractor` calls in `AudioWaveformFingerprinter.kt` with a 100% crash-free On-Device AI Audio & Semantic Classifier (`AiAudioMoodEngine`) that requires zero external APIs and zero manual training.

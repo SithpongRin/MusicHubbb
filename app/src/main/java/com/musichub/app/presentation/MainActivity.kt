@@ -1573,23 +1573,22 @@ fun MusicHubApp() {
     var playCountVersion by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(songsList.size, currentSong?.id, playCountVersion, searchVersion) {
-        if (songsList.isNotEmpty()) {
-            withContext(Dispatchers.IO) {
-                try {
-                    val searchQueries = SearchPreferenceTracker.getRecentSearchQueries(context)
-                    val recs = RecommendationEngine.getPersonalizedRecommendations(
-                        context = context,
-                        existingSongs = songsList,
-                        currentSong = currentSong,
-                        searchQueries = searchQueries
-                    )
-                    withContext(Dispatchers.Main) {
-                        if (recs.isNotEmpty()) {
-                            recommendedTracks = recs
-                        }
+        withContext(Dispatchers.IO) {
+            try {
+                val searchQueries = SearchPreferenceTracker.getRecentSearchQueries(context)
+                val recs = RecommendationEngine.getPersonalizedRecommendations(
+                    context = context,
+                    existingSongs = songsList,
+                    client = OkHttpClient(),
+                    currentSong = currentSong,
+                    searchQueries = searchQueries
+                )
+                withContext(Dispatchers.Main) {
+                    if (recs.isNotEmpty()) {
+                        recommendedTracks = recs
                     }
-                } catch (_: Exception) {}
-            }
+                }
+            } catch (_: Exception) {}
         }
     }
 
@@ -2054,13 +2053,34 @@ fun MusicHubApp() {
             isPlaying = false
             return
         }
+        val activeSong = currentSong
+        val currentPos = exoPlayer.currentPosition.coerceAtLeast(0L)
+        val currentDur = if (exoPlayer.duration > 0) exoPlayer.duration else ((activeSong?.durationSec ?: 200) * 1000L)
+
         if (isAutoEnded) {
-            val currentId = currentSong?.id
+            val currentId = activeSong?.id
             if (currentId != null && countedSongSessionId != currentId) {
                 countedSongSessionId = currentId
                 PlayCountTracker.recordPlay(context, currentId)
+                AiAudioMoodEngine.recordListeningFeedback(
+                    context = context,
+                    song = activeSong,
+                    listenedMs = currentDur.coerceAtLeast(25_000L),
+                    totalDurationMs = currentDur,
+                    activeMixTitle = activeMixTitle
+                )
                 playCountVersion++
             }
+        } else if (activeSong != null && currentPos in 1_500L..9_500L) {
+            // User manually skipped the track early -> train On-Device AI with negative skip feedback
+            AiAudioMoodEngine.recordListeningFeedback(
+                context = context,
+                song = activeSong,
+                listenedMs = currentPos,
+                totalDurationMs = currentDur,
+                activeMixTitle = activeMixTitle
+            )
+            playCountVersion++
         }
         if (isAutoEnded && loopMode == LoopMode.ONE) {
             countedSongSessionId = null
@@ -2271,10 +2291,18 @@ fun MusicHubApp() {
                 playbackDurationMs = dur
                 playbackProgress = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
             }
-            val currentId = currentSong?.id
-            if (currentId != null && countedSongSessionId != currentId && pos >= 20000L) {
+            val activeTrack = currentSong
+            val currentId = activeTrack?.id
+            if (activeTrack != null && currentId != null && countedSongSessionId != currentId && pos >= 20000L) {
                 countedSongSessionId = currentId
                 PlayCountTracker.recordPlay(context, currentId)
+                AiAudioMoodEngine.recordListeningFeedback(
+                    context = context,
+                    song = activeTrack,
+                    listenedMs = pos,
+                    totalDurationMs = dur,
+                    activeMixTitle = activeMixTitle
+                )
                 playCountVersion++
             }
             delay(200)
@@ -2335,24 +2363,27 @@ fun MusicHubApp() {
 
     fun toggleFavorite(song: SongItem) {
         val targetId = song.id
+        val newFavState = !song.isFavorite
         songsList = songsList.map {
-            if (it.id == targetId) it.copy(isFavorite = !it.isFavorite) else it
+            if (it.id == targetId) it.copy(isFavorite = newFavState) else it
         }
         if (currentSong?.id == targetId) {
-            currentSong = currentSong?.copy(isFavorite = !(currentSong?.isFavorite ?: false))
+            currentSong = currentSong?.copy(isFavorite = newFavState)
         }
         if (viewingMix != null) {
             val (vTitle, vTracks) = viewingMix!!
             viewingMix = Pair(vTitle, vTracks.map {
-                if (it.id == targetId) it.copy(isFavorite = !it.isFavorite) else it
+                if (it.id == targetId) it.copy(isFavorite = newFavState) else it
             })
         }
         if (activeMixTitle != null && activeMixTracks.isNotEmpty()) {
             activeMixTracks = activeMixTracks.map {
-                if (it.id == targetId) it.copy(isFavorite = !it.isFavorite) else it
+                if (it.id == targetId) it.copy(isFavorite = newFavState) else it
             }
         }
         saveSongs(context, songsList)
+        AiAudioMoodEngine.recordFavoriteFeedback(context, song.copy(isFavorite = newFavState), newFavState)
+        playCountVersion++
     }
 
     fun dismissMiniPlayer() {
@@ -2723,6 +2754,7 @@ fun MusicHubApp() {
                         playCountVersion = playCountVersion,
                         onHeroClick = { showOfflineLibraryModal = true },
                         onRecommendedPlay = { recTrack ->
+                            AiAudioMoodEngine.recordSearchFeedback(context, "${recTrack.title} ${recTrack.artist}")
                             val localMatch = recTrack.localSongId?.let { localId ->
                                 songsList.find { it.id == localId }
                             } ?: songsList.find {
@@ -2756,6 +2788,7 @@ fun MusicHubApp() {
                             }
                         },
                         onRecommendedDownload = { recTrack ->
+                            AiAudioMoodEngine.recordSearchFeedback(context, "${recTrack.title} ${recTrack.artist}")
                             val online = OnlineSearchResult(
                                 id = "rec_" + recTrack.id,
                                 title = recTrack.title,
@@ -3326,7 +3359,21 @@ fun MusicHubApp() {
                         activeMixTitle = null
                         activeMixTracks = emptyList()
                         activeLibraryFilter = null
+                        isShuffle = false
                         currentSong = pSongs.first()
+                        isPlaying = true
+                    }
+                },
+                onShufflePlay = {
+                    val pSongs = currentP.songIds.mapNotNull { id -> songsList.find { it.id.trim() == id.trim() } }
+                    if (pSongs.isNotEmpty()) {
+                        activePlaylistId = currentP.id
+                        activeArtistName = null
+                        activeMixTitle = null
+                        activeMixTracks = emptyList()
+                        activeLibraryFilter = null
+                        isShuffle = true
+                        currentSong = pSongs.shuffled().first()
                         isPlaying = true
                     }
                 },
@@ -4265,6 +4312,7 @@ fun PlaylistDetailDialog(
     onLoopModeToggle: () -> Unit,
     onSongClick: (SongItem) -> Unit,
     onPlayAll: () -> Unit,
+    onShufflePlay: () -> Unit = {},
     onMoveSongUp: (Int) -> Unit = {},
     onMoveSongDown: (Int) -> Unit = {},
     onSaveSongIds: (List<String>) -> Unit,
@@ -4372,7 +4420,70 @@ fun PlaylistDetailDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Action Bar: Tracks count, Loop Toggle, Play All
+                // Play All & Shuffle Buttons
+                val activeBtnBg = if (isDark) Color.White else Color(0xFF14161D)
+                val activeBtnFg = if (isDark) Color(0xFF0C0E12) else Color.White
+                if (playlistSongs.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = onPlayAll,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = activeBtnBg,
+                                contentColor = activeBtnFg
+                            )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = null,
+                                tint = activeBtnFg,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (isKhmer) "ចាក់ទាំងអស់" else "Play All",
+                                color = activeBtnFg,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+
+                        Button(
+                            onClick = onShufflePlay,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isDark) Color(0xFF282F3E) else Color(0xFFE2E8F0)
+                            )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Shuffle,
+                                contentDescription = null,
+                                tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (isKhmer) "ច្របល់" else "Shuffle",
+                                color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+                }
+
+                // Action Bar: Tracks count & Loop Mode Toggle Button
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -4385,63 +4496,39 @@ fun PlaylistDetailDialog(
                         fontWeight = FontWeight.Medium
                     )
 
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    // Loop Mode Toggle Button
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { onLoopModeToggle() },
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (loopMode != LoopMode.OFF) activeBtnBg else (if (isDark) Color(0xFF1B1E25) else Color.White),
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            if (loopMode != LoopMode.OFF) activeBtnBg else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
+                        )
                     ) {
-                        // Loop Mode Toggle Button
-                        val activeBtnBg = if (isDark) Color.White else Color(0xFF14161D)
-                        val activeBtnFg = if (isDark) Color(0xFF0C0E12) else Color.White
-                        Surface(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable { onLoopModeToggle() },
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (loopMode != LoopMode.OFF) activeBtnBg else (if (isDark) Color(0xFF1B1E25) else Color.White),
-                            border = androidx.compose.foundation.BorderStroke(
-                                1.dp,
-                                if (loopMode != LoopMode.OFF) activeBtnBg else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
-                            )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
-                                    contentDescription = "Loop",
-                                    tint = if (loopMode != LoopMode.OFF) activeBtnFg else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = when (loopMode) {
-                                        LoopMode.OFF -> if (isKhmer) "បិទ Loop" else "Loop Off"
-                                        LoopMode.ALL -> if (isKhmer) "Loop ទាំងអស់" else "Loop All"
-                                        LoopMode.ONE -> if (isKhmer) "Loop 1 បទ" else "Loop 1"
-                                    },
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (loopMode != LoopMode.OFF) activeBtnFg else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B))
-                                )
-                            }
-                        }
-
-                        // Play All Button
-                        if (playlistSongs.isNotEmpty()) {
-                            Button(
-                                onClick = onPlayAll,
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = activeBtnBg,
-                                    contentColor = activeBtnFg
-                                ),
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)
-                            ) {
-                                Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null, tint = activeBtnFg, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(text = if (isKhmer) "ចាក់ទាំងអស់" else "Play All", fontSize = 12.sp, color = activeBtnFg, fontWeight = FontWeight.Bold)
-                            }
+                            Icon(
+                                imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                                contentDescription = "Loop",
+                                tint = if (loopMode != LoopMode.OFF) activeBtnFg else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = when (loopMode) {
+                                    LoopMode.OFF -> if (isKhmer) "បិទ Loop" else "Loop Off"
+                                    LoopMode.ALL -> if (isKhmer) "Loop ទាំងអស់" else "Loop All"
+                                    LoopMode.ONE -> if (isKhmer) "Loop 1 បទ" else "Loop 1"
+                                },
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (loopMode != LoopMode.OFF) activeBtnFg else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B))
+                            )
                         }
                     }
                 }
@@ -6925,11 +7012,11 @@ fun HomeScreen(
                             }
                             val isThisMixPlaying = isPlaying && (
                                 activeMixTitle == mix.title ||
-                                (mix.id == "ai_my_mix" && (activeMixTitle == "My Mix" || activeMixTitle == "ចម្រៀងចម្រុះរបស់ខ្ញុំ"))
+                                (mix.id == "ai_my_mix" && (activeMixTitle == "My Mix" || activeMixTitle == "ចម្រៀងចម្រុះខ្ញុំ" || activeMixTitle == "ចម្រៀងចម្រុះរបស់ខ្ញុំ"))
                             )
                             Surface(
                                 modifier = Modifier
-                                    .width(142.dp)
+                                    .width(156.dp)
                                     .clip(RoundedCornerShape(10.dp))
                                     .clickable {
                                         onMixClick(mix.title, mix.songs)
@@ -6941,7 +7028,7 @@ fun HomeScreen(
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(118.dp)
+                                            .height(124.dp)
                                             .clip(RoundedCornerShape(8.dp))
                                             .background(
                                                 Brush.linearGradient(
@@ -7025,21 +7112,21 @@ fun HomeScreen(
 
                                     Text(
                                         text = mix.title,
-                                        fontSize = 13.sp,
+                                        fontSize = if (mix.title.length > 16) 11.5.sp else 12.5.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = if (isThisMixPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                                         maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        softWrap = false,
+                                        overflow = TextOverflow.Visible
                                     )
 
                                     Spacer(modifier = Modifier.height(2.dp))
 
                                     Text(
-                                        text = mix.subtitle,
+                                        text = if (isKhmer) "${mix.songs.size} បទ" else "${mix.songs.size} songs",
                                         fontSize = 11.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        maxLines = 1
                                     )
                                 }
                             }
