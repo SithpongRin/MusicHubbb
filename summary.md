@@ -382,6 +382,16 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.60
+- Connected Mini-Player and Now Playing Transition & YouTube Music Soft Charcoal Dark Theme:
+  - Soft Charcoal Dark Mode Palette & Top Ambient Gradient: Updated `darkColorScheme` (`background = Color(0xFF0C0E12)`, `surface = Color(0xFF1B1E25)`, `surfaceVariant = Color(0xFF252932)`) and added a subtle vertical ambient top glow (`Color(0xFF16242D)` -> `Color(0xFF10141A)` -> `Color(0xFF0C0E12)`) across the main Scaffold and `NowPlayingDialog`, paired with harmonized `NavigationBar` (`Color(0xFF14161B)`) and `MiniPlayerCard` (`Color(0xFF20232B)` with `Color(0xFF2E323D)` border).
+  - Connected `MiniPlayerCard` and `NowPlayingDialog` Transition:
+    - Added Swipe-Up-to-Expand gesture (`currentY < -expandYThreshold`) alongside Tap-to-Expand on `MiniPlayerCard`.
+    - Hid `MiniPlayerCard` whenever `NowPlayingDialog` is open (`visible = currentSong != null && !showNowPlayingModal` in the main Scaffold as well as in `OfflineLibraryDialog`, `PlaylistDetailDialog`, and `ArtistDetailDialog`) so both players are never simultaneously visible.
+    - Animated `NowPlayingDialog` entry from the bottom Mini-Player dock (`Animatable(1350f)` -> `0f` with spring physics) and animated both swipe-down and back-press dismissals smoothly back down into the Mini-Player dock.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 60` and `versionName = "1.0.60"` in `app/build.gradle.kts`.
+
 ### Version 1.0.59
 - Symmetrical Top Header layout in `NowPlayingDialog`:
   - Arranged the 3 top header elements evenly across the full width (`Arrangement.SpaceBetween`) with Share icon on the left, "Now Playing" title centered (`16.sp`), and Equalizer icon on the right, matching the left-center-right symmetry of the song info and playback control rows below.

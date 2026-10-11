@@ -2328,15 +2328,15 @@ fun MusicHubApp() {
         darkColorScheme(
             primary = Color(0xFF818CF8),
             secondary = Color(0xFF6366F1),
-            background = Color(0xFF030303),
-            surface = Color(0xFF121216),
-            surfaceVariant = Color(0xFF1D1D24),
+            background = Color(0xFF0C0E12),
+            surface = Color(0xFF1B1E25),
+            surfaceVariant = Color(0xFF252932),
             surfaceTint = Color.Transparent,
             onPrimary = Color.White,
             onBackground = Color(0xFFFAFAFA),
             onSurface = Color(0xFFFAFAFA),
-            onSurfaceVariant = Color(0xFFA1A1AA),
-            outline = Color(0xFF272730)
+            onSurfaceVariant = Color(0xFFA6ABB6),
+            outline = Color(0xFF2F3440)
         )
     } else {
         lightColorScheme(
@@ -2360,11 +2360,17 @@ fun MusicHubApp() {
                 containerColor = MaterialTheme.colorScheme.background,
             bottomBar = {
                 Column {
-                    // Floating Mini-Player with AnimatedVisibility
+                    // Floating Mini-Player (Connected with Now Playing: hides when expanded into Now Playing, smoothly reappears when minimized)
                     AnimatedVisibility(
-                        visible = currentSong != null,
-                        enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                        exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+                        visible = currentSong != null && !showNowPlayingModal,
+                        enter = slideInVertically(
+                            initialOffsetY = { it / 2 },
+                            animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing)
+                        ) + fadeIn(tween(180)),
+                        exit = slideOutVertically(
+                            targetOffsetY = { -it / 2 },
+                            animationSpec = tween(durationMillis = 160, easing = FastOutLinearInEasing)
+                        ) + fadeOut(tween(140))
                     ) {
                         currentSong?.let { song ->
                             MiniPlayerCard(
@@ -2381,7 +2387,7 @@ fun MusicHubApp() {
 
                     // Bottom Navigation Bar
                     NavigationBar(
-                        containerColor = if (isDarkMode) Color(0xFF0A0A0D) else Color.White,
+                        containerColor = if (isDarkMode) Color(0xFF14161B) else Color.White,
                         tonalElevation = 0.dp,
                         modifier = Modifier.shadow(if (isDarkMode) 0.dp else 12.dp)
                     ) {
@@ -2407,7 +2413,7 @@ fun MusicHubApp() {
                                     selectedTextColor = if (isDarkMode) Color(0xFF818CF8) else Color(0xFF14161D),
                                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    indicatorColor = if (isDarkMode) Color(0xFF1D1D24) else MaterialTheme.colorScheme.surfaceVariant
+                                    indicatorColor = if (isDarkMode) Color(0xFF252932) else MaterialTheme.colorScheme.surfaceVariant
                                 )
                             )
                         }
@@ -2419,7 +2425,24 @@ fun MusicHubApp() {
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
-                    .background(MaterialTheme.colorScheme.background)
+                    .background(
+                        if (isDarkMode) {
+                            Brush.verticalGradient(
+                                listOf(
+                                    Color(0xFF16242D),
+                                    Color(0xFF10141A),
+                                    Color(0xFF0C0E12)
+                                )
+                            )
+                        } else {
+                            Brush.verticalGradient(
+                                listOf(
+                                    Color(0xFFF5F6F9),
+                                    Color(0xFFF5F6F9)
+                                )
+                            )
+                        }
+                    )
             ) {
                 val handlePlayOnlineTrack: (OnlineSearchResult) -> Unit = { onlineTrack ->
                     val localMatch = findMatchingLocalSong(onlineTrack, songsList)
@@ -2741,6 +2764,7 @@ fun MusicHubApp() {
                 onMiniPlayerClick = { showNowPlayingModal = true },
                 onTogglePlay = { togglePlayPause() },
                 onMiniPlayerDismiss = { dismissMiniPlayer() },
+                isNowPlayingOpen = showNowPlayingModal,
                 onDismiss = { showOfflineLibraryModal = false }
             )
         }
@@ -2803,6 +2827,7 @@ fun MusicHubApp() {
                 onMiniPlayerClick = { showNowPlayingModal = true },
                 onTogglePlay = { togglePlayPause() },
                 onMiniPlayerDismiss = { dismissMiniPlayer() },
+                isNowPlayingOpen = showNowPlayingModal,
                 onDismiss = { viewingMix = null }
             )
         }
@@ -2879,7 +2904,7 @@ fun MusicHubApp() {
             val (existing, candidate) = duplicateConflictSong!!
             AlertDialog(
                 onDismissRequest = { duplicateConflictSong = null },
-                containerColor = if (isDarkMode) Color(0xFF121216) else Color.White,
+                containerColor = if (isDarkMode) Color(0xFF1B1E25) else Color.White,
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(imageVector = Icons.Default.Info, contentDescription = null, tint = Color(0xFF6366F1))
@@ -3123,6 +3148,7 @@ fun MusicHubApp() {
                 onMiniPlayerClick = { showNowPlayingModal = true },
                 onTogglePlay = { togglePlayPause() },
                 onMiniPlayerDismiss = { dismissMiniPlayer() },
+                isNowPlayingOpen = showNowPlayingModal,
                 onDismiss = { viewingPlaylist = null }
             )
         }
@@ -3187,6 +3213,7 @@ fun MusicHubApp() {
                 onMiniPlayerClick = { showNowPlayingModal = true },
                 onTogglePlay = { togglePlayPause() },
                 onMiniPlayerDismiss = { dismissMiniPlayer() },
+                isNowPlayingOpen = showNowPlayingModal,
                 onDismiss = { viewingArtist = null }
             )
         }
@@ -3765,7 +3792,7 @@ fun SelectPlaylistSongsDialog(
                 .fillMaxSize()
                 .padding(16.dp),
             shape = RoundedCornerShape(24.dp),
-            color = if (isDark) Color(0xFF121216) else Color.White
+            color = if (isDark) Color(0xFF1B1E25) else Color.White
         ) {
             Column(
                 modifier = Modifier
@@ -3833,7 +3860,7 @@ fun SelectPlaylistSongsDialog(
                                         selectedIds + song.id
                                     }
                                 },
-                            color = if (isSelected) (if (isDark) Color(0xFF282F3E) else Color(0xFFF1F5F9)) else (if (isDark) Color(0xFF121216) else Color.White),
+                            color = if (isSelected) (if (isDark) Color(0xFF282F3E) else Color(0xFFF1F5F9)) else (if (isDark) Color(0xFF1B1E25) else Color.White),
                             border = androidx.compose.foundation.BorderStroke(
                                 1.dp,
                                 if (isSelected) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFE2E8F0))
@@ -3959,6 +3986,7 @@ fun PlaylistDetailDialog(
     onMiniPlayerClick: () -> Unit = {},
     onTogglePlay: () -> Unit = {},
     onMiniPlayerDismiss: () -> Unit = {},
+    isNowPlayingOpen: Boolean = false,
     onDismiss: () -> Unit
 ) {
     var showSelectSongsDialog by remember { mutableStateOf(false) }
@@ -3990,7 +4018,7 @@ fun PlaylistDetailDialog(
         val isDark = LocalDarkMode.current
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = if (isDark) Color(0xFF030303) else Color(0xFFF5F6F9)
+            color = if (isDark) Color(0xFF0C0E12) else Color(0xFFF5F6F9)
         ) {
             Column(
                 modifier = Modifier
@@ -4007,7 +4035,7 @@ fun PlaylistDetailDialog(
                         onClick = onDismiss,
                         modifier = Modifier
                             .size(40.dp)
-                            .background(if (isDark) Color(0xFF121216) else Color.White, CircleShape)
+                            .background(if (isDark) Color(0xFF1B1E25) else Color.White, CircleShape)
                     ) {
                         Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D))
                     }
@@ -4027,7 +4055,7 @@ fun PlaylistDetailDialog(
                         onClick = { showSelectSongsDialog = true },
                         modifier = Modifier
                             .size(40.dp)
-                            .background(if (isDark) Color(0xFF121216) else Color.White, CircleShape)
+                            .background(if (isDark) Color(0xFF1B1E25) else Color.White, CircleShape)
                     ) {
                         Icon(imageVector = Icons.Default.PlaylistAdd, contentDescription = "Select Songs", tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D))
                     }
@@ -4057,7 +4085,7 @@ fun PlaylistDetailDialog(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(20.dp))
                                 .clickable { onLoopModeToggle() },
-                            color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF121216) else Color.White),
+                            color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF1B1E25) else Color.White),
                             border = androidx.compose.foundation.BorderStroke(
                                 1.dp,
                                 if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
@@ -4145,7 +4173,7 @@ fun PlaylistDetailDialog(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(14.dp))
                                     .clickable { onSongClick(song) },
-                                color = if (currentSong?.id == song.id) (if (isDark) Color(0xFF121216) else Color.White) else Color.Transparent
+                                color = if (currentSong?.id == song.id) (if (isDark) Color(0xFF1B1E25) else Color.White) else Color.Transparent
                             ) {
                                 Row(
                                     modifier = Modifier
@@ -4338,7 +4366,7 @@ fun PlaylistDetailDialog(
                     }
                 }
 
-                if (currentSong != null) {
+                if (currentSong != null && !isNowPlayingOpen) {
                     Spacer(modifier = Modifier.height(8.dp))
                     val resolvedMiniSong = allSongs.find { it.id == currentSong.id } ?: currentSong
                     MiniPlayerCard(
@@ -4378,6 +4406,7 @@ fun ArtistDetailDialog(
     onMiniPlayerClick: () -> Unit = {},
     onTogglePlay: () -> Unit = {},
     onMiniPlayerDismiss: () -> Unit = {},
+    isNowPlayingOpen: Boolean = false,
     onDismiss: () -> Unit
 ) {
     val isDark = LocalDarkMode.current
@@ -4413,7 +4442,7 @@ fun ArtistDetailDialog(
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = if (isDark) Color(0xFF030303) else Color(0xFFF5F6F9)
+            color = if (isDark) Color(0xFF0C0E12) else Color(0xFFF5F6F9)
         ) {
             Column(
                 modifier = Modifier
@@ -4430,7 +4459,7 @@ fun ArtistDetailDialog(
                         onClick = onDismiss,
                         modifier = Modifier
                             .size(40.dp)
-                            .background(if (isDark) Color(0xFF121216) else Color.White, CircleShape)
+                            .background(if (isDark) Color(0xFF1B1E25) else Color.White, CircleShape)
                     ) {
                         Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D))
                     }
@@ -4450,7 +4479,7 @@ fun ArtistDetailDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(22.dp)),
-                    color = if (isDark) Color(0xFF121216) else Color.White,
+                    color = if (isDark) Color(0xFF1B1E25) else Color.White,
                     shadowElevation = 2.dp
                 ) {
                     Row(
@@ -4619,7 +4648,7 @@ fun ArtistDetailDialog(
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
                             .clickable { onLoopModeToggle() },
-                        color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF121216) else Color.White),
+                        color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF1B1E25) else Color.White),
                         border = androidx.compose.foundation.BorderStroke(
                             1.dp,
                             if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
@@ -4677,7 +4706,7 @@ fun ArtistDetailDialog(
                     item { Spacer(modifier = Modifier.height(12.dp)) }
                 }
 
-                if (currentSong != null) {
+                if (currentSong != null && !isNowPlayingOpen) {
                     Spacer(modifier = Modifier.height(8.dp))
                     val resolvedMiniSong = artistSongs.find { it.id == currentSong.id } ?: currentSong
                     MiniPlayerCard(
@@ -4716,6 +4745,7 @@ fun OfflineLibraryDialog(
     onMiniPlayerClick: () -> Unit = {},
     onTogglePlay: () -> Unit = {},
     onMiniPlayerDismiss: () -> Unit = {},
+    isNowPlayingOpen: Boolean = false,
     onDismiss: () -> Unit
 ) {
     val isDark = LocalDarkMode.current
@@ -4726,7 +4756,7 @@ fun OfflineLibraryDialog(
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = if (isDark) Color(0xFF030303) else Color(0xFFF5F6F9)
+            color = if (isDark) Color(0xFF0C0E12) else Color(0xFFF5F6F9)
         ) {
             Column(
                 modifier = Modifier
@@ -4743,7 +4773,7 @@ fun OfflineLibraryDialog(
                         onClick = onDismiss,
                         modifier = Modifier
                             .size(40.dp)
-                            .background(if (isDark) Color(0xFF121216) else Color.White, CircleShape)
+                            .background(if (isDark) Color(0xFF1B1E25) else Color.White, CircleShape)
                     ) {
                         Icon(
                             imageVector = Icons.Default.ArrowBack,
@@ -4840,7 +4870,7 @@ fun OfflineLibraryDialog(
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
                             .clickable { onLoopModeToggle() },
-                        color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF121216) else Color.White),
+                        color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF1B1E25) else Color.White),
                         border = androidx.compose.foundation.BorderStroke(
                             1.dp,
                             if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
@@ -4913,7 +4943,7 @@ fun OfflineLibraryDialog(
                     }
                 }
 
-                if (currentSong != null) {
+                if (currentSong != null && !isNowPlayingOpen) {
                     Spacer(modifier = Modifier.height(8.dp))
                     val resolvedMiniSong = songs.find { it.id == currentSong.id } ?: currentSong
                     MiniPlayerCard(
@@ -4994,7 +5024,7 @@ fun AnimatedEqualizer(
     }
 }
 
-// Reusable Mini-Player Card docked or floating with swipe-to-dismiss (down, right, left)
+// Reusable Mini-Player Card docked or floating with swipe-up to expand and swipe-to-dismiss (down, right, left)
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun MiniPlayerCard(
@@ -5032,6 +5062,7 @@ fun MiniPlayerCard(
                 val touchSlop = viewConfiguration.touchSlop
                 val dismissXThreshold = with(density) { 80.dp.toPx() }
                 val dismissYThreshold = with(density) { 45.dp.toPx() }
+                val expandYThreshold = with(density) { 32.dp.toPx() }
 
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
@@ -5051,7 +5082,13 @@ fun MiniPlayerCard(
                                     val currentX = animOffsetX.value
                                     val currentY = animOffsetY.value
 
-                                    if (currentY > dismissYThreshold) {
+                                    if (currentY < -expandYThreshold) {
+                                        // Swipe UP to expand into Now Playing
+                                        animOffsetX.snapTo(0f)
+                                        animOffsetY.snapTo(0f)
+                                        animAlpha.snapTo(1f)
+                                        onSongClick()
+                                    } else if (currentY > dismissYThreshold) {
                                         // Swipe DOWN to dismiss
                                         launch { animOffsetY.animateTo(currentY + 350f, tween(160)) }
                                         launch { animAlpha.animateTo(0f, tween(160)) }
@@ -5090,30 +5127,34 @@ fun MiniPlayerCard(
                             totalDragY += delta.y
 
                             if (!isDragging) {
-                                if (Math.abs(totalDragX) > touchSlop || totalDragY > touchSlop) {
+                                if (Math.abs(totalDragX) > touchSlop || Math.abs(totalDragY) > touchSlop) {
                                     isDragging = true
                                     change.consume()
                                 }
                             } else {
                                 change.consume()
-                                // Downward drag has full motion, upward drag has heavy resistance
-                                val effectiveY = if (totalDragY > 0) totalDragY else (totalDragY * 0.15f).coerceAtLeast(-25f)
+                                val effectiveY = if (totalDragY > 0) totalDragY else (totalDragY * 0.85f).coerceAtLeast(-160f)
+                                val effectiveX = if (totalDragY < -touchSlop) totalDragX * 0.2f else totalDragX
                                 coroutineScope.launch {
-                                    animOffsetX.snapTo(totalDragX)
+                                    animOffsetX.snapTo(effectiveX)
                                     animOffsetY.snapTo(effectiveY)
-                                    val progress = maxOf(
-                                        Math.abs(totalDragX) / (dismissXThreshold * 2.2f),
-                                        (effectiveY / (dismissYThreshold * 2.2f)).coerceAtLeast(0f)
-                                    )
-                                    animAlpha.snapTo((1f - progress * 0.6f).coerceIn(0.2f, 1f))
+                                    if (effectiveY >= 0f) {
+                                        val progress = maxOf(
+                                            Math.abs(effectiveX) / (dismissXThreshold * 2.2f),
+                                            (effectiveY / (dismissYThreshold * 2.2f)).coerceAtLeast(0f)
+                                        )
+                                        animAlpha.snapTo((1f - progress * 0.6f).coerceIn(0.2f, 1f))
+                                    } else {
+                                        animAlpha.snapTo(1f)
+                                    }
                                 }
                             }
                         }
                     }
                 }
             },
-        color = if (LocalDarkMode.current) Color(0xFF141418) else Color(0xFF14161D),
-        border = if (LocalDarkMode.current) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF23232B)) else null
+        color = if (LocalDarkMode.current) Color(0xFF20232B) else Color(0xFF14161D),
+        border = if (LocalDarkMode.current) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF2E323D)) else null
     ) {
         Row(
             modifier = Modifier
@@ -8234,10 +8275,21 @@ fun NowPlayingDialog(
     onShareClick: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
+    val isDark = LocalDarkMode.current
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
     val dismissThresholdPx = remember(density) { with(density) { 105.dp.toPx() } }
-    val dragOffsetY = remember { Animatable(0f) }
+    val dragOffsetY = remember { Animatable(1350f) }
+
+    LaunchedEffect(Unit) {
+        dragOffsetY.animateTo(
+            targetValue = 0f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            )
+        )
+    }
 
     val artScale by animateFloatAsState(
         targetValue = if (!isVinylStyle || isPlaying) 1.0f else 0.95f,
@@ -8257,7 +8309,15 @@ fun NowPlayingDialog(
     }
 
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            coroutineScope.launch {
+                dragOffsetY.animateTo(
+                    targetValue = 1600f,
+                    animationSpec = tween(durationMillis = 165, easing = FastOutLinearInEasing)
+                )
+                onDismiss()
+            }
+        },
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         val dragFraction = (dragOffsetY.value / (dismissThresholdPx * 3.2f)).coerceIn(0f, 1f)
@@ -8288,7 +8348,7 @@ fun NowPlayingDialog(
                             coroutineScope.launch {
                                 if (dragOffsetY.value > dismissThresholdPx) {
                                     dragOffsetY.animateTo(
-                                        targetValue = 1800f,
+                                        targetValue = 1600f,
                                         animationSpec = tween(durationMillis = 165, easing = FastOutLinearInEasing)
                                     )
                                     onDismiss()
@@ -8318,6 +8378,19 @@ fun NowPlayingDialog(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .then(
+                        if (isDark) {
+                            Modifier.background(
+                                Brush.verticalGradient(
+                                    colorStops = arrayOf(
+                                        0.0f to Color(0xFF17232C),
+                                        0.32f to Color(0xFF10141A),
+                                        1.0f to Color(0xFF0C0E12)
+                                    )
+                                )
+                            )
+                        } else Modifier
+                    )
                     .padding(horizontal = 24.dp, vertical = 18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
@@ -8687,7 +8760,7 @@ fun MediaLinkDownloadDialog(
 
     AlertDialog(
         onDismissRequest = { if (!isDownloading) onDismiss() },
-        containerColor = if (isDark) Color(0xFF121216) else Color.White,
+        containerColor = if (isDark) Color(0xFF1B1E25) else Color.White,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(imageVector = Icons.Default.Download, contentDescription = null, tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D))
@@ -9276,7 +9349,7 @@ fun EqualizerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = if (isDark) Color(0xFF121216) else Color.White,
+        containerColor = if (isDark) Color(0xFF1B1E25) else Color.White,
         title = {
             Text(
                 text = if (isKhmer) "ប្រព័ន្ធកែសំឡេង Equalizer" else "Sound Equalizer",
