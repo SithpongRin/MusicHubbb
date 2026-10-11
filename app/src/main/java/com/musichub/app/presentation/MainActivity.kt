@@ -3011,6 +3011,9 @@ fun MusicHubApp() {
             val (mixTitle, rawMixTracks) = viewingMix!!
             val mixTracks = rawMixTracks.map { track -> songsList.find { it.id == track.id } ?: track }.distinctBy { it.id }
             val resolvedCurrentSong = currentSong?.let { curr -> songsList.find { it.id == curr.id } ?: curr }
+            val isMixAiUncertain = remember(mixTitle, mixTracks, playCountVersion) {
+                AiAudioMoodEngine.isMixUncertain(context, mixTitle, mixTracks)
+            }
             OfflineLibraryDialog(
                 isKhmer = isKhmer,
                 songs = mixTracks,
@@ -3018,6 +3021,28 @@ fun MusicHubApp() {
                 isPlaying = isPlaying,
                 loopMode = loopMode,
                 customTitle = mixTitle,
+                showAiRatingBanner = isMixAiUncertain,
+                onAiRateMix = { stars ->
+                    val refinedTracks = AiAudioMoodEngine.recordMixStarRating(
+                        context = context,
+                        mixTitle = mixTitle,
+                        mixSongs = mixTracks,
+                        stars = stars
+                    )
+                    viewingMix = Pair(mixTitle, refinedTracks)
+                    if (activeMixTitle == mixTitle) {
+                        activeMixTracks = refinedTracks
+                    }
+                    playCountVersion++
+                    val msg = if (stars >= 4) {
+                        if (isKhmer) "អរគុណ! AI បានចងចាំទម្រង់ភ្លេងក្នុង Mix នេះរួចរាល់"
+                        else "Thanks! AI confirmed and learned this Mix"
+                    } else {
+                        if (isKhmer) "អរគុណ! AI បានកែតម្រូវ និងដកបទមិនច្បាស់ចេញរួចរាល់"
+                        else "Thanks! AI recalibrated and refined this Mix"
+                    }
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                },
                 onLoopModeToggle = {
                     loopMode = when (loopMode) {
                         LoopMode.OFF -> LoopMode.ALL
@@ -3599,24 +3624,63 @@ fun MusicHubApp() {
 
         // Edit Metadata Dialog
         if (editingSong != null) {
+            val targetEditSong = editingSong!!
             EditSongDialog(
                 isKhmer = isKhmer,
-                song = editingSong!!,
+                song = targetEditSong,
                 onSave = { newTitle, newArtist, newAlbum ->
-                    val cleanTit = sanitizeTitle(newTitle)
+                    val targetId = targetEditSong.id
                     val cleanArt = sanitizeArtist(newArtist)
-                    songsList = songsList.map {
-                        if (it.id == editingSong?.id) {
-                            it.copy(title = cleanTit, artist = cleanArt, album = newAlbum)
+                    val cleanTit = sanitizeTitle(newTitle, cleanArt)
+                    val cleanAlb = newAlbum.trim().ifBlank { targetEditSong.album.ifBlank { "MusicHub" } }
+
+                    val updatedList = songsList.map {
+                        if (it.id == targetId) {
+                            it.copy(title = cleanTit, artist = cleanArt, album = cleanAlb)
                         } else it
+                    }.distinctBy { it.id }
+
+                    songsList = updatedList
+
+                    if (currentSong?.id == targetId) {
+                        currentSong = currentSong?.copy(title = cleanTit, artist = cleanArt, album = cleanAlb)
                     }
-                    if (currentSong?.id == editingSong?.id) {
-                        currentSong = currentSong?.copy(title = cleanTit, artist = cleanArt, album = newAlbum)
+                    if (viewingMix != null) {
+                        val (vTitle, vTracks) = viewingMix!!
+                        viewingMix = Pair(
+                            vTitle,
+                            vTracks.map {
+                                if (it.id == targetId) it.copy(title = cleanTit, artist = cleanArt, album = cleanAlb) else it
+                            }
+                        )
                     }
-                    saveSongs(context, songsList)
-                    songsList = restoreAndSyncLibrary(context)
-                    Toast.makeText(context, if (isKhmer) "បានកែសម្រួលព័ត៌មានរួចរាល់" else "Song info updated", Toast.LENGTH_SHORT).show()
+                    if (activeMixTracks.isNotEmpty()) {
+                        activeMixTracks = activeMixTracks.map {
+                            if (it.id == targetId) it.copy(title = cleanTit, artist = cleanArt, album = cleanAlb) else it
+                        }
+                    }
+                    if (viewingArtist != null) {
+                        val (oldArtistName, _) = viewingArtist!!
+                        val remainingForOld = updatedList.filter { it.artist.trim().equals(oldArtistName.trim(), ignoreCase = true) }
+                        if (remainingForOld.isNotEmpty()) {
+                            viewingArtist = Pair(oldArtistName, remainingForOld)
+                        } else {
+                            val newArtistTracks = updatedList.filter { it.artist.trim().equals(cleanArt.trim(), ignoreCase = true) }
+                            viewingArtist = if (newArtistTracks.isNotEmpty()) Pair(cleanArt, newArtistTracks) else null
+                        }
+                    }
+
                     editingSong = null
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            saveSongs(context, updatedList)
+                        } catch (_: Throwable) {}
+                    }
+                    Toast.makeText(
+                        context,
+                        if (isKhmer) "បានកែសម្រួលព័ត៌មានរួចរាល់" else "Song info updated",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 },
                 onDismiss = { editingSong = null }
             )
@@ -5746,6 +5810,8 @@ fun OfflineLibraryDialog(
     isPlaying: Boolean,
     loopMode: LoopMode,
     customTitle: String? = null,
+    showAiRatingBanner: Boolean = false,
+    onAiRateMix: ((Int) -> Unit)? = null,
     onLoopModeToggle: () -> Unit,
     onSongClick: (SongItem) -> Unit,
     onPlayAll: () -> Unit,
@@ -5831,7 +5897,106 @@ fun OfflineLibraryDialog(
                     Box(modifier = Modifier.size(40.dp))
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // AI Uncertainty Rating Star Banner (ONLY shown when AI is uncertain about tracks in this Mix)
+                AnimatedVisibility(
+                    visible = showAiRatingBanner && onAiRateMix != null,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    var selectedStars by remember(customTitle) { mutableIntStateOf(0) }
+                    Column {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isDark) Color(0xFF1B1E25) else Color.White,
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                Color(0xFFF59E0B).copy(alpha = 0.45f)
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.AutoAwesome,
+                                        contentDescription = null,
+                                        tint = Color(0xFFF59E0B),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = if (isKhmer) "AI មិនទាន់ច្បាស់លើបទខ្លះក្នុង Mix នេះទេ"
+                                            else "AI is uncertain about some songs in this Mix",
+                                            fontSize = 12.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                                        )
+                                        Text(
+                                            text = if (isKhmer) "សូមដាក់ផ្កាយដើម្បីជួយបង្រៀន និងកែតម្រូវ AI"
+                                            else "Rate with stars to help train and recalibrate AI",
+                                            fontSize = 11.sp,
+                                            color = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceEvenly,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    for (star in 1..5) {
+                                        val isLit = star <= selectedStars
+                                        Surface(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable {
+                                                    selectedStars = star
+                                                    onAiRateMix?.invoke(star)
+                                                },
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = if (isLit) {
+                                                Color(0xFFF59E0B).copy(alpha = 0.20f)
+                                            } else {
+                                                if (isDark) Color(0xFF252934) else Color(0xFFF1F5F9)
+                                            }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (isLit) Icons.Default.Star else Icons.Default.StarBorder,
+                                                    contentDescription = "Rate $star stars",
+                                                    tint = Color(0xFFFBBF24),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                                Text(
+                                                    text = "$star",
+                                                    fontSize = 11.5.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(14.dp))
+                    }
+                }
 
                 // Play All & Shuffle Buttons
                 val primaryBtnBg = if (isDark) Color.White else Color(0xFF14161D)

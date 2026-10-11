@@ -382,6 +382,25 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.73
+- 100% Pure Audio Signal Mood Classification for `Your Mix`, Conditional AI Uncertainty Star Rating (`1-5 Stars`), 3-Signal Hybrid `Recommended for You` Engine, and Crash-Free Song Info Saving:
+  - **100% Pure Audio Signal Analysis for `Your Mix` (`AiAudioMoodEngine`)**:
+    - Rebuilt `getSongMoodProfile` (`computePureAudioProfile`) so local songs in the 7 Mood Mixes (`Workout & Sport`, `Party & Remix`, `Chill & Lofi`, `Sad & Emotional`, `Romantic & Love`, `Focus & Study`, `Driving & Vibe`) are classified strictly from the physical audio signal with zero inspection of song title or artist name.
+    - Added magic-byte audio container detection (`detectAudioContainerFormat`) for WAV PCM (`RIFF`/`WAVE`), MPEG Layer III (`0xFF 0xE0`), MP4/M4A (`ftyp`), WebM/Matroska (`0x1A 0x45 0xDF 0xA3`), and Ogg (`OggS`) across 5 sections of the song (`15%`, `32%`, `50%`, `68%`, `82%`), extracting 6 pure acoustic dimensions: RMS Energy, Dynamic Variance, Tempo/Pulse (`tempoPulse`), Percussive Transient Punch (`transientPunch`), Beat Regularity/Groove (`beatRegularity`), and Melodic Sustain Smoothness (`sustainSmooth`).
+    - Added strict pure-acoustic polarity vetoes so upbeat, bouncy, or percussive tracks never enter `Sad & Emotional`, and slow/soft tracks never enter `Workout & Sport` or `Party & Remix`.
+    - **`My Mix`**: Combines user listening history (`PlayCountTracker`, `isFavorite`, `getSongLearnedReward`) with Pure Audio Taste Vector similarity and smooth audio transition sequencing.
+    - **`Artist Mix`**: Uses `artist` name strictly to group the top artist's tracks, and selects companion tracks 100% by Pure Audio similarity (`energyScore`, `tempoScore`, mood cosine similarity).
+  - **Conditional AI Uncertainty Rating Star Card (`1-5 Stars`) in `Your Mix`**:
+    - Added `confidenceScore` tracking per song and `isMixUncertain` detection per Mix.
+    - Displays a `1-5 Star` AI Calibration card at the top of `OfflineLibraryDialog` **only when the AI is uncertain (`isMixUncertain == true`)** about borderline tracks in that Mix; when the AI is already confident, the card stays completely hidden.
+    - When the user taps a star rating (`1-5`), `recordMixStarRating` trains the on-device AI (`4-5 Stars` confirms and boosts confidence; `1-3 Stars` penalizes and immediately removes the uncertain borderline tracks from that Mix) and hides the rating card immediately.
+  - **3-Signal Hybrid Recommendation Engine (`Recommended for You`)**:
+    - Upgraded `RecommendationEngine.getPersonalizedRecommendations` and `classifyMetadataProfile` to combine all 3 signals for Internet discovery: (1) Pure Audio Taste Vector + Target Energy/Tempo + Local Artist Real Audio Profiles (`40%`), (2) Artist Name & Learned Artist Affinity (`32%`), and (3) Whole-Word Boundary (`\b`) Title/Genre/Search matching (`28%`) so substrings like `"alone"` never match inside `"Post Malone"`.
+  - **Fixed `Edit Song Info -> Save` Crash**:
+    - Removed synchronous `restoreAndSyncLibrary(context)` execution on the Main UI Thread inside `EditSongDialog` `onSave`, atomically updating `songsList`, `currentSong`, `viewingMix`, `activeMixTracks`, and `viewingArtist` in memory while persisting JSON metadata asynchronously on `Dispatchers.IO`.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 73` and `versionName = "1.0.73"` in `app/build.gradle.kts`.
+
 ### Version 1.0.72
 - Self-Learning On-Device AI Mood Engine v2 (`AiAudioMoodEngine`), Anti-Contradiction Mood Classification, AI-Powered Internet Discovery (`RecommendationEngine`), and Non-Truncated Mix Card Typography:
   - **AI-Powered Internet Recommendations (`Recommended for You`)**:

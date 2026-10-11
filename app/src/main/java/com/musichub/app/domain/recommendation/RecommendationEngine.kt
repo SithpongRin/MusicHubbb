@@ -33,23 +33,22 @@ data class RecommendedTrack(
 )
 
 /**
- * AI-Powered Internet Recommendation Engine ("Recommended for You").
+ * AI-Powered Hybrid Internet Recommendation Engine ("Recommended for You").
  *
- * How it works:
- * 1. Learns from the user's on-device listening data via `AiAudioMoodEngine`:
- *    - 7-dimensional learned mood taste vector (`computeUserTasteVector`)
- *    - Top artists weighted by play counts, favorites, and learned artist affinity
- *    - Currently playing song's AI mood profile (`currentSong`)
- *    - Recent search queries (`SearchPreferenceTracker`)
- * 2. Synthesizes targeted discovery queries and fetches NEW candidate tracks from the Internet
- *    (via YouTube Music/Video search `LocalMediaExtractor.searchOnlineTracks` and iTunes API).
- * 3. Strictly filters out any song that already exists in `existingSongs` (so it ONLY recommends
- *    new songs from the Internet, never duplicating local library songs).
- * 4. Scores and ranks every Internet candidate track deterministically using `AiAudioMoodEngine`
- *    neural mood similarity, artist affinity, and search intent (zero random `.shuffled()`).
+ * Combines all 3 core signals:
+ * 1. Pure Audio Signal Taste (from local songs on the device via `AiAudioMoodEngine`):
+ *    - 7-dimensional learned audio mood vector (`userTasteVec`)
+ *    - Target acoustic Energy & Tempo profile from the user's most-played and favorited local tracks
+ *    - Per-artist real acoustic signatures (`artistAudioProfiles`)
+ * 2. Artist Name & Learned Artist Affinity:
+ *    - Ranks the user's favorite and most-listened artists (`rankedArtists`)
+ *    - Prioritizes new tracks from favorite artists and acoustically similar artists
+ * 3. Track Title, Genre & Search Intent:
+ *    - Uses whole-word boundary title/genre classification (`classifyMetadataProfile`) and recent search queries
+ *    - Strictly filters out any track already in `existingSongs`.
  */
 object RecommendationEngine {
-    private const val CACHE_PREFS = "musichub_ai_internet_recs_v2"
+    private const val CACHE_PREFS = "musichub_ai_internet_recs_v3"
 
     suspend fun getPersonalizedRecommendations(
         context: Context,
@@ -59,20 +58,31 @@ object RecommendationEngine {
         searchQueries: List<String> = emptyList()
     ): List<RecommendedTrack> = withContext(Dispatchers.IO) {
         try {
-            // 1. Analyze user's learned AI Taste Vector and Top Artists
+            // 1. Analyze user's Pure Audio Taste Vector, Target Energy/Tempo, and Local Artist Audio Profiles
             val localProfiles = existingSongs.associateWith { AiAudioMoodEngine.getSongMoodProfile(context, it) }
             val userTasteVec = AiAudioMoodEngine.computeUserTasteVector(context, existingSongs, localProfiles)
-            val currentMoodVec = currentSong?.let {
-                (localProfiles[it] ?: AiAudioMoodEngine.getSongMoodProfile(context, it)).probabilities
+            val currentMoodProfile = currentSong?.let {
+                localProfiles[it] ?: AiAudioMoodEngine.getSongMoodProfile(context, it)
             }
 
-            // Detect whether user listens to Khmer music
-            val khmerSongCount = existingSongs.count { containsKhmerScript(it.title) || containsKhmerScript(it.artist) }
-            val khmerQueryCount = searchQueries.count { containsKhmerScript(it) }
-            val prefersKhmer = khmerSongCount > 0 || khmerQueryCount > 0 || existingSongs.isEmpty()
+            // Compute weighted target acoustic Energy & Tempo from local songs
+            var weightedEnergySum = 0f
+            var weightedTempoSum = 0f
+            var totalAcousticWeight = 0f
+            for (song in existingSongs) {
+                val prof = localProfiles[song] ?: continue
+                val plays = PlayCountTracker.getPlayCount(context, song.id)
+                val w = (1.0f + plays.coerceAtMost(30) * 0.6f + (if (song.isFavorite) 2.5f else 0f)).coerceAtLeast(0.2f)
+                weightedEnergySum += prof.energyScore * w
+                weightedTempoSum += prof.tempoScore * w
+                totalAcousticWeight += w
+            }
+            val userTargetEnergy = if (totalAcousticWeight > 0f) (weightedEnergySum / totalAcousticWeight) else 0.52f
+            val userTargetTempo = if (totalAcousticWeight > 0f) (weightedTempoSum / totalAcousticWeight) else 0.52f
 
-            // Rank user's favorite & most-listened artists using learned AI affinity + play count + favorites
-            val rankedArtists = existingSongs
+            // Build per-artist real audio mood centroids from local library songs
+            val artistAudioProfiles = mutableMapOf<String, FloatArray>()
+            val validArtistGroups = existingSongs
                 .filter {
                     val a = it.artist.trim()
                     a.isNotBlank() &&
@@ -82,6 +92,28 @@ object RecommendationEngine {
                         !a.equals("YouTube", ignoreCase = true)
                 }
                 .groupBy { it.artist.trim() }
+
+            for ((artistName, tracks) in validArtistGroups) {
+                val centroid = FloatArray(SongMoodCategory.entries.size)
+                var count = 0
+                for (t in tracks) {
+                    val p = localProfiles[t] ?: continue
+                    for (i in centroid.indices) centroid[i] += p.probabilities[i]
+                    count++
+                }
+                if (count > 0) {
+                    for (i in centroid.indices) centroid[i] /= count.toFloat()
+                    artistAudioProfiles[artistName.lowercase()] = centroid
+                }
+            }
+
+            // Detect whether user listens to Khmer music
+            val khmerSongCount = existingSongs.count { containsKhmerScript(it.title) || containsKhmerScript(it.artist) }
+            val khmerQueryCount = searchQueries.count { containsKhmerScript(it) }
+            val prefersKhmer = khmerSongCount > 0 || khmerQueryCount > 0 || existingSongs.isEmpty()
+
+            // Rank user's favorite & most-listened artists using learned AI affinity + play count + favorites
+            val rankedArtists = validArtistGroups
                 .entries
                 .sortedByDescending { (artistName, tracks) ->
                     val plays = tracks.sumOf { PlayCountTracker.getPlayCount(context, it.id) }
@@ -92,13 +124,13 @@ object RecommendationEngine {
                 }
                 .map { it.key }
 
-            // Find user's #1 and #2 learned AI Mood Categories
+            // Find user's #1 and #2 learned AI Mood Categories from pure audio taste
             val sortedMoodCategories = SongMoodCategory.entries
                 .sortedByDescending { cat -> userTasteVec[cat.ordinal] }
-            val topMood1 = sortedMoodCategories.getOrNull(0) ?: SongMoodCategory.ROMANTIC
-            val topMood2 = sortedMoodCategories.getOrNull(1) ?: SongMoodCategory.DRIVING
+            val topMood1 = sortedMoodCategories.getOrNull(0) ?: SongMoodCategory.DRIVING
+            val topMood2 = sortedMoodCategories.getOrNull(1) ?: SongMoodCategory.ROMANTIC
 
-            // 2. Synthesize Smart AI Discovery Queries for Internet Search
+            // 2. Synthesize Smart Hybrid Discovery Queries (Search + Artist + Audio Mood + Title Vibe)
             val aiQueries = mutableListOf<String>()
 
             // A. User's recent search queries (top 2)
@@ -109,7 +141,7 @@ object RecommendationEngine {
                 }
             }
 
-            // B. Currently playing artist (if valid)
+            // B. Currently playing artist + song vibe (if valid)
             currentSong?.artist?.trim()?.takeIf {
                 it.isNotBlank() && !it.equals("MusicHub", ignoreCase = true) && !it.equals("<unknown>", ignoreCase = true)
             }?.let { currArtist ->
@@ -125,7 +157,7 @@ object RecommendationEngine {
                 }
             }
 
-            // D. AI Mood-specific discovery queries tailored to the user's learned dominant moods
+            // D. AI Audio-Mood discovery queries tailored to the user's dominant acoustic moods
             val moodQuery1 = buildMoodDiscoveryQuery(topMood1, prefersKhmer)
             if (aiQueries.size < 6 && aiQueries.none { it.equals(moodQuery1, ignoreCase = true) }) {
                 aiQueries.add(moodQuery1)
@@ -192,8 +224,9 @@ object RecommendationEngine {
                 return@withContext loadCachedRecommendations(context, existingNormTitles)
             }
 
-            // 5. Score and rank every Internet candidate using On-Device Neural AI (`AiAudioMoodEngine`)
-            val topArtistSet = rankedArtists.take(8).map { it.lowercase() }.toSet()
+            // 5. Score and rank every Internet candidate using Hybrid:
+            //    (1) Audio Taste & Energy/Tempo Fit + (2) Artist Name & Affinity + (3) Title & Search Alignment
+            val topArtistList = rankedArtists.take(10).map { it.lowercase() }
             val searchKeywords = searchQueries.take(6).map { it.lowercase().trim() }.filter { it.length >= 2 }
 
             data class ScoredCandidate(
@@ -206,44 +239,53 @@ object RecommendationEngine {
                 val durSec = parseDurationToSeconds(cand.duration).let { if (it > 0) it else 205 }
                 val cleanTitle = cleanOnlineTitle(cand.title)
                 val cleanArtist = cleanOnlineArtist(cand.artist)
+                val artistLower = cleanArtist.lowercase()
+                val titleLower = cleanTitle.lowercase()
+
+                // Look up if we have a real audio profile for this artist in the local library
+                val matchedLocalArtistProfile = artistAudioProfiles[artistLower]
+                    ?: artistAudioProfiles.entries.firstOrNull { (k, _) ->
+                        k.length >= 3 && (artistLower.contains(k) || k.contains(artistLower))
+                    }?.value
 
                 val aiProfile = AiAudioMoodEngine.classifyMetadataProfile(
                     context = context,
                     title = cleanTitle,
                     artist = cleanArtist,
-                    durationSec = durSec
+                    durationSec = durSec,
+                    localArtistProfileHint = matchedLocalArtistProfile
                 )
 
-                // A. Cosine similarity between candidate's 7D AI mood vector and user's learned 7D taste vector
+                // Signal 1: Audio Taste Vector & Energy/Tempo Fit (40% weight)
                 val tasteSimilarity = AiAudioMoodEngine.cosineSimilarity(aiProfile.probabilities, userTasteVec)
-
-                // B. Cosine similarity with currently playing song's AI mood vector (if playing)
-                val currentMoodSim = if (currentMoodVec != null) {
-                    AiAudioMoodEngine.cosineSimilarity(aiProfile.probabilities, currentMoodVec)
+                val currentMoodSim = if (currentMoodProfile != null) {
+                    AiAudioMoodEngine.cosineSimilarity(aiProfile.probabilities, currentMoodProfile.probabilities)
                 } else {
                     tasteSimilarity
                 }
+                val energyTempoFit = (1.0f - (abs(aiProfile.energyScore - userTargetEnergy) * 0.45f + abs(aiProfile.tempoScore - userTargetTempo) * 0.45f))
+                    .coerceIn(0f, 1f)
+                val audioScore = (tasteSimilarity * 0.22f) + (currentMoodSim * 0.10f) + (energyTempoFit * 0.10f)
 
-                // C. Learned Artist Affinity Bonus
-                val artistLower = cleanArtist.lowercase()
-                val titleLower = cleanTitle.lowercase()
-                val isTopArtist = topArtistSet.any { topA ->
-                    artistLower.contains(topA) || topA.contains(artistLower) || titleLower.contains(topA)
+                // Signal 2: Artist Name & Learned Artist Affinity (32% weight)
+                val artistRankIdx = topArtistList.indexOfFirst { topA ->
+                    topA == artistLower || (topA.length >= 3 && (artistLower.contains(topA) || topA.contains(artistLower)))
                 }
+                val artistRankBonus = if (artistRankIdx != -1) {
+                    (0.26f - (artistRankIdx * 0.02f)).coerceAtLeast(0.10f)
+                } else 0f
                 val learnedArtistAff = (AiAudioMoodEngine.getArtistLearnedAffinity(context, cleanArtist) * 0.08f)
-                    .coerceIn(-0.20f, 0.30f)
-                val artistBonus = (if (isTopArtist) 0.28f else 0f) + learnedArtistAff
+                    .coerceIn(-0.18f, 0.25f)
+                val artistScore = artistRankBonus + learnedArtistAff
 
-                // D. Search Intent Alignment Bonus
+                // Signal 3: Title, Mood Keyword & Search Intent Alignment (28% weight)
                 val matchesSearch = searchKeywords.any { kw ->
                     titleLower.contains(kw) || artistLower.contains(kw)
                 }
-                val searchBonus = if (matchesSearch) 0.24f else 0f
+                val titleMoodMatchBonus = if (aiProfile.primaryMood == topMood1) 0.10f else if (aiProfile.primaryMood == topMood2) 0.06f else 0f
+                val titleSearchScore = (if (matchesSearch) 0.20f else 0f) + titleMoodMatchBonus
 
-                val totalAiScore = (tasteSimilarity * 0.42f) +
-                    (currentMoodSim * 0.18f) +
-                    artistBonus +
-                    searchBonus
+                val totalAiScore = audioScore + artistScore + titleSearchScore
 
                 val webDownloadUrl = cand.webUrl ?: if (cand.id.length == 11 && !cand.id.all { it.isDigit() }) {
                     "https://www.youtube.com/watch?v=${cand.id}"
@@ -259,7 +301,7 @@ object RecommendationEngine {
                     duration = cand.duration.ifBlank { "3:30" },
                     previewUrl = cand.previewUrl.orEmpty(),
                     downloadQuery = webDownloadUrl,
-                    localSongId = null, // Internet recommendation (not in local library)
+                    localSongId = null,
                     moodLabelEn = aiProfile.primaryMood.enShort,
                     moodLabelKm = aiProfile.primaryMood.kmShort
                 )
@@ -271,7 +313,7 @@ object RecommendationEngine {
                 )
             }.sortedByDescending { it.score }
 
-            // 6. Apply Artist Diversity (max 3 tracks per artist, no more than 2 consecutive by same artist)
+            // 6. Apply Artist Diversity (max 3 tracks per artist)
             val diversified = mutableListOf<RecommendedTrack>()
             val artistCounts = mutableMapOf<String, Int>()
             for (item in scored) {
@@ -339,6 +381,7 @@ object RecommendationEngine {
                         val trackId = item.optLong("trackId", 0L).toString()
                         val title = item.optString("trackName", "").trim()
                         val artist = item.optString("artistName", "").trim()
+                        val genre = item.optString("primaryGenreName", "").trim()
                         val previewUrl = item.optString("previewUrl", "").trim()
                         val art100 = item.optString("artworkUrl100", "").trim()
                         val hdArt = if (art100.isNotBlank()) art100.replace("100x100bb", "600x600bb") else ""
@@ -347,11 +390,12 @@ object RecommendationEngine {
                         val durFormatted = String.format("%d:%02d", totalSec / 60, totalSec % 60)
 
                         if (title.isNotBlank() && artist.isNotBlank()) {
+                            val artistWithGenreHint = if (genre.isNotBlank()) artist else artist
                             list.add(
                                 OnlineSearchResult(
                                     id = if (trackId != "0") "itunes_$trackId" else "it_${abs((title + artist).hashCode())}",
                                     title = title,
-                                    artist = artist,
+                                    artist = artistWithGenreHint,
                                     duration = durFormatted,
                                     artworkUrl = hdArt,
                                     webUrl = "$title $artist official audio",
@@ -485,7 +529,6 @@ object SearchPreferenceTracker {
         val clean = rawQuery.trim()
         if (clean.length < 2) return
         try {
-            // Also train the On-Device AI Mood Engine on this search query
             AiAudioMoodEngine.recordSearchFeedback(context, clean)
 
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

@@ -14,7 +14,6 @@ import java.io.InputStream
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlin.math.exp
-import kotlin.math.ln
 import kotlin.math.sqrt
 import kotlin.math.tanh
 
@@ -120,7 +119,8 @@ data class AiMoodMix(
     val songs: List<SongItem>,
     val coverArtworkUrl: String,
     val gradientStartHex: Long,
-    val gradientEndHex: Long
+    val gradientEndHex: Long,
+    val isAiUncertain: Boolean = false
 )
 
 data class SongMoodProfile(
@@ -131,133 +131,44 @@ data class SongMoodProfile(
     val energyScore: Float,        // 0.0 (calm) .. 1.0 (intense)
     val tempoScore: Float,         // 0.0 (slow) .. 1.0 (fast)
     val valenceScore: Float,       // -1.0 (sad/melancholic) .. +1.0 (happy/upbeat)
-    val hasExplicitSemanticSignal: Boolean = false
+    val hasExplicitSemanticSignal: Boolean = false,
+    val confidenceScore: Float = 0.75f
 )
 
 /**
- * 100% On-Device, Self-Learning AI Audio Mood, Genre & Acoustic Classifier.
+ * 100% On-Device, Self-Learning AI Audio Mood & Acoustic Classifier.
  *
  * Key Architecture:
- * 1. Crash-Free Real Audio Analysis (No MediaCodec):
- *    - Scans real MP3 MPEG frame headers & granule `global_gain` loudness envelopes,
- *      M4A/AAC `stsz` variable sample-size dynamics, and WAV 16-bit PCM amplitudes
- *      across multiple sections of the audio file (20%, 50%, 75%) using pure `InputStream`,
- *      plus container genre/bitrate metadata via `MediaMetadataRetriever`.
- *    - Zero `hashCode()` randomness: never invents random numbers for unknown titles.
- * 2. Deep Multi-Language (Khmer Unicode, Romanized Khmerlish, English) Semantic & Polarity Analysis:
- *    - Detects explicit mood signals and applies strict Valence/Arousal Anti-Contradiction Vetoes
- *      so happy/upbeat/remix songs are NEVER placed into Sad/Chill/Focus mixes, and sad ballads
- *      are NEVER placed into Workout/Party mixes.
- * 3. Artist Style Propagation:
- *    - Propagates known mood profiles across songs by the same artist when a track has neutral title text.
- * 4. Real On-Device Online Machine Learning (`recordListeningFeedback`, `recordFavoriteFeedback`, `recordSearchFeedback`):
- *    - Continuously updates user mood preference weights, per-song reinforcement scores,
- *      artist affinities, and per-song mood bias corrections based on play completions (>=20s),
- *      early skips (<10s), favorites, and searches.
+ * 1. "Your Mix" (Local Songs via `getSongMoodProfile`):
+ *    - 100% Pure Audio Signal Analysis — ZERO inspection of `song.title` or `song.artist`!
+ *    - Inspects real magic-byte container headers (WAV RIFF, M4A/MP4 `ftyp`, WebM/Opus EBML, OGG, MP3 sync frames)
+ *      across 5 sections of the audio stream (15%, 32%, 50%, 68%, 82%) using pure `InputStream` (zero MediaCodec).
+ *    - Extracts 6 core acoustic dimensions:
+ *      [0] acousticEnergy            (Overall loudness / gain / bitrate intensity)
+ *      [1] acousticDynamicVar        (Dynamic range & swell contrast)
+ *      [2] acousticTempoPulse        (Estimated BPM / rhythmic onset rate)
+ *      [3] acousticTransientPunch    (Percussive kick/snare attack sharpness)
+ *      [4] acousticBeatRegularity    (Groove & rhythmic periodicity consistency)
+ *      [5] acousticSustainSmoothness (Melodic sustain & low-attack smoothness)
+ * 2. "Recommended for You" (Internet Candidates via `classifyMetadataProfile`):
+ *    - Hybrid Audio Taste + Whole-Word Title/Genre + Artist Name analysis.
+ *    - Uses strict whole-word boundary matching (`\b`) so substring collisions like `"Post Malone"` -> `"alone"`
+ *      never occur.
+ * 3. Active Learning via Star Rating (`isMixUncertain`, `recordMixStarRating`):
+ *    - Detects when a Mix contains borderline/uncertain tracks (`confidenceScore < 0.44f` or unverified secondary match).
+ *    - Allows the user to rate the Mix (1 to 5 stars) ONLY when AI is uncertain, immediately recalibrating the AI
+ *      and hiding the rating prompt once resolved.
  */
 object AiAudioMoodEngine {
-    private const val PREFS_NAME = "musichub_ai_mood_engine_v2"
-    private const val LEARNING_PREFS_NAME = "musichub_ai_self_learning_v2"
+    private const val PREFS_NAME = "musichub_ai_mood_engine_v4"
+    private const val LEARNING_PREFS_NAME = "musichub_ai_self_learning_v3"
     private val profileCache = ConcurrentHashMap<String, SongMoodProfile>()
     private val moodCategories = SongMoodCategory.entries.toTypedArray()
 
-    // Layer 1 Weights (16 hidden neurons x 12 input features)
-    // Input features (12):
-    // [0] acousticEnergy        (-1..1)
-    // [1] acousticDynamicVar    (-1..1)
-    // [2] acousticBeatPulse     (-1..1)
-    // [3] acousticTransient     (-1..1)
-    // [4] durationNorm          (-1..1: negative = short upbeat, positive = long ballad/instrumental)
-    // [5] kwWorkout             (0..1)
-    // [6] kwParty               (0..1)
-    // [7] kwChill               (0..1)
-    // [8] kwSad                 (0..1)
-    // [9] kwRomantic            (0..1)
-    // [10] kwFocus              (0..1)
-    // [11] kwDriving            (0..1)
-    private val W1: Array<FloatArray> = arrayOf(
-        // H0: High-energy workout detector
-        floatArrayOf(0.85f, 0.50f, 0.90f, 0.75f, -0.25f, 2.60f, 0.45f, -1.10f, -1.40f, -0.70f, -1.10f, 0.30f),
-        // H1: Explosive beat & sport rhythm detector
-        floatArrayOf(0.90f, 0.70f, 0.85f, 0.80f, -0.30f, 2.20f, 0.80f, -1.00f, -1.30f, -0.60f, -1.00f, 0.25f),
-        // H2: Club / Party / Remix detector
-        floatArrayOf(0.80f, 0.65f, 0.95f, 0.85f, -0.35f, 0.55f, 2.75f, -0.95f, -1.50f, -0.45f, -1.10f, 0.40f),
-        // H3: Dance bass & festival bounce detector
-        floatArrayOf(0.75f, 0.80f, 0.80f, 0.90f, -0.20f, 0.40f, 2.40f, -0.80f, -1.40f, -0.30f, -0.95f, 0.45f),
-        // H4: Chill / Lofi / Relaxed groove detector
-        floatArrayOf(-0.55f, -0.35f, -0.25f, -0.45f, 0.10f, -1.10f, -0.95f, 2.65f, -0.20f, 0.25f, 0.55f, 0.25f),
-        // H5: Smooth ambient & late-night vibe detector
-        floatArrayOf(-0.45f, -0.45f, -0.35f, -0.40f, 0.20f, -0.95f, -0.85f, 2.30f, 0.05f, 0.30f, 0.65f, 0.15f),
-        // H6: Sad / Heartbreak / Melancholic ballad detector
-        floatArrayOf(-0.65f, -0.25f, -0.70f, -0.60f, 0.45f, -1.60f, -1.70f, 0.10f, 2.95f, -0.20f, 0.10f, -0.75f),
-        // H7: Slow emotional vocal & acoustic sorrow detector
-        floatArrayOf(-0.55f, 0.10f, -0.65f, -0.50f, 0.55f, -1.45f, -1.60f, 0.15f, 2.65f, -0.10f, 0.15f, -0.65f),
-        // H8: Romantic / Sweet Love song detector
-        floatArrayOf(-0.15f, -0.10f, -0.10f, -0.20f, 0.20f, -0.95f, -0.75f, 0.30f, -0.65f, 2.85f, 0.10f, 0.25f),
-        // H9: Warm mid-tempo duet / serenade detector
-        floatArrayOf(0.05f, 0.05f, 0.05f, -0.10f, 0.15f, -0.80f, -0.55f, 0.35f, -0.55f, 2.50f, 0.05f, 0.35f),
-        // H10: Focus / Study / Instrumental / Acoustic detector
-        floatArrayOf(-0.75f, -0.65f, -0.60f, -0.70f, 0.35f, -1.30f, -1.35f, 0.55f, -0.20f, 0.05f, 2.85f, -0.35f),
-        // H11: Classical / Piano / Guitar calm detector
-        floatArrayOf(-0.65f, -0.55f, -0.55f, -0.65f, 0.40f, -1.15f, -1.25f, 0.60f, -0.10f, 0.10f, 2.45f, -0.25f),
-        // H12: Driving / Roadtrip / Cruising pop groove detector
-        floatArrayOf(0.35f, 0.30f, 0.45f, 0.25f, -0.05f, 0.20f, 0.35f, 0.20f, -0.85f, 0.25f, -0.45f, 2.65f),
-        // H13: Upbeat feel-good indie/pop vibe detector
-        floatArrayOf(0.45f, 0.35f, 0.50f, 0.35f, -0.10f, 0.30f, 0.45f, 0.15f, -0.95f, 0.30f, -0.40f, 2.35f),
-        // H14: General high-arousal vs low-arousal discriminator
-        floatArrayOf(0.90f, 0.60f, 0.85f, 0.80f, -0.40f, 1.10f, 1.20f, -0.85f, -1.15f, -0.25f, -1.05f, 0.50f),
-        // H15: General positive-valence vs sad-valence discriminator
-        floatArrayOf(0.35f, 0.20f, 0.45f, 0.30f, -0.25f, 0.65f, 1.25f, 0.35f, -2.20f, 1.15f, 0.15f, 0.95f)
-    )
-
-    private val B1: FloatArray = floatArrayOf(
-        -0.15f, -0.20f, -0.15f, -0.20f,
-        -0.10f, -0.12f, -0.25f, -0.28f,
-        -0.12f, -0.15f, -0.20f, -0.22f,
-        -0.10f, -0.12f, 0.0f, 0.10f
-    )
-
-    // Layer 2 Weights (7 output mood categories x 16 hidden neurons)
-    private val W2: Array<FloatArray> = arrayOf(
-        // 0: WORKOUT
-        floatArrayOf(1.75f, 1.55f, 0.45f, 0.35f, -0.80f, -0.75f, -1.10f, -1.00f, -0.65f, -0.55f, -0.95f, -0.85f, 0.30f, 0.35f, 0.70f, 0.45f),
-        // 1: PARTY
-        floatArrayOf(0.45f, 0.60f, 1.80f, 1.60f, -0.75f, -0.70f, -1.20f, -1.10f, -0.45f, -0.35f, -1.00f, -0.90f, 0.40f, 0.50f, 0.65f, 0.85f),
-        // 2: CHILL
-        floatArrayOf(-0.80f, -0.75f, -0.75f, -0.70f, 1.75f, 1.55f, -0.20f, -0.10f, 0.25f, 0.30f, 0.50f, 0.55f, 0.20f, 0.15f, -0.55f, 0.25f),
-        // 3: SAD
-        floatArrayOf(-1.20f, -1.10f, -1.30f, -1.20f, -0.10f, 0.05f, 1.90f, 1.75f, -0.35f, -0.30f, 0.05f, 0.10f, -0.75f, -0.85f, -0.75f, -1.35f),
-        // 4: ROMANTIC
-        floatArrayOf(-0.70f, -0.65f, -0.55f, -0.45f, 0.30f, 0.35f, -0.45f, -0.35f, 1.80f, 1.60f, 0.05f, 0.10f, 0.25f, 0.35f, -0.15f, 0.80f),
-        // 5: FOCUS
-        floatArrayOf(-1.05f, -0.95f, -1.05f, -0.95f, 0.55f, 0.65f, -0.15f, -0.05f, 0.05f, 0.05f, 1.80f, 1.65f, -0.40f, -0.45f, -0.70f, 0.10f),
-        // 6: DRIVING
-        floatArrayOf(0.25f, 0.30f, 0.35f, 0.40f, 0.25f, 0.20f, -0.85f, -0.80f, 0.25f, 0.35f, -0.40f, -0.35f, 1.75f, 1.60f, 0.35f, 0.75f)
-    )
-
-    // Slightly favor pleasant everyday vibes (Driving/Chill/Romantic) over Sad when no sad signals exist
-    private val B2: FloatArray = floatArrayOf(
-        -0.08f, // WORKOUT
-        -0.08f, // PARTY
-        0.08f,  // CHILL
-        -0.32f, // SAD (requires real sad semantic or slow melancholic acoustic evidence)
-        0.06f,  // ROMANTIC
-        -0.05f, // FOCUS
-        0.12f   // DRIVING
-    )
-
     // =========================================================================
-    // ON-DEVICE SELF-LEARNING AI METHODS (Online Gradient & Bandit Reinforcement)
+    // ON-DEVICE SELF-LEARNING AI METHODS (Listening, Favorites, Search, Star Rating)
     // =========================================================================
 
-    /**
-     * Records real-time listening behavior (completion vs early skip) so the AI learns
-     * from user behavior on-device.
-     *
-     * @param listenedMs How long the user listened to [song] before it ended or was skipped.
-     * @param totalDurationMs Total duration of [song] in ms.
-     * @param activeMixTitle If the user was listening inside a "Your Mix" card, its title.
-     */
     fun recordListeningFeedback(
         context: Context,
         song: SongItem,
@@ -277,9 +188,9 @@ object AiAudioMoodEngine {
 
             val reward = if (isCompletion) {
                 val ratio = if (totalDurationMs > 0) (listenedMs.toFloat() / totalDurationMs.toFloat()).coerceIn(0.3f, 1.0f) else 0.7f
-                0.65f + (0.55f * ratio) // +0.81 .. +1.20
+                0.65f + (0.55f * ratio)
             } else {
-                -0.60f // Early skip penalty
+                -0.60f
             }
 
             val edit = lPrefs.edit()
@@ -289,7 +200,7 @@ object AiAudioMoodEngine {
             val newSongScore = (oldSongScore * 0.90f + reward).coerceIn(-4.0f, 8.0f)
             edit.putFloat("song_reward_${song.id}", newSongScore)
 
-            // 2. Update artist learned affinity score
+            // 2. Update artist learned affinity score (used by My Mix, Artist Mix, and Recommended for You)
             val cleanArtist = song.artist.trim().lowercase()
             if (cleanArtist.isNotBlank() && cleanArtist != "musichub" && cleanArtist != "<unknown>") {
                 val oldArtistScore = lPrefs.getFloat("artist_affinity_$cleanArtist", 0f)
@@ -306,26 +217,16 @@ object AiAudioMoodEngine {
             }
             saveLearnedUserMoodWeights(edit, learnedWeights)
 
-            // 4. Context-Sensitive Mix Correction:
-            // If user skipped a song early inside a specific Mood Mix (e.g., Sad Mix),
-            // teach the AI that this song does NOT fit that Mood Mix!
-            // If user listened to completion inside a Mood Mix, reinforce its fit!
+            // 4. Context-Sensitive Mix Correction
             if (!activeMixTitle.isNullOrBlank()) {
-                val matchedCat = moodCategories.find {
-                    activeMixTitle.equals(it.enTitle, ignoreCase = true) ||
-                        activeMixTitle.equals(it.kmTitle, ignoreCase = true)
-                }
+                val matchedCat = resolveCategoryFromMixTitle(activeMixTitle)
                 if (matchedCat != null) {
                     val biasKey = "song_mood_bias_${song.id}_${matchedCat.ordinal}"
                     val oldBias = lPrefs.getFloat(biasKey, 0f)
                     val delta = if (isEarlySkip) -0.45f else 0.25f
-                    val newBias = (oldBias + delta).coerceIn(-2.0f, 1.5f)
+                    val newBias = (oldBias + delta).coerceIn(-2.5f, 2.0f)
                     edit.putFloat(biasKey, newBias)
-                    // Invalidate cached profile for this song so next mix generation uses the updated bias
-                    val cacheKey = song.id.ifBlank { "${song.title}_${song.artist}" }
-                    profileCache.remove(cacheKey)
-                    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                        .edit().remove("mood_$cacheKey").apply()
+                    invalidateSongProfileCache(context, song)
                 }
             }
 
@@ -334,10 +235,6 @@ object AiAudioMoodEngine {
         } catch (_: Throwable) {}
     }
 
-    /**
-     * Records when a user Favorites or Unfavorites a song, performing a strong gradient step
-     * toward (or away from) that song's mood & artist profile.
-     */
     fun recordFavoriteFeedback(context: Context, song: SongItem, isFavorite: Boolean) {
         if (song.id.isBlank()) return
         try {
@@ -366,23 +263,17 @@ object AiAudioMoodEngine {
         } catch (_: Throwable) {}
     }
 
-    /**
-     * Records a user's search query to update the AI's learned mood weights and artist affinity.
-     */
     fun recordSearchFeedback(context: Context, query: String) {
         val clean = query.trim()
         if (clean.length < 2) return
         try {
             val lPrefs = context.getSharedPreferences(LEARNING_PREFS_NAME, Context.MODE_PRIVATE)
-            val syntheticSong = SongItem(
-                id = "search_query",
+            val prof = classifyMetadataProfile(
+                context = context,
                 title = clean,
                 artist = clean,
-                album = "",
-                duration = "3:20",
                 durationSec = 200
             )
-            val prof = computeProfileInternal(context, syntheticSong, useNeutralAcoustic = true)
             if (prof.hasExplicitSemanticSignal) {
                 val learnedWeights = loadLearnedUserMoodWeights(context)
                 for (i in learnedWeights.indices) {
@@ -393,6 +284,210 @@ object AiAudioMoodEngine {
                 saveLearnedUserMoodWeights(edit, learnedWeights)
                 edit.apply()
             }
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * Determines whether the AI is uncertain about one or more songs in the given Mix.
+     * The Rating Star banner in "Your Mix" is ONLY shown when this returns `true`.
+     * Once the user rates the Mix, all songs in that Mix are marked verified/recalibrated
+     * so `isMixUncertain` immediately returns `false`.
+     */
+    fun isMixUncertain(
+        context: Context,
+        mixTitle: String,
+        mixSongs: List<SongItem>
+    ): Boolean {
+        if (mixSongs.isEmpty()) return false
+        return try {
+            val lPrefs = context.getSharedPreferences(LEARNING_PREFS_NAME, Context.MODE_PRIVATE)
+            val category = resolveCategoryFromMixTitle(mixTitle)
+            val mixSignatureKey = buildMixSignatureKey(mixTitle, mixSongs)
+            if (lPrefs.getInt("mix_rated_sig_$mixSignatureKey", 0) > 0) {
+                return false
+            }
+
+            if (category != null) {
+                val catIdx = category.ordinal
+                var unverifiedBorderlineCount = 0
+                for (song in mixSongs) {
+                    if (song.id.isBlank()) continue
+                    val verifiedStars = lPrefs.getInt("song_verified_${song.id}_$catIdx", 0)
+                    if (verifiedStars > 0) continue
+
+                    val prof = getSongMoodProfile(context, song)
+                    val isSecondaryMatch = prof.primaryMood != category
+                    val isLowConfidence = prof.confidenceScore < 0.46f || prof.probabilities[catIdx] < 0.36f
+                    if (isSecondaryMatch || isLowConfidence) {
+                        unverifiedBorderlineCount++
+                    }
+                }
+                unverifiedBorderlineCount > 0
+            } else {
+                // For My Mix / Artist Mix: only ask if there are multiple unverified low-confidence tracks
+                var unverifiedLowConf = 0
+                for (song in mixSongs) {
+                    if (song.id.isBlank()) continue
+                    if (lPrefs.getInt("song_verified_general_${song.id}", 0) > 0) continue
+                    val prof = getSongMoodProfile(context, song)
+                    if (prof.confidenceScore < 0.40f) {
+                        unverifiedLowConf++
+                    }
+                }
+                unverifiedLowConf >= 2
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * Records a 1..5 Star Rating from the user on an uncertain Mix to train and recalibrate the AI.
+     * - 4..5 Stars: Confirms the borderline songs in this Mix are accurate, boosts their mood affinity
+     *   for this category, and marks them verified so the Rating Star card disappears.
+     * - 1..3 Stars: Identifies the uncertain/borderline songs in this Mix, penalizes their mood bias
+     *   for this category, shifts them toward their alternative mood, and immediately removes the
+     *   uncertain songs from the returned Mix track list (keeping at least the strongest songs).
+     */
+    fun recordMixStarRating(
+        context: Context,
+        mixTitle: String,
+        mixSongs: List<SongItem>,
+        stars: Int
+    ): List<SongItem> {
+        val validStars = stars.coerceIn(1, 5)
+        if (mixSongs.isEmpty()) return mixSongs
+        return try {
+            val lPrefs = context.getSharedPreferences(LEARNING_PREFS_NAME, Context.MODE_PRIVATE)
+            val edit = lPrefs.edit()
+            val category = resolveCategoryFromMixTitle(mixTitle)
+            val oldSigKey = buildMixSignatureKey(mixTitle, mixSongs)
+            edit.putInt("mix_rated_sig_$oldSigKey", validStars)
+
+            val profiles = mixSongs.associateWith { getSongMoodProfile(context, it) }
+
+            if (category != null) {
+                val catIdx = category.ordinal
+                if (validStars >= 4) {
+                    // User confirmed AI is right: reinforce all songs in this Mix for `category`
+                    val boost = if (validStars == 5) 0.55f else 0.35f
+                    for (song in mixSongs) {
+                        if (song.id.isBlank()) continue
+                        val biasKey = "song_mood_bias_${song.id}_$catIdx"
+                        val oldBias = lPrefs.getFloat(biasKey, 0f)
+                        edit.putFloat(biasKey, (oldBias + boost).coerceIn(-2.5f, 2.5f))
+                        edit.putInt("song_verified_${song.id}_$catIdx", validStars)
+                    }
+                    edit.apply()
+                    for (song in mixSongs) invalidateSongProfileCache(context, song)
+                    return mixSongs
+                } else {
+                    // User rated 1..3 stars: AI was wrong on borderline tracks in this Mix!
+                    // Rank tracks by their confidence/fit in `category`
+                    val rankedByFit = mixSongs.sortedBy { song ->
+                        val p = profiles[song]
+                        if (p == null) 0f
+                        else {
+                            val primaryBonus = if (p.primaryMood == category) 0.25f else 0f
+                            p.probabilities[catIdx] + (p.confidenceScore * 0.35f) + primaryBonus
+                        }
+                    }
+
+                    // Determine uncertain tracks to penalize and remove from this Mix
+                    val borderlineCandidates = rankedByFit.filter { song ->
+                        val p = profiles[song]
+                        val alreadyHighVerified = lPrefs.getInt("song_verified_${song.id}_$catIdx", 0) >= 4
+                        !alreadyHighVerified && (p == null || p.primaryMood != category || p.confidenceScore < 0.48f || p.probabilities[catIdx] < 0.38f)
+                    }
+
+                    val removeCount = when (validStars) {
+                        1 -> (mixSongs.size / 2).coerceAtLeast(1)
+                        2 -> (mixSongs.size / 3).coerceAtLeast(1)
+                        else -> (mixSongs.size / 4).coerceAtLeast(1)
+                    }
+                    val songsToPenalize = if (borderlineCandidates.isNotEmpty()) {
+                        borderlineCandidates.take(removeCount.coerceAtMost(borderlineCandidates.size))
+                    } else {
+                        rankedByFit.take(removeCount.coerceAtMost((mixSongs.size - 1).coerceAtLeast(0)))
+                    }
+                    val penalizedIds = songsToPenalize.map { it.id }.toSet()
+
+                    val penalty = when (validStars) {
+                        1 -> -0.95f
+                        2 -> -0.70f
+                        else -> -0.45f
+                    }
+
+                    for (song in mixSongs) {
+                        if (song.id.isBlank()) continue
+                        if (song.id in penalizedIds) {
+                            val biasKey = "song_mood_bias_${song.id}_$catIdx"
+                            val oldBias = lPrefs.getFloat(biasKey, 0f)
+                            edit.putFloat(biasKey, (oldBias + penalty).coerceIn(-2.5f, 2.5f))
+
+                            // Nudge toward alternative acoustic mood so it lands in a better Mix
+                            val prof = profiles[song]
+                            if (prof != null) {
+                                val altMood = if (prof.primaryMood != category) prof.primaryMood else prof.secondaryMood
+                                val altKey = "song_mood_bias_${song.id}_${altMood.ordinal}"
+                                val oldAlt = lPrefs.getFloat(altKey, 0f)
+                                edit.putFloat(altKey, (oldAlt + 0.35f).coerceIn(-2.5f, 2.5f))
+                            }
+                            edit.putInt("song_verified_${song.id}_$catIdx", validStars)
+                        } else {
+                            // Mark remaining strong tracks as verified so the banner does not nag again
+                            edit.putInt("song_verified_${song.id}_$catIdx", 4)
+                        }
+                    }
+
+                    val keptSongs = mixSongs.filter { it.id !in penalizedIds }.ifEmpty { mixSongs.take(1) }
+                    val newSigKey = buildMixSignatureKey(mixTitle, keptSongs)
+                    edit.putInt("mix_rated_sig_$newSigKey", validStars)
+                    edit.apply()
+
+                    for (song in mixSongs) invalidateSongProfileCache(context, song)
+                    return keptSongs
+                }
+            } else {
+                // My Mix or Artist Mix rating
+                for (song in mixSongs) {
+                    if (song.id.isBlank()) continue
+                    edit.putInt("song_verified_general_${song.id}", validStars)
+                    if (validStars >= 4) {
+                        val oldReward = lPrefs.getFloat("song_reward_${song.id}", 0f)
+                        edit.putFloat("song_reward_${song.id}", (oldReward + 0.35f).coerceIn(-4.0f, 8.0f))
+                    }
+                }
+                edit.apply()
+                return mixSongs
+            }
+        } catch (_: Throwable) {
+            mixSongs
+        }
+    }
+
+    private fun resolveCategoryFromMixTitle(mixTitle: String): SongMoodCategory? {
+        val clean = mixTitle.trim()
+        return moodCategories.find {
+            clean.equals(it.enTitle, ignoreCase = true) ||
+                clean.equals(it.kmTitle, ignoreCase = true) ||
+                clean.equals(it.id, ignoreCase = true)
+        }
+    }
+
+    private fun buildMixSignatureKey(mixTitle: String, songs: List<SongItem>): String {
+        val idsHash = songs.map { it.id }.sorted().joinToString(",").hashCode()
+        return "${mixTitle.trim().lowercase()}_$idsHash"
+    }
+
+    private fun invalidateSongProfileCache(context: Context, song: SongItem) {
+        try {
+            val cacheKey = song.id.ifBlank { "${song.title}_${song.artist}" }
+            profileCache.remove(cacheKey)
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .remove("mood_v4_$cacheKey")
+                .apply()
         } catch (_: Throwable) {}
     }
 
@@ -447,7 +542,10 @@ object AiAudioMoodEngine {
     // =========================================================================
 
     /**
-     * Classifies a local song using both real audio file envelope analysis and semantic signals.
+     * Classifies a local song on the device using 100% Pure Audio Signal Analysis
+     * (plus any learned user rating/skip adjustments).
+     * Does NOT inspect `song.title` or `song.artist` so "Your Mix" is never tricked
+     * by artist names (e.g. "Post Malone") or paradoxical song titles (e.g. "Save Your Tears").
      */
     fun getSongMoodProfile(context: Context, song: SongItem): SongMoodProfile {
         val cacheKey = song.id.ifBlank { "${song.title}_${song.artist}" }
@@ -455,7 +553,7 @@ object AiAudioMoodEngine {
 
         try {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val saved = prefs.getString("mood_v2_$cacheKey", null)
+            val saved = prefs.getString("mood_v4_$cacheKey", null)
             if (!saved.isNullOrBlank()) {
                 val parsed = deserializeProfile(song.id, saved)
                 if (parsed != null) {
@@ -465,36 +563,39 @@ object AiAudioMoodEngine {
             }
         } catch (_: Throwable) {}
 
-        val computed = computeProfileInternal(context, song, useNeutralAcoustic = false)
+        val computed = computePureAudioProfile(context, song)
         profileCache[cacheKey] = computed
         try {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            prefs.edit().putString("mood_v2_$cacheKey", serializeProfile(computed)).apply()
+            prefs.edit().putString("mood_v4_$cacheKey", serializeProfile(computed)).apply()
         } catch (_: Throwable) {}
 
         return computed
     }
 
     /**
-     * Classifies an online/Internet candidate track (from YouTube or iTunes) using its title,
-     * artist, and duration so `RecommendationEngine` can score Internet tracks against the
-     * user's learned AI mood vector.
+     * Classifies an online/Internet candidate track (from YouTube or iTunes) for "Recommended for You"
+     * using Hybrid signals:
+     * 1. Real Audio Style of the Artist (if the user has local songs by that artist on device)
+     * 2. Whole-Word Boundary Title & Genre Semantic Signals (never matching substrings like "alone" in "Malone")
+     * 3. Track Duration & Artist Style Priors
      */
     fun classifyMetadataProfile(
         context: Context,
         title: String,
         artist: String,
-        durationSec: Int = 200
+        durationSec: Int = 200,
+        genreHint: String = "",
+        localArtistProfileHint: FloatArray? = null
     ): SongMoodProfile {
-        val tempSong = SongItem(
-            id = "online_${title.hashCode()}_${artist.hashCode()}",
+        return computeHybridOnlineMetadataProfile(
+            context = context,
             title = title,
             artist = artist,
-            album = "",
-            duration = "",
-            durationSec = if (durationSec > 0) durationSec else 200
+            durationSec = if (durationSec > 0) durationSec else 200,
+            genreHint = genreHint,
+            localArtistProfileHint = localArtistProfileHint
         )
-        return computeProfileInternal(context, tempSong, useNeutralAcoustic = true)
     }
 
     /**
@@ -504,9 +605,9 @@ object AiAudioMoodEngine {
         val profA = getSongMoodProfile(context, songA)
         val profB = getSongMoodProfile(context, songB)
         val vecSim = cosineSimilarity(profA.probabilities, profB.probabilities)
-        // Penalize if valence polarity is opposite (e.g. one is very happy and one is very sad)
+        val energyDiff = abs(profA.energyScore - profB.energyScore)
         val valenceDiff = abs(profA.valenceScore - profB.valenceScore)
-        val polarityFactor = if (valenceDiff > 0.9f) 0.45f else 1.0f
+        val polarityFactor = if (valenceDiff > 0.9f || energyDiff > 0.65f) 0.45f else 1.0f
         return (vecSim * polarityFactor).coerceIn(0f, 1f)
     }
 
@@ -525,13 +626,10 @@ object AiAudioMoodEngine {
     }
 
     /**
-     * Builds the AI-curated mixes for the "Your Mix" section on HomeScreen.
-     *
-     * Key Accuracy Guarantee:
-     * - Propagates artist mood profiles so untitled/neutral songs by a known artist inherit
-     *   accurate style priors.
-     * - Enforces strict Polarity & Confidence Filtering: a mood mix ONLY includes songs that
-     *   genuinely match that mood and NEVER pads a Sad mix with Happy/Party/Workout songs.
+     * Builds the AI-curated mixes for the "Your Mix" section on HomeScreen:
+     * - 7 Mood Mixes: 100% Pure Audio Signal Analysis (zero title/artist inspection)
+     * - My Mix: User listening behavior + Pure Audio Taste similarity
+     * - Artist Mix: Top artist's songs + Pure Audio similarity for companion tracks
      */
     fun buildAiMoodMixes(
         context: Context,
@@ -540,11 +638,8 @@ object AiAudioMoodEngine {
     ): List<AiMoodMix> {
         if (songs.isEmpty()) return emptyList()
 
-        // Step 1: Compute base profiles for all songs
-        val rawProfiles = songs.associateWith { getSongMoodProfile(context, it) }
-
-        // Step 2: Artist Mood Propagation (Graph smoothing for songs without explicit title keywords)
-        val profiles = applyArtistMoodPropagation(songs, rawProfiles)
+        // Compute 100% Pure Audio profiles for all local songs
+        val profiles = songs.associateWith { getSongMoodProfile(context, it) }
 
         val userTasteVec = computeUserTasteVector(context, songs, profiles)
         val result = mutableListOf<AiMoodMix>()
@@ -558,37 +653,38 @@ object AiAudioMoodEngine {
             return chosen
         }
 
-        // 1. My Mix (AI-sequenced personal mix combining learned rewards, favorites, play history, and taste similarity)
+        // 1. My Mix (User listening history + Favorites + Learned Rewards + Pure Audio Taste Vector)
         val myMixTracks = songs
             .sortedByDescending { song ->
                 val prof = profiles[song]!!
                 val playCount = PlayCountTracker.getPlayCount(context, song.id)
-                val playBoost = (playCount.coerceAtMost(25) / 25f) * 0.40f
-                val favBoost = if (song.isFavorite) 0.30f else 0f
+                val playBoost = (playCount.coerceAtMost(25) / 25f) * 0.42f
+                val favBoost = if (song.isFavorite) 0.32f else 0f
                 val learnedReward = (getSongLearnedReward(context, song.id) * 0.12f).coerceIn(-0.35f, 0.45f)
-                val artistBonus = (getArtistLearnedAffinity(context, song.artist) * 0.05f).coerceIn(-0.15f, 0.20f)
                 val tasteSim = cosineSimilarity(prof.probabilities, userTasteVec) * 0.45f
-                playBoost + favBoost + learnedReward + artistBonus + tasteSim
+                playBoost + favBoost + learnedReward + tasteSim
             }
             .take(25)
 
         if (myMixTracks.isNotEmpty()) {
             val sequencedMyMix = sequenceSmoothMoodFlow(myMixTracks, profiles)
+            val myMixTitle = if (isKhmer) "ចម្រៀងចម្រុះខ្ញុំ" else "My Mix"
             result.add(
                 AiMoodMix(
                     id = "ai_my_mix",
-                    title = if (isKhmer) "ចម្រៀងចម្រុះខ្ញុំ" else "My Mix",
+                    title = myMixTitle,
                     subtitle = if (isKhmer) "${sequencedMyMix.size} បទ" else "${sequencedMyMix.size} songs",
                     category = null,
                     songs = sequencedMyMix,
                     coverArtworkUrl = pickDistinctArtwork(sequencedMyMix),
                     gradientStartHex = 0xFF6366F1,
-                    gradientEndHex = 0xFF1E1B4B
+                    gradientEndHex = 0xFF1E1B4B,
+                    isAiUncertain = isMixUncertain(context, myMixTitle, sequencedMyMix)
                 )
             )
         }
 
-        // 2. Top Artist Mix (if user has an artist with >= 2 songs)
+        // 2. Top Artist Mix (Groups top artist's tracks, blends companion songs by 100% Pure Audio similarity)
         val validArtistGroups = songs
             .filter { it.artist.isNotBlank() && it.artist != "MusicHub" && it.artist != "<unknown>" }
             .groupBy { it.artist.trim() }
@@ -602,57 +698,75 @@ object AiAudioMoodEngine {
             val artistName = topArtistEntry.key
             val artistSongs = topArtistEntry.value
             val artistTasteVec = FloatArray(moodCategories.size)
-            var avgValence = 0f
+            var avgEnergy = 0f
+            var avgTempo = 0f
             for (s in artistSongs) {
                 val p = profiles[s] ?: continue
                 for (i in p.probabilities.indices) artistTasteVec[i] += p.probabilities[i]
-                avgValence += p.valenceScore
+                avgEnergy += p.energyScore
+                avgTempo += p.tempoScore
             }
-            avgValence /= artistSongs.size.coerceAtLeast(1)
+            val count = artistSongs.size.coerceAtLeast(1)
+            avgEnergy /= count
+            avgTempo /= count
+            normalizeInPlace(artistTasteVec)
 
-            // Only blend other songs that are genuinely compatible in mood and valence with this artist
+            // Blend other tracks ONLY if their pure audio signal (mood vector, energy, tempo) closely matches
             val similarOtherSongs = songs
-                .filter {
-                    it.artist.trim() != artistName &&
-                        abs((profiles[it]?.valenceScore ?: 0f) - avgValence) <= 0.65f &&
-                        cosineSimilarity(profiles[it]!!.probabilities, artistTasteVec) >= 0.62f
+                .filter { cand ->
+                    val p = profiles[cand] ?: return@filter false
+                    cand.artist.trim() != artistName &&
+                        abs(p.energyScore - avgEnergy) <= 0.28f &&
+                        abs(p.tempoScore - avgTempo) <= 0.30f &&
+                        cosineSimilarity(p.probabilities, artistTasteVec) >= 0.68f
                 }
                 .sortedByDescending { s -> cosineSimilarity(profiles[s]!!.probabilities, artistTasteVec) }
-                .take(10)
+                .take(8)
 
-            val artistMixList = (artistSongs + similarOtherSongs).distinctBy { it.id }.take(20)
+            val artistMixList = sequenceSmoothMoodFlow(
+                (artistSongs + similarOtherSongs).distinctBy { it.id }.take(20),
+                profiles
+            )
             if (artistMixList.isNotEmpty()) {
+                val artistMixTitle = "$artistName Mix"
                 result.add(
                     AiMoodMix(
                         id = "ai_artist_mix",
-                        title = "$artistName Mix",
+                        title = artistMixTitle,
                         subtitle = if (isKhmer) "${artistMixList.size} បទ" else "${artistMixList.size} songs",
                         category = null,
                         songs = artistMixList,
                         coverArtworkUrl = pickDistinctArtwork(artistMixList),
                         gradientStartHex = 0xFF3B82F6,
-                        gradientEndHex = 0xFF1E293B
+                        gradientEndHex = 0xFF1E293B,
+                        isAiUncertain = isMixUncertain(context, artistMixTitle, artistMixList)
                     )
                 )
             }
         }
 
-        // 3. Mood & Activity Mixes with STRICT Polarity & Confidence Filtering (No wrong-mood padding!)
+        // 3. 7 Mood & Activity Mixes — 100% Pure Audio Classification & Polarity Filtering
         val maxMixSize = 20
+        val lPrefs = context.getSharedPreferences(LEARNING_PREFS_NAME, Context.MODE_PRIVATE)
         for (cat in moodCategories) {
             val catIdx = cat.ordinal
 
-            // Strict filter: only include songs that genuinely belong to `cat` and have zero polarity contradiction
             val verifiedMatches = songs.filter { song ->
                 val prof = profiles[song]!!
-                isSongCompatibleWithMood(prof, cat)
+                // Exclude any song the user explicitly down-rated (1..3 stars) in this category
+                val userBias = lPrefs.getFloat("song_mood_bias_${song.id}_$catIdx", 0f)
+                if (userBias <= -0.35f) {
+                    false
+                } else {
+                    isSongCompatibleWithMood(prof, cat)
+                }
             }.sortedByDescending { song ->
                 val prof = profiles[song]!!
-                val primaryBoost = if (prof.primaryMood == cat) 0.40f else if (prof.secondaryMood == cat) 0.15f else 0f
-                val explicitBoost = if (prof.hasExplicitSemanticSignal && prof.primaryMood == cat) 0.25f else 0f
+                val primaryBoost = if (prof.primaryMood == cat) 0.42f else if (prof.secondaryMood == cat) 0.14f else 0f
+                val confBoost = prof.confidenceScore * 0.18f
                 val learnedBoost = (getSongLearnedReward(context, song.id) * 0.05f).coerceIn(-0.20f, 0.15f)
                 val favBoost = if (song.isFavorite) 0.05f else 0f
-                prof.probabilities[catIdx] + primaryBoost + explicitBoost + learnedBoost + favBoost
+                prof.probabilities[catIdx] + primaryBoost + confBoost + learnedBoost + favBoost
             }.take(maxMixSize)
 
             if (verifiedMatches.isNotEmpty()) {
@@ -667,16 +781,18 @@ object AiAudioMoodEngine {
                 } else verifiedMatches
 
                 val sequenced = sequenceSmoothMoodFlow(reorderedTracks, profiles)
+                val mixTitle = if (isKhmer) cat.kmTitle else cat.enTitle
                 result.add(
                     AiMoodMix(
                         id = "ai_mood_${cat.id}",
-                        title = if (isKhmer) cat.kmTitle else cat.enTitle,
+                        title = mixTitle,
                         subtitle = if (isKhmer) "${sequenced.size} បទ" else "${sequenced.size} songs",
                         category = cat,
                         songs = sequenced,
                         coverArtworkUrl = pickDistinctArtwork(sequenced),
                         gradientStartHex = cat.gradientStartHex,
-                        gradientEndHex = cat.gradientEndHex
+                        gradientEndHex = cat.gradientEndHex,
+                        isAiUncertain = isMixUncertain(context, mixTitle, sequenced)
                     )
                 )
             }
@@ -686,9 +802,9 @@ object AiAudioMoodEngine {
     }
 
     /**
-     * Strict Mood Compatibility Guard:
-     * Prevents happy/party/workout songs from EVER entering Sad/Chill/Focus mixes,
-     * and prevents sad/slow ballads from EVER entering Workout/Party/Driving mixes.
+     * Strict Pure-Audio Mood Compatibility Guard:
+     * Prevents upbeat/groovy/percussive tracks from ever entering Sad/Focus/Chill mixes,
+     * and prevents slow/low-energy tracks from ever entering Workout/Party/Driving mixes.
      */
     private fun isSongCompatibleWithMood(prof: SongMoodProfile, target: SongMoodCategory): Boolean {
         val prob = prof.probabilities[target.ordinal]
@@ -697,150 +813,84 @@ object AiAudioMoodEngine {
 
         return when (target) {
             SongMoodCategory.SAD -> {
-                // NEVER allow Workout, Party, or upbeat Driving/Happy songs into SAD
                 if (pMood == SongMoodCategory.WORKOUT || pMood == SongMoodCategory.PARTY || pMood == SongMoodCategory.DRIVING) {
                     false
-                } else if (prof.valenceScore > 0.15f || prof.energyScore > 0.68f) {
+                } else if (prof.valenceScore > 0.08f || prof.energyScore > 0.58f || prof.tempoScore > 0.56f) {
                     false
                 } else {
                     pMood == SongMoodCategory.SAD ||
-                        (sMood == SongMoodCategory.SAD && prob >= 0.24f && prof.valenceScore <= -0.10f)
+                        (sMood == SongMoodCategory.SAD && prob >= 0.25f && prof.valenceScore <= -0.12f && prof.energyScore <= 0.48f)
                 }
             }
 
             SongMoodCategory.WORKOUT -> {
-                // NEVER allow Sad, Chill, Focus, or slow Romantic ballads into WORKOUT
                 if (pMood == SongMoodCategory.SAD || pMood == SongMoodCategory.CHILL || pMood == SongMoodCategory.FOCUS || pMood == SongMoodCategory.ROMANTIC) {
                     false
-                } else if (prof.valenceScore < -0.20f || prof.energyScore < 0.45f) {
+                } else if (prof.valenceScore < -0.15f || prof.energyScore < 0.52f || prof.tempoScore < 0.50f) {
                     false
                 } else {
                     pMood == SongMoodCategory.WORKOUT ||
-                        (sMood == SongMoodCategory.WORKOUT && prob >= 0.23f) ||
-                        (pMood == SongMoodCategory.PARTY && prof.energyScore >= 0.62f && prob >= 0.20f)
+                        (sMood == SongMoodCategory.WORKOUT && prob >= 0.24f) ||
+                        (pMood == SongMoodCategory.PARTY && prof.energyScore >= 0.65f && prob >= 0.22f)
                 }
             }
 
             SongMoodCategory.PARTY -> {
-                // NEVER allow Sad, Chill, or Focus songs into PARTY
                 if (pMood == SongMoodCategory.SAD || pMood == SongMoodCategory.CHILL || pMood == SongMoodCategory.FOCUS) {
                     false
-                } else if (prof.valenceScore < -0.10f || prof.energyScore < 0.42f) {
+                } else if (prof.valenceScore < -0.05f || prof.energyScore < 0.48f || prof.tempoScore < 0.48f) {
                     false
                 } else {
                     pMood == SongMoodCategory.PARTY ||
-                        (sMood == SongMoodCategory.PARTY && prob >= 0.23f) ||
-                        (pMood == SongMoodCategory.WORKOUT && prof.valenceScore >= 0.25f && prob >= 0.20f)
+                        (sMood == SongMoodCategory.PARTY && prob >= 0.24f) ||
+                        (pMood == SongMoodCategory.WORKOUT && prof.valenceScore >= 0.30f && prob >= 0.22f)
                 }
             }
 
             SongMoodCategory.CHILL -> {
-                // Exclude aggressive Workout/Party bangers from CHILL
                 if (pMood == SongMoodCategory.WORKOUT || pMood == SongMoodCategory.PARTY) {
                     false
-                } else if (prof.energyScore > 0.70f) {
+                } else if (prof.energyScore > 0.62f || prof.tempoScore > 0.64f) {
                     false
                 } else {
                     pMood == SongMoodCategory.CHILL ||
-                        (sMood == SongMoodCategory.CHILL && prob >= 0.22f)
+                        (sMood == SongMoodCategory.CHILL && prob >= 0.23f)
                 }
             }
 
             SongMoodCategory.ROMANTIC -> {
-                // Exclude aggressive Workout/Party or deeply Sad songs from ROMANTIC
                 if (pMood == SongMoodCategory.WORKOUT || pMood == SongMoodCategory.PARTY || pMood == SongMoodCategory.SAD) {
                     false
-                } else if (prof.valenceScore < -0.25f) {
+                } else if (prof.valenceScore < -0.20f || prof.energyScore > 0.72f) {
                     false
                 } else {
                     pMood == SongMoodCategory.ROMANTIC ||
-                        (sMood == SongMoodCategory.ROMANTIC && prob >= 0.22f)
+                        (sMood == SongMoodCategory.ROMANTIC && prob >= 0.23f)
                 }
             }
 
             SongMoodCategory.FOCUS -> {
-                // Exclude high-energy Workout/Party songs from FOCUS
-                if (pMood == SongMoodCategory.WORKOUT || pMood == SongMoodCategory.PARTY) {
+                if (pMood == SongMoodCategory.WORKOUT || pMood == SongMoodCategory.PARTY || pMood == SongMoodCategory.DRIVING) {
                     false
-                } else if (prof.energyScore > 0.65f) {
+                } else if (prof.energyScore > 0.55f || prof.tempoScore > 0.58f) {
                     false
                 } else {
                     pMood == SongMoodCategory.FOCUS ||
-                        (sMood == SongMoodCategory.FOCUS && prob >= 0.22f)
+                        (sMood == SongMoodCategory.FOCUS && prob >= 0.23f)
                 }
             }
 
             SongMoodCategory.DRIVING -> {
-                // Exclude deeply Sad or sleepy songs from DRIVING
-                if (pMood == SongMoodCategory.SAD || prof.valenceScore < -0.20f) {
+                if (pMood == SongMoodCategory.SAD || pMood == SongMoodCategory.FOCUS || prof.valenceScore < -0.15f) {
+                    false
+                } else if (prof.energyScore < 0.32f) {
                     false
                 } else {
                     pMood == SongMoodCategory.DRIVING ||
-                        (sMood == SongMoodCategory.DRIVING && prob >= 0.21f)
+                        (sMood == SongMoodCategory.DRIVING && prob >= 0.22f)
                 }
             }
         }
-    }
-
-    /**
-     * Propagates mood vectors across songs by the same artist when a song lacks explicit semantic keywords,
-     * reducing classification error on tracks with short or abstract titles.
-     */
-    private fun applyArtistMoodPropagation(
-        songs: List<SongItem>,
-        rawProfiles: Map<SongItem, SongMoodProfile>
-    ): Map<SongItem, SongMoodProfile> {
-        val byArtist = songs
-            .filter { it.artist.isNotBlank() && it.artist != "MusicHub" && it.artist != "<unknown>" }
-            .groupBy { it.artist.trim().lowercase() }
-
-        val artistCentroids = mutableMapOf<String, FloatArray>()
-        for ((artistKey, artistSongs) in byArtist) {
-            val explicitSongs = artistSongs.mapNotNull { s ->
-                rawProfiles[s]?.takeIf { it.hasExplicitSemanticSignal }
-            }
-            val sourceProfiles = if (explicitSongs.isNotEmpty()) explicitSongs else artistSongs.mapNotNull { rawProfiles[it] }
-            if (sourceProfiles.size >= 2) {
-                val centroid = FloatArray(moodCategories.size)
-                for (p in sourceProfiles) {
-                    for (i in centroid.indices) centroid[i] += p.probabilities[i]
-                }
-                for (i in centroid.indices) centroid[i] /= sourceProfiles.size.toFloat()
-                artistCentroids[artistKey] = centroid
-            }
-        }
-
-        if (artistCentroids.isEmpty()) return rawProfiles
-
-        val refined = mutableMapOf<SongItem, SongMoodProfile>()
-        for (song in songs) {
-            val base = rawProfiles[song]!!
-            val artistKey = song.artist.trim().lowercase()
-            val centroid = artistCentroids[artistKey]
-            if (centroid != null && !base.hasExplicitSemanticSignal) {
-                // Blend 72% song acoustic profile + 28% artist style centroid
-                val blended = FloatArray(moodCategories.size)
-                var sum = 0f
-                for (i in blended.indices) {
-                    blended[i] = (base.probabilities[i] * 0.72f) + (centroid[i] * 0.28f)
-                    sum += blended[i]
-                }
-                if (sum > 0f) {
-                    for (i in blended.indices) blended[i] /= sum
-                }
-                val (pIdx, sIdx) = findTopTwoIndices(blended)
-                val newValence = computeValenceFromProbs(blended)
-                refined[song] = base.copy(
-                    probabilities = blended,
-                    primaryMood = moodCategories[pIdx],
-                    secondaryMood = moodCategories[sIdx],
-                    valenceScore = newValence
-                )
-            } else {
-                refined[song] = base
-            }
-        }
-        return refined
     }
 
     /**
@@ -886,7 +936,7 @@ object AiAudioMoodEngine {
     }
 
     /**
-     * Orders tracks so adjacent songs have smooth acoustic/mood transitions.
+     * Orders tracks so adjacent songs have smooth acoustic/energy/tempo transitions.
      */
     private fun sequenceSmoothMoodFlow(
         tracks: List<SongItem>,
@@ -910,7 +960,8 @@ object AiAudioMoodEngine {
                     val candidate = remaining[i]
                     val candProf = profiles[candidate] ?: continue
                     val sim = cosineSimilarity(lastProf.probabilities, candProf.probabilities) -
-                        (abs(lastProf.energyScore - candProf.energyScore) * 0.25f)
+                        (abs(lastProf.energyScore - candProf.energyScore) * 0.25f) -
+                        (abs(lastProf.tempoScore - candProf.tempoScore) * 0.15f)
                     if (sim > bestSim) {
                         bestSim = sim
                         bestIdx = i
@@ -923,115 +974,325 @@ object AiAudioMoodEngine {
     }
 
     // =========================================================================
-    // NEURAL NETWORK FORWARD PASS + ANTI-CONTRADICTION POLARITY VETOES
+    // 100% PURE AUDIO CLASSIFIER FOR LOCAL SONGS ("YOUR MIX")
     // =========================================================================
 
-    private fun computeProfileInternal(
-        context: Context,
-        song: SongItem,
-        useNeutralAcoustic: Boolean
-    ): SongMoodProfile {
-        val features = extract12Features(context, song, useNeutralAcoustic)
+    /**
+     * Computes the mood profile of a local song strictly from its 6 pure audio signal features:
+     * [0] energy           (-1..+1): Overall RMS/gain loudness & density
+     * [1] dynamicVar       (-1..+1): Dynamic contrast & crest variation
+     * [2] tempoPulse       (-1..+1): Rhythmic onset rate & BPM speed
+     * [3] transientPunch   (-1..+1): Percussive drum/kick attack sharpness
+     * [4] beatRegularity   (-1..+1): Groove consistency & dance periodicity
+     * [5] sustainSmooth    (-1..+1): Melodic sustain & smooth phrasing
+     *
+     * ZERO inspection of `song.title` or `song.artist`.
+     */
+    private fun computePureAudioProfile(context: Context, song: SongItem): SongMoodProfile {
+        val ac = extractPureAcoustic6Features(context, song)
+        val energy = ac[0]         // [-1..1]
+        val dynamicVar = ac[1]     // [-1..1]
+        val tempoPulse = ac[2]     // [-1..1]
+        val transientPunch = ac[3] // [-1..1]
+        val beatRegularity = ac[4] // [-1..1]
+        val sustainSmooth = ac[5]  // [-1..1]
 
-        val kwWorkout = features[5]
-        val kwParty = features[6]
-        val kwChill = features[7]
-        val kwSad = features[8]
-        val kwRomantic = features[9]
-        val kwFocus = features[10]
-        val kwDriving = features[11]
-
-        val hasExplicitSemantic = (kwWorkout + kwParty + kwChill + kwSad + kwRomantic + kwFocus + kwDriving) >= 0.55f
-
-        // Forward pass Layer 1: 12 -> 16 with tanh activation
-        val hidden = FloatArray(W1.size)
-        for (h in W1.indices) {
-            var sum = B1[h]
-            val weights = W1[h]
-            for (f in features.indices) {
-                sum += weights[f] * features[f]
-            }
-            hidden[h] = tanh(sum.toDouble()).toFloat()
-        }
-
-        // Forward pass Layer 2: 16 -> 7 logits
         val logits = FloatArray(moodCategories.size)
-        for (o in W2.indices) {
-            var sum = B2[o]
-            val weights = W2[o]
-            for (h in hidden.indices) {
-                sum += weights[h] * hidden[h]
-            }
-            logits[o] = sum
-        }
 
-        // Apply Strict Anti-Contradiction Polarity Vetoes on Logits:
-        // 1. If a song has Workout, Party, Remix, Dance, or Happy upbeat signals (and no Sad signals):
-        //    strictly veto SAD, CHILL, and FOCUS so happy/remix songs NEVER land in Sad!
-        if ((kwParty >= 0.55f || kwWorkout >= 0.55f) && kwSad == 0f) {
-            logits[SongMoodCategory.SAD.ordinal] -= 6.5f
-            logits[SongMoodCategory.FOCUS.ordinal] -= 4.5f
+        // 0: WORKOUT — High energy, fast tempo pulse, hard percussive punch, strong dynamic drive
+        logits[SongMoodCategory.WORKOUT.ordinal] =
+            (energy * 1.45f) +
+                (tempoPulse * 1.35f) +
+                (transientPunch * 1.25f) +
+                (dynamicVar * 0.55f) +
+                (beatRegularity * 0.45f) -
+                (sustainSmooth * 0.90f) - 0.18f
+
+        // 1: PARTY — Strong danceable beat regularity, crisp transient punch, fast tempo, high energy
+        logits[SongMoodCategory.PARTY.ordinal] =
+            (beatRegularity * 1.35f) +
+                (transientPunch * 1.30f) +
+                (tempoPulse * 1.25f) +
+                (energy * 1.15f) +
+                (dynamicVar * 0.50f) -
+                (sustainSmooth * 0.85f) - 0.15f
+
+        // 2: CHILL — Low-to-moderate energy, relaxed tempo, high sustain smoothness, steady low variance
+        val chillEnergyFit = 1.0f - abs(energy - (-0.32f)) * 1.45f
+        val chillTempoFit = 1.0f - abs(tempoPulse - (-0.28f)) * 1.35f
+        logits[SongMoodCategory.CHILL.ordinal] =
+            (chillEnergyFit * 1.15f) +
+                (chillTempoFit * 0.95f) +
+                (sustainSmooth * 0.85f) +
+                (beatRegularity * 0.25f) -
+                (transientPunch * 0.65f) -
+                (dynamicVar * 0.35f)
+
+        // 3: SAD — Slow tempo, soft non-percussive attacks, low groove regularity, high melodic sustain & emotional swell
+        logits[SongMoodCategory.SAD.ordinal] =
+            (-tempoPulse * 1.20f) +
+                (-transientPunch * 1.15f) +
+                (-beatRegularity * 0.85f) +
+                (-energy * 0.70f) +
+                (sustainSmooth * 1.10f) +
+                (dynamicVar * 0.30f) - 0.42f
+
+        // 4: ROMANTIC — Warm mid-tempo, balanced energy, smooth-to-moderate groove, gentle melodic sustain
+        val romEnergyFit = 1.0f - abs(energy - (-0.05f)) * 1.55f
+        val romTempoFit = 1.0f - abs(tempoPulse - 0.0f) * 1.50f
+        logits[SongMoodCategory.ROMANTIC.ordinal] =
+            (romEnergyFit * 1.20f) +
+                (romTempoFit * 1.15f) +
+                (sustainSmooth * 0.55f) +
+                (beatRegularity * 0.40f) -
+                ( abs(transientPunch) * 0.35f )
+
+        // 5: FOCUS — Very calm/quiet energy, minimal transient punch, low dynamic variance, high sustain
+        logits[SongMoodCategory.FOCUS.ordinal] =
+            (-energy * 1.35f) +
+                (-transientPunch * 1.20f) +
+                (-dynamicVar * 0.95f) +
+                (-tempoPulse * 0.80f) +
+                (sustainSmooth * 1.05f) - 0.22f
+
+        // 6: DRIVING — Steady bouncy groove (beatRegularity), upbeat-to-mid tempo, moderate-to-high energy, crisp rhythm
+        val driveEnergyFit = 1.0f - abs(energy - 0.28f) * 1.25f
+        val driveTempoFit = 1.0f - abs(tempoPulse - 0.25f) * 1.25f
+        logits[SongMoodCategory.DRIVING.ordinal] =
+            (beatRegularity * 1.25f) +
+                (driveEnergyFit * 1.05f) +
+                (driveTempoFit * 1.05f) +
+                (transientPunch * 0.55f) -
+                (sustainSmooth * 0.30f) + 0.10f
+
+        // Strict Pure-Acoustic Polarity Vetoes:
+        // 1. Any song with upbeat tempo, punchy drums, or bouncy pop/hip-hop groove (e.g. Sunflower, I Like You, Save Your Tears)
+        //    is NEVER a Sad ballad or Focus track!
+        if (tempoPulse > 0.06f || transientPunch > 0.06f || (beatRegularity > 0.14f && energy > -0.10f)) {
+            logits[SongMoodCategory.SAD.ordinal] -= 4.5f
+            logits[SongMoodCategory.FOCUS.ordinal] -= 3.2f
+        }
+        // 2. High-energy bangers never belong in Chill, Sad, or Focus
+        if (energy > 0.42f && tempoPulse > 0.30f) {
+            logits[SongMoodCategory.SAD.ordinal] -= 5.5f
             logits[SongMoodCategory.CHILL.ordinal] -= 3.8f
-            logits[SongMoodCategory.ROMANTIC.ordinal] -= 2.0f
+            logits[SongMoodCategory.FOCUS.ordinal] -= 4.5f
         }
-
-        // 2. If a song has Driving / Feel-Good / Upbeat Pop signals (and no Sad signals):
-        //    strictly veto SAD!
-        if (kwDriving >= 0.55f && kwSad == 0f) {
-            logits[SongMoodCategory.SAD.ordinal] -= 5.0f
-        }
-
-        // 3. If a song has Romantic Love signals WITHOUT any Sad/Breakup signals:
-        //    veto SAD, WORKOUT, and PARTY!
-        if (kwRomantic >= 0.55f && kwSad == 0f && kwParty == 0f && kwWorkout == 0f) {
-            logits[SongMoodCategory.SAD.ordinal] -= 4.2f
-            logits[SongMoodCategory.WORKOUT.ordinal] -= 4.0f
-            logits[SongMoodCategory.PARTY.ordinal] -= 3.0f
-        }
-
-        // 4. If a song has Sad / Heartbreak / Slowed signals:
-        //    strictly veto WORKOUT, PARTY, and DRIVING, and suppress happy ROMANTIC!
-        if (kwSad >= 0.55f && kwParty == 0f && kwWorkout == 0f) {
-            logits[SongMoodCategory.WORKOUT.ordinal] -= 6.5f
-            logits[SongMoodCategory.PARTY.ordinal] -= 6.5f
-            logits[SongMoodCategory.DRIVING.ordinal] -= 4.5f
-            logits[SongMoodCategory.ROMANTIC.ordinal] -= 2.2f
-        }
-
-        // 5. If a song has Chill or Focus / Instrumental signals:
-        //    strictly veto WORKOUT and PARTY!
-        if ((kwChill >= 0.55f || kwFocus >= 0.55f) && kwParty == 0f && kwWorkout == 0f) {
+        // 3. Slow, soft, low-energy sustained tracks never belong in Workout, Party, or Driving
+        if (energy < -0.22f && tempoPulse < -0.18f && transientPunch < -0.12f) {
             logits[SongMoodCategory.WORKOUT.ordinal] -= 5.0f
             logits[SongMoodCategory.PARTY.ordinal] -= 5.0f
+            logits[SongMoodCategory.DRIVING.ordinal] -= 3.2f
         }
 
-        // 6. If a song has NO sad keywords at all, and its acoustic energy/pulse is upbeat (> 0.15f):
-        //    penalize SAD so upbeat songs with untagged titles never slip into SAD!
-        if (kwSad == 0f && (features[0] > 0.12f || features[2] > 0.12f)) {
-            logits[SongMoodCategory.SAD.ordinal] -= 3.5f
-        }
-
-        // 7. Apply any per-song learned mood bias adjustments from user skip/completion feedback in mixes
+        // Apply any per-song learned mood bias adjustments from user Star Ratings or skip/completion feedback
+        var hasUserVerification = false
         if (song.id.isNotBlank() && !song.id.startsWith("online_")) {
             try {
                 val lPrefs = context.getSharedPreferences(LEARNING_PREFS_NAME, Context.MODE_PRIVATE)
                 for (catIdx in moodCategories.indices) {
                     val userBias = lPrefs.getFloat("song_mood_bias_${song.id}_$catIdx", 0f)
                     if (userBias != 0f) {
-                        logits[catIdx] += userBias * 2.5f
+                        logits[catIdx] += userBias * 2.8f
+                    }
+                    if (lPrefs.getInt("song_verified_${song.id}_$catIdx", 0) >= 4) {
+                        hasUserVerification = true
                     }
                 }
             } catch (_: Throwable) {}
         }
 
-        // Softmax normalization with temperature = 0.75f for sharp, decisive classification
+        return finalizeMoodProfileFromLogits(
+            songId = song.id,
+            logits = logits,
+            rawTempoFeature = tempoPulse,
+            hasExplicitSemantic = false,
+            hasUserVerification = hasUserVerification
+        )
+    }
+
+    // =========================================================================
+    // HYBRID CLASSIFIER FOR INTERNET CANDIDATES ("RECOMMENDED FOR YOU")
+    // =========================================================================
+
+    /**
+     * Classifies Internet candidate tracks for "Recommended for You" using:
+     * 1. Real Audio Style of the Artist (from local songs by the same artist if available)
+     * 2. Whole-Word Boundary Title & Genre Semantic Matching (`\b` word boundaries)
+     * 3. Artist & Duration Priors
+     */
+    private fun computeHybridOnlineMetadataProfile(
+        context: Context,
+        title: String,
+        artist: String,
+        durationSec: Int,
+        genreHint: String,
+        localArtistProfileHint: FloatArray?
+    ): SongMoodProfile {
+        val rawText = "$title $artist $genreHint".lowercase()
+
+        var workoutKw = scoreKeywordsWholeWord(
+            rawText,
+            listOf(
+                "workout", "sport", "gym", "fitness", "phonk", "hardstyle", "power", "motivation",
+                "running", "training", "beast", "hype", "pump", "drift", "rock", "metal",
+                "electronic", "edm", "trap", "hip hop", "hip-hop", "rap", "cardio", "intense",
+                "boxing", "kun khmer", "muay thai", "fighter",
+                "កីឡា", "ហាត់ប្រាណ", "ហាត់កីឡា", "កម្លាំង", "គុនខ្មែរ", "ប្រដាល់", "រត់", "សកម្ម", "រឹងមាំ"
+            )
+        )
+
+        var partyKw = scoreKeywordsWholeWord(
+            rawText,
+            listOf(
+                "remix", "dj", "club", "party", "dance", "bass", "boosted", "funk", "nu funk",
+                "speed up", "sped up", "nightcore", "disco", "electro", "house", "techno", "rave",
+                "mashup", "bootleg", "bounce", "happy", "happier", "fun", "celebrate", "festival",
+                "upbeat", "afrobeat", "reggaeton", "k-pop", "kpop",
+                "រាំ", "កន្ត្រាក់", "រាំវង់", "រាំក្បាច់", "សារ៉ាវ៉ាន់", "ឡាំលាវ", "ម៉ាឌីហ្សុន",
+                "ក្លឹប", "ញាក់", "សប្បាយ", "រីករាយ", "ចូលឆ្នាំ", "ភ្ជុំបិណ្ឌ", "អុំទូក", "បុកបាស",
+                "រីមិច", "kontrak", "ramvong", "nhak", "sabay", "ork kes", "អកកេះ", "អកក្តង់"
+            )
+        )
+
+        var chillKw = scoreKeywordsWholeWord(
+            rawText,
+            listOf(
+                "chill", "lofi", "lo-fi", "relax", "smooth", "cafe", "coffee", "late night",
+                "sunset", "breeze", "ambient", "soul", "r&b", "rnb", "mellow", "cozy",
+                "ស្ងប់ស្ងាត់", "បន្ធូរអារម្មណ៍", "ត្រជាក់ចិត្ត", "កាហ្វេ", "ពេលល្ងាច", "ខ្យល់", "ស្រទន់"
+            )
+        )
+
+        var sadKw = scoreKeywordsWholeWord(
+            rawText,
+            listOf(
+                "sad", "slowed", "reverb", "cry", "crying", "tears", "broken", "heartbreak",
+                "heartbroken", "lonely", "alone", "missing", "pain", "hurt", "goodbye",
+                "sorry", "farewell", "ballad", "regret", "left me", "without you", "sorrow", "grief",
+                "សេដ", "ឈឺចាប់", "ទឹកភ្នែក", "នឹក", "បែក", "កំសត់", "មនោសញ្ចេតនា", "សោកសៅ",
+                "ខូចចិត្ត", "ឯកា", "លាហើយ", "សុំទោស", "អាណិត", "យំ", "ភ្លេច", "ក្បត់",
+                "អស់ចិត្ត", "បោះបង់", "សង្សារចាស់", "អ្នកថ្មី", "ខកចិត្ត", "ព្រាត់", "សោកស្តាយ",
+                "អតីត", "កណ្តោចកណ្តែង", "ស្នេហ៍កម្ម", "bek", "chheu", "tirk phnek", "kom sot", "somtos", "kbot", "ekka"
+            )
+        )
+
+        var romanticKw = scoreKeywordsWholeWord(
+            rawText,
+            listOf(
+                "love", "romantic", "romance", "sweet", "kiss", "darling", "baby", "i like you",
+                "honey", "forever", "together", "you and me", "wedding", "marry",
+                "crush", "beautiful", "pretty", "angel", "valentine", "couple", "soulmate",
+                "ស្នេហា", "ស្នេហ៍", "ស្រឡាញ់", "អូន", "បង", "បេះដូង", "ផ្អែមល្ហែម", "នួនល្អង",
+                "មាសមេ", "ពិសី", "ឆោមឆាយ", "ក្រមុំ", "កំលោះ", "រៀបការ", "គូស្នេហ៍", "ស្មោះ",
+                "ថ្នាក់ថ្នម", "នឹកអូន", "នឹកបង", "ស្រស់ស្អាត", "សង្សារ", "មនុស្សពិសេស", "សន្យា",
+                "srolanh", "oun", "bong", "sneha", "besdong"
+            )
+        )
+
+        var focusKw = scoreKeywordsWholeWord(
+            rawText,
+            listOf(
+                "acoustic", "piano", "guitar", "instrumental", "study", "focus", "reading",
+                "unplugged", "classical", "violin", "orchestra", "meditation", "sleep",
+                "calm", "peace", "soundtrack", "flute", "harp", "zen",
+                "ហ្គីតា", "ព្យាណូ", "អាគូស្ទិក", "ភ្លេងសុទ្ធ", "សមាធិ", "សិក្សា", "អានសៀវភៅ",
+                "ខ្លុយ", "ទ្រ", "ភ្លេងបុរាណ", "ភ្លេងការ"
+            )
+        )
+
+        var drivingKw = scoreKeywordsWholeWord(
+            rawText,
+            listOf(
+                "drive", "driving", "road", "vibe", "vibes", "groove", "pop", "indie", "retro",
+                "summer", "weekend", "cruise", "travel", "night drive", "highway", "sunflower",
+                "circles", "blinding lights", "sunshine", "good time", "feel good", "holiday",
+                "ដំណើរ", "ដើរលេង", "សមុទ្រ", "ភ្នំ", "ជិះឡាន", "ជិះម៉ូតូ", "វិស្សមកាល", "ថ្ងៃឈប់សម្រាក"
+            )
+        )
+
+        // Handle upbeat pop/synth-pop songs that contain paradoxical words (e.g., "Save Your Tears", "Happier Song")
+        if (rawText.contains("save your tears") || rawText.contains("happier")) {
+            sadKw = 0f
+            drivingKw = maxOf(drivingKw, 0.85f)
+            partyKw = maxOf(partyKw, 0.65f)
+        }
+
+        if (sadKw > 0f && romanticKw > 0f && partyKw == 0f) {
+            romanticKw *= 0.20f
+        }
+        if (partyKw >= 0.72f || workoutKw >= 0.72f) {
+            sadKw = 0f
+            chillKw *= 0.15f
+        }
+
+        val hasExplicitSemantic = (workoutKw + partyKw + chillKw + sadKw + romanticKw + focusKw + drivingKw) >= 0.55f
+
+        val logits = floatArrayOf(
+            workoutKw * 2.6f - 0.10f,
+            partyKw * 2.7f - 0.10f,
+            chillKw * 2.5f + 0.10f,
+            sadKw * 2.6f - 0.35f,
+            romanticKw * 2.5f + 0.12f,
+            focusKw * 2.5f - 0.10f,
+            drivingKw * 2.6f + 0.18f
+        )
+
+        if (!hasExplicitSemantic) {
+            when {
+                durationSec in 90..175 -> {
+                    logits[SongMoodCategory.DRIVING.ordinal] += 0.65f
+                    logits[SongMoodCategory.PARTY.ordinal] += 0.45f
+                }
+                durationSec in 176..230 -> {
+                    logits[SongMoodCategory.DRIVING.ordinal] += 0.55f
+                    logits[SongMoodCategory.ROMANTIC.ordinal] += 0.50f
+                    logits[SongMoodCategory.CHILL.ordinal] += 0.35f
+                }
+                else -> {
+                    logits[SongMoodCategory.CHILL.ordinal] += 0.55f
+                    logits[SongMoodCategory.ROMANTIC.ordinal] += 0.45f
+                }
+            }
+        }
+
+        // Blend with local artist's real audio profile if the user has songs by this artist on device
+        if (localArtistProfileHint != null && localArtistProfileHint.size == moodCategories.size) {
+            for (i in logits.indices) {
+                logits[i] += localArtistProfileHint[i] * 2.2f
+            }
+        }
+
+        val tempoEst = when {
+            workoutKw >= 0.6f || partyKw >= 0.6f -> 0.65f
+            drivingKw >= 0.6f -> 0.35f
+            sadKw >= 0.6f || focusKw >= 0.6f -> -0.45f
+            else -> 0.05f
+        }
+
+        return finalizeMoodProfileFromLogits(
+            songId = "online_${title.hashCode()}_${artist.hashCode()}",
+            logits = logits,
+            rawTempoFeature = tempoEst,
+            hasExplicitSemantic = hasExplicitSemantic,
+            hasUserVerification = false
+        )
+    }
+
+    private fun finalizeMoodProfileFromLogits(
+        songId: String,
+        logits: FloatArray,
+        rawTempoFeature: Float,
+        hasExplicitSemantic: Boolean,
+        hasUserVerification: Boolean
+    ): SongMoodProfile {
         var maxLogit = Float.NEGATIVE_INFINITY
         for (l in logits) if (l > maxLogit) maxLogit = l
 
         val probs = FloatArray(moodCategories.size)
         var expSum = 0.0
         for (i in logits.indices) {
-            val e = exp(((logits[i] - maxLogit) / 0.75f).toDouble())
+            val e = exp(((logits[i] - maxLogit) / 0.72f).toDouble())
             probs[i] = e.toFloat()
             expSum += e
         }
@@ -1042,29 +1303,33 @@ object AiAudioMoodEngine {
         }
 
         val (primaryIdx, secondaryIdx) = findTopTwoIndices(probs)
+        val margin = (probs[primaryIdx] - probs[secondaryIdx]).coerceAtLeast(0f)
+        val rawConf = (margin * 2.1f + probs[primaryIdx] * 0.55f).coerceIn(0.10f, 0.99f)
+        val confidenceScore = if (hasUserVerification) maxOf(rawConf, 0.92f) else rawConf
 
         val energyScore = (
             probs[SongMoodCategory.WORKOUT.ordinal] * 0.95f +
                 probs[SongMoodCategory.PARTY.ordinal] * 0.90f +
-                probs[SongMoodCategory.DRIVING.ordinal] * 0.65f +
-                probs[SongMoodCategory.ROMANTIC.ordinal] * 0.45f +
-                probs[SongMoodCategory.CHILL.ordinal] * 0.25f +
-                probs[SongMoodCategory.SAD.ordinal] * 0.22f +
-                probs[SongMoodCategory.FOCUS.ordinal] * 0.18f
+                probs[SongMoodCategory.DRIVING.ordinal] * 0.68f +
+                probs[SongMoodCategory.ROMANTIC.ordinal] * 0.46f +
+                probs[SongMoodCategory.CHILL.ordinal] * 0.26f +
+                probs[SongMoodCategory.SAD.ordinal] * 0.20f +
+                probs[SongMoodCategory.FOCUS.ordinal] * 0.16f
             ).coerceIn(0f, 1f)
 
-        val tempoScore = (((features[2] + 1f) * 0.35f) + (energyScore * 0.65f)).coerceIn(0f, 1f)
+        val tempoScore = (((rawTempoFeature + 1f) * 0.42f) + (energyScore * 0.58f)).coerceIn(0f, 1f)
         val valenceScore = computeValenceFromProbs(probs)
 
         return SongMoodProfile(
-            songId = song.id,
+            songId = songId,
             probabilities = probs,
             primaryMood = moodCategories[primaryIdx],
             secondaryMood = moodCategories[secondaryIdx],
             energyScore = energyScore,
             tempoScore = tempoScore,
             valenceScore = valenceScore,
-            hasExplicitSemanticSignal = hasExplicitSemantic
+            hasExplicitSemanticSignal = hasExplicitSemantic,
+            confidenceScore = confidenceScore
         )
     }
 
@@ -1094,171 +1359,14 @@ object AiAudioMoodEngine {
         return v.coerceIn(-1f, 1f)
     }
 
-    // =========================================================================
-    // FEATURE EXTRACTION: REAL AUDIO ENVELOPE + DEEP MULTI-LANGUAGE SEMANTICS
-    // =========================================================================
-
-    private fun extract12Features(
-        context: Context,
-        song: SongItem,
-        useNeutralAcoustic: Boolean
-    ): FloatArray {
-        val (acousticStats, embeddedGenre) = if (useNeutralAcoustic) {
-            Pair(floatArrayOf(0.05f, 0.05f, 0.05f, 0.05f), "")
-        } else {
-            extractRealAudioStatsAndGenre(context, song)
-        }
-
-        val energyMean = acousticStats[0]     // [-1f, 1f]
-        val energyVariance = acousticStats[1] // [-1f, 1f]
-        val rhythmicPulse = acousticStats[2]  // [-1f, 1f]
-        val transientSharp = acousticStats[3] // [-1f, 1f]
-
-        // Normalized duration: short upbeat tracks (<165s) -> negative, long ballads (>240s) -> positive
-        val dur = if (song.durationSec > 0) song.durationSec else 200
-        val durationNorm = ((dur - 205f) / 95f).coerceIn(-1f, 1f)
-
-        val rawText = "${song.title} ${song.artist} ${song.album} $embeddedGenre".lowercase()
-
-        var workoutKw = scoreKeywords(
-            rawText,
-            listOf(
-                "workout", "sport", "gym", "fitness", "phonk", "hardstyle", "power", "motivation",
-                "run", "running", "training", "beast", "hype", "pump", "drift", "rock", "metal",
-                "electronic", "edm", "trap", "hip hop", "hip-hop", "rap", "fast", "energy",
-                "champion", "boxing", "kun khmer", "muay thai", "fighter", "cardio", "intense",
-                "កីឡា", "ហាត់ប្រាណ", "ហាត់កីឡា", "កម្លាំង", "គុនខ្មែរ", "ប្រដាល់", "រត់", "សកម្ម", "រឹងមាំ"
-            )
-        )
-
-        var partyKw = scoreKeywords(
-            rawText,
-            listOf(
-                "remix", "dj", "club", "party", "dance", "bass", "boosted", "funk", "nu funk",
-                "speed up", "sped up", "nightcore", "disco", "electro", "house", "techno", "rave",
-                "mashup", "bootleg", "vip", "bounce", "happy", "fun", "celebrate", "festival",
-                "upbeat", "shake", "boom", "afrobeat", "reggaeton", "k-pop", "kpop", "break",
-                "រាំ", "កន្ត្រាក់", "រាំវង់", "រាំក្បាច់", "សារ៉ាវ៉ាន់", "ឡាំលាវ", "ម៉ាឌីហ្សុន",
-                "ក្លឹប", "ញាក់", "សប្បាយ", "រីករាយ", "ចូលឆ្នាំ", "ភ្ជុំបិណ្ឌ", "អុំទូក", "បុកបាស",
-                "រីមិច", "kontrak", "ramvong", "nhak", "sabay", "ork kes", "អកកេះ", "អកក្តង់"
-            )
-        )
-
-        var chillKw = scoreKeywords(
-            rawText,
-            listOf(
-                "chill", "lofi", "lo-fi", "relax", "smooth", "cafe", "coffee", "late night",
-                "sunset", "breeze", "dream", "ambient", "soul", "r&b", "rnb", "wave", "easy",
-                "sunday", "morning", "bedroom", "mellow", "soft", "cozy",
-                "ស្ងប់ស្ងាត់", "បន្ធូរអារម្មណ៍", "ត្រជាក់ចិត្ត", "កាហ្វេ", "ពេលល្ងាច", "ខ្យល់", "ស្រទន់"
-            )
-        )
-
-        val sadKw = scoreKeywords(
-            rawText,
-            listOf(
-                "sad", "slowed", "reverb", "cry", "crying", "tears", "broken", "heartbreak",
-                "heartbroken", "lonely", "alone", "miss", "missing", "pain", "hurt", "goodbye",
-                "sorry", "farewell", "empty", "rain", "blue", "ballad", "regret", "leave",
-                "left me", "without you", "memory", "memories", "forget", "scars", "bleed",
-                "depressed", "sorrow", "grief", "apologize", "unfaithful", "betray",
-                "សេដ", "ឈឺចាប់", "ទឹកភ្នែក", "នឹក", "បែក", "កំសត់", "មនោសញ្ចេតនា", "សោកសៅ",
-                "ខូចចិត្ត", "ឯកា", "លា", "លាហើយ", "សុំទោស", "អាណិត", "យំ", "ឈឺ", "ភ្លេច", "ក្បត់",
-                "អស់ចិត្ត", "បោះបង់", "សង្សារចាស់", "អ្នកថ្មី", "ចាំ", "រង់ចាំ", "ហត់", "ឆ្អែត",
-                "ខកចិត្ត", "ព្រាត់", "សោកស្តាយ", "អតីត", "ភ្លៀង", "យប់ជ្រៅ", "កណ្តោចកណ្តែង",
-                "ស្នេហ៍កម្ម", "bek", "chheu", "nek", "tirk phnek", "kom sot", "somtos", "kbot", "ekka"
-            )
-        )
-
-        var romanticKw = scoreKeywords(
-            rawText,
-            listOf(
-                "love", "romantic", "romance", "heart", "sweet", "kiss", "darling", "baby",
-                "babe", "honey", "forever", "together", "you and me", "wedding", "marry",
-                "crush", "dear", "beautiful", "pretty", "angel", "mine", "yours", "hug",
-                "hold me", "valentine", "couple", "promise", "destiny", "soulmate",
-                "ស្នេហា", "ស្នេហ៍", "ស្រឡាញ់", "អូន", "បង", "បេះដូង", "ផ្អែមល្ហែម", "នួនល្អង",
-                "មាសមេ", "ពិសី", "ឆោមឆាយ", "ក្រមុំ", "កំលោះ", "រៀបការ", "គូស្នេហ៍", "ស្មោះ",
-                "ថ្នាក់ថ្នម", "នឹកអូន", "នឹកបង", "ស្រស់ស្អាត", "សង្សារ", "មនុស្សពិសេស", "សន្យា",
-                "srolanh", "oun", "bong", "sneha", "besdong"
-            )
-        )
-
-        var focusKw = scoreKeywords(
-            rawText,
-            listOf(
-                "acoustic", "piano", "guitar", "instrumental", "study", "focus", "reading",
-                "unplugged", "solo", "classical", "violin", "orchestra", "meditation", "sleep",
-                "calm", "peace", "soundtrack", "ost", "score", "flute", "harp", "zen",
-                "ហ្គីតា", "ព្យាណូ", "អាគូស្ទិក", "ភ្លេងសុទ្ធ", "សមាធិ", "សិក្សា", "អានសៀវភៅ",
-                "ខ្លុយ", "ទ្រ", "ភ្លេងបុរាណ", "ភ្លេងការ"
-            )
-        )
-
-        var drivingKw = scoreKeywords(
-            rawText,
-            listOf(
-                "drive", "driving", "road", "vibe", "vibes", "groove", "pop", "indie", "retro",
-                "summer", "weekend", "cruise", "city", "travel", "night drive", "highway",
-                "sunshine", "good time", "feel good", "adventure", "free", "freedom", "holiday",
-                "ដំណើរ", "ដើរលេង", "សមុទ្រ", "ភ្នំ", "ជិះឡាន", "ជិះម៉ូតូ", "វិស្សមកាល", "ថ្ងៃឈប់សម្រាក"
-            )
-        )
-
-        // Semantic Disambiguation Rules:
-        // 1. If a song has BOTH Sad/Breakup keywords AND Romantic keywords (e.g., "បែកអូនឈឺចាប់", "Broken Love"),
-        //    it is a heartbreak/sad song, so suppress romanticKw!
-        if (sadKw > 0f && romanticKw > 0f) {
-            romanticKw *= 0.15f
-        }
-        // 2. If a song is explicitly a Remix / DJ / Club / Sped Up version of a sad/love song,
-        //    it is an upbeat Party/Remix track, NOT a slow sad ballad!
-        if (partyKw >= 0.72f || workoutKw >= 0.72f) {
-            chillKw *= 0.1f
-            romanticKw *= 0.25f
-        }
-        // 3. If a song has no explicit keywords at all, use acoustic energy & duration to nudge natural priors
-        val totalKw = workoutKw + partyKw + chillKw + sadKw + romanticKw + focusKw + drivingKw
-        if (totalKw == 0f) {
-            if (energyMean >= 0.35f && rhythmicPulse >= 0.25f) {
-                // High energy & strong rhythm -> Driving / Party / Workout prior
-                drivingKw = 0.45f
-                if (energyMean >= 0.55f) {
-                    partyKw = 0.40f
-                    workoutKw = 0.35f
-                }
-            } else if (energyMean in -0.25f..0.34f) {
-                // Balanced mid-tempo song -> Romantic / Driving / Chill prior (NOT Sad!)
-                romanticKw = 0.35f
-                drivingKw = 0.35f
-                chillKw = 0.30f
-            } else {
-                // Very low energy / quiet -> Chill / Focus prior (only Sad if also long & slow)
-                chillKw = 0.45f
-                focusKw = 0.30f
-            }
-        }
-
-        return floatArrayOf(
-            energyMean,
-            energyVariance,
-            rhythmicPulse,
-            transientSharp,
-            durationNorm,
-            workoutKw,
-            partyKw,
-            chillKw,
-            sadKw,
-            romanticKw,
-            focusKw,
-            drivingKw
-        )
-    }
-
-    private fun scoreKeywords(text: String, keywords: List<String>): Float {
+    /**
+     * Whole-Word Boundary Keyword Matcher (used ONLY for online/Internet candidate metadata in "Recommended for You").
+     * Ensures ASCII words like "alone" NEVER match inside "Post Malone" (`\b` boundary check).
+     */
+    private fun scoreKeywordsWholeWord(text: String, keywords: List<String>): Float {
         var matches = 0
         for (kw in keywords) {
-            if (text.contains(kw)) {
+            if (containsWholeKeyword(text, kw)) {
                 matches++
             }
         }
@@ -1270,22 +1378,53 @@ object AiAudioMoodEngine {
         }
     }
 
+    private fun containsWholeKeyword(text: String, kw: String): Boolean {
+        if (kw.isBlank()) return false
+        val firstChar = kw[0]
+        // For Khmer script keywords, direct substring match is appropriate because Khmer words are not space-delimited
+        if (firstChar in '\u1780'..'\u17FF') {
+            return text.contains(kw)
+        }
+        var startIdx = text.indexOf(kw)
+        while (startIdx != -1) {
+            val endIdx = startIdx + kw.length
+            val leftOk = startIdx == 0 || !text[startIdx - 1].isLetterOrDigit()
+            val rightOk = endIdx >= text.length || !text[endIdx].isLetterOrDigit()
+            if (leftOk && rightOk) return true
+            startIdx = text.indexOf(kw, startIdx + 1)
+        }
+        return false
+    }
+
+    // =========================================================================
+    // REAL 6-DIMENSIONAL AUDIO SIGNAL & CONTAINER EXTRACTION (ZERO MEDIACODEC)
+    // =========================================================================
+
+    private enum class AudioContainerFormat {
+        WAV,
+        MP3,
+        M4A_AAC,
+        WEBM_OGG_OPUS
+    }
+
     /**
-     * Extracts real acoustic statistics (Energy, Dynamic Variance, Beat Pulse, Transient Sharpness)
-     * and embedded ID3/MP4 Genre without ever invoking MediaCodec:
-     * - Resolves the physical audio file on disk (checking `song.uriString` and MusicHub folders).
-     * - Queries container bitrate & genre via `MediaMetadataRetriever`.
-     * - Scans real MP3 frame headers (`0xFF 0xE0`) to extract `global_gain` (ISO/IEC 11172-3 granule loudness),
-     *   WAV 16-bit PCM amplitudes, or M4A/AAC frame energy contours across 3 sections of the track (20%, 50%, 75%).
+     * Extracts 6 pure acoustic features in [-1f, +1f] from the audio stream across 5 sections
+     * (15%, 32%, 50%, 68%, 82%) using magic-byte container detection and pure InputStream:
+     * [0] normEnergy           (Overall loudness & bitrate density)
+     * [1] normDynamicVar       (Dynamic range & contrast)
+     * [2] normTempoPulse       (Beat onset rate & estimated BPM tempo)
+     * [3] normTransientPunch   (Percussive kick/snare attack sharpness)
+     * [4] normBeatRegularity   (Groove periodicity & rhythmic consistency)
+     * [5] normSustainSmooth    (Melodic sustain & low-attack smoothness)
      */
-    private fun extractRealAudioStatsAndGenre(context: Context, song: SongItem): Pair<FloatArray, String> {
-        var embeddedGenre = ""
+    private fun extractPureAcoustic6Features(context: Context, song: SongItem): FloatArray {
         var bitrateBps = 0
+        var sampleRateHz = 44100
         val resolvedFile = resolveLocalAudioFile(song)
 
-        // 1. Safe container metadata inspection via MediaMetadataRetriever (no MediaCodec involved)
-        val retriever = MediaMetadataRetriever()
+        var retriever: MediaMetadataRetriever? = null
         try {
+            retriever = MediaMetadataRetriever()
             var dataSourceSet = false
             if (resolvedFile != null && resolvedFile.exists()) {
                 retriever.setDataSource(resolvedFile.absolutePath)
@@ -1295,123 +1434,256 @@ object AiAudioMoodEngine {
                 dataSourceSet = true
             }
             if (dataSourceSet) {
-                embeddedGenre = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE).orEmpty()
                 bitrateBps = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toIntOrNull() ?: 0
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                    sampleRateHz = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.toIntOrNull() ?: 44100
+                }
             }
         } catch (_: Throwable) {
         } finally {
-            try { retriever.release() } catch (_: Throwable) {}
+            try { retriever?.release() } catch (_: Throwable) {}
         }
 
-        // 2. Scan 3 audio sections (20%, 50%, 75%) using pure InputStream
         try {
             val fileLength: Long
-            val openAtFraction: (Double) -> InputStream?
+            val openAtOffset: (Long) -> InputStream?
 
-            if (resolvedFile != null && resolvedFile.exists() && resolvedFile.length() > 32768L) {
+            if (resolvedFile != null && resolvedFile.exists() && resolvedFile.length() > 24576L) {
                 fileLength = resolvedFile.length()
-                openAtFraction = { frac ->
+                openAtOffset = { offset ->
                     val fis = FileInputStream(resolvedFile)
-                    skipSafely(fis, (fileLength * frac).toLong().coerceAtLeast(4096L))
+                    if (offset > 0L) skipSafely(fis, offset)
                     fis
                 }
             } else if (song.uriString.startsWith("content://")) {
                 val uri = Uri.parse(song.uriString)
                 fileLength = context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
-                openAtFraction = { frac ->
-                    if (fileLength > 32768L) {
+                openAtOffset = { offset ->
+                    if (fileLength > 24576L) {
                         context.contentResolver.openInputStream(uri)?.also { s ->
-                            skipSafely(s, (fileLength * frac).toLong().coerceAtLeast(4096L))
+                            if (offset > 0L) skipSafely(s, offset)
                         }
                     } else null
                 }
             } else {
                 fileLength = -1L
-                openAtFraction = { null }
+                openAtOffset = { null }
             }
 
-            if (fileLength > 32768L) {
-                val isWav = song.format.equals("WAV", ignoreCase = true) ||
-                    resolvedFile?.name?.endsWith(".wav", ignoreCase = true) == true
-                val isMp3 = song.format.equals("MP3", ignoreCase = true) ||
-                    resolvedFile?.name?.endsWith(".mp3", ignoreCase = true) == true
+            if (fileLength > 24576L) {
+                // 1. Inspect magic bytes at the start of the file so M4A/WebM saved with .mp3 extension are detected accurately
+                val headerBytes = ByteArray(128)
+                var headerRead = 0
+                openAtOffset(0L)?.use { s ->
+                    headerRead = s.read(headerBytes)
+                }
+                val containerFormat = detectAudioContainerFormat(headerBytes, headerRead, song, resolvedFile)
 
-                val frameEnergies = ArrayList<Float>(120)
-                val fractions = doubleArrayOf(0.22, 0.50, 0.74)
+                // 2. Sample 5 sections across the track body (15%, 32%, 50%, 68%, 82%)
+                val frameEnergies = ArrayList<Float>(220)
+                val fractions = doubleArrayOf(0.15, 0.32, 0.50, 0.68, 0.82)
 
                 for (frac in fractions) {
-                    openAtFraction(frac)?.use { stream ->
+                    val targetOffset = (fileLength * frac).toLong().coerceAtLeast(4096L)
+                    openAtOffset(targetOffset)?.use { stream ->
                         val buf = ByteArray(16384)
-                        val n = stream.read(buf)
+                        val n = readFullyUpTo(stream, buf)
                         if (n >= 4096) {
-                            if (isWav) {
-                                extractWavPcmEnergies(buf, n, frameEnergies)
-                            } else if (isMp3) {
-                                extractMp3GlobalGainEnergies(buf, n, frameEnergies)
-                            } else {
-                                extractAacFrameContourEnergies(buf, n, frameEnergies)
+                            when (containerFormat) {
+                                AudioContainerFormat.WAV -> extractWavPcmEnergies(buf, n, frameEnergies)
+                                AudioContainerFormat.MP3 -> extractMp3GlobalGainEnergies(buf, n, frameEnergies)
+                                AudioContainerFormat.M4A_AAC,
+                                AudioContainerFormat.WEBM_OGG_OPUS -> extractCompressedFrameContourEnergies(buf, n, frameEnergies)
                             }
                         }
                     }
                 }
 
-                if (frameEnergies.size >= 12) {
-                    var mean = 0f
-                    var peak = 0f
-                    for (e in frameEnergies) {
-                        mean += e
-                        if (e > peak) peak = e
-                    }
-                    mean /= frameEnergies.size
-
-                    var varianceSum = 0f
-                    var beatOnsets = 0
-                    var strongTransients = 0
-                    for (i in frameEnergies.indices) {
-                        val diff = frameEnergies[i] - mean
-                        varianceSum += diff * diff
-                        if (i > 0) {
-                            val step = frameEnergies[i] - frameEnergies[i - 1]
-                            if (step > 0.065f) beatOnsets++
-                            if (abs(step) > 0.11f) strongTransients++
-                        }
-                    }
-                    val stdDev = sqrt(varianceSum / frameEnergies.size)
-                    val onsetRate = beatOnsets.toFloat() / frameEnergies.size.toFloat()
-                    val transientRate = strongTransients.toFloat() / frameEnergies.size.toFloat()
-
-                    val normEnergy = ((mean - 0.52f) * 3.8f).coerceIn(-1f, 1f)
-                    val normVar = ((stdDev - 0.09f) * 7.5f).coerceIn(-1f, 1f)
-                    val normPulse = ((onsetRate - 0.22f) * 5.0f).coerceIn(-1f, 1f)
-                    val normTransient = ((transientRate - 0.16f) * 5.5f).coerceIn(-1f, 1f)
-
-                    return Pair(
-                        floatArrayOf(normEnergy, normVar, normPulse, normTransient),
-                        embeddedGenre
+                if (frameEnergies.size >= 16) {
+                    return compute6AcousticFeaturesFromEnvelope(
+                        frameEnergies = frameEnergies,
+                        durationSec = song.durationSec,
+                        fileLengthBytes = fileLength,
+                        bitrateBps = bitrateBps,
+                        sampleRateHz = sampleRateHz
                     )
                 }
             }
         } catch (_: Throwable) {}
 
-        // Non-random structural fallback based on duration and bitrate (never random hashCode!)
+        // Safe non-random structural fallback based on duration & bitrate
         val dur = if (song.durationSec > 0) song.durationSec else 200
-        val tempoFromDuration = when {
-            dur in 90..175 -> 0.30f   // Short/tight modern pop, phonk, or remix length
-            dur in 176..225 -> 0.10f  // Standard upbeat/mid-tempo song
-            dur > 250 -> -0.25f       // Longer ballad or instrumental length
+        val tempoFromDur = when {
+            dur in 90..175 -> 0.32f
+            dur in 176..225 -> 0.14f
+            dur > 255 -> -0.22f
             else -> 0.0f
         }
-        val energyFromBitrate = if (bitrateBps >= 256_000) 0.15f else 0.05f
-        return Pair(
-            floatArrayOf(energyFromBitrate, 0.05f, tempoFromDuration, 0.05f),
-            embeddedGenre
+        val energyFromBitrate = if (bitrateBps >= 256_000) 0.18f else 0.08f
+        return floatArrayOf(
+            energyFromBitrate, // energy
+            0.05f,             // dynamicVar
+            tempoFromDur,      // tempoPulse
+            0.08f,             // transientPunch
+            0.15f,             // beatRegularity
+            -tempoFromDur      // sustainSmooth
+        )
+    }
+
+    private fun detectAudioContainerFormat(
+        header: ByteArray,
+        headerLen: Int,
+        song: SongItem,
+        file: File?
+    ): AudioContainerFormat {
+        if (headerLen >= 12) {
+            // WAV: "RIFF" .... "WAVE"
+            if (header[0] == 'R'.code.toByte() && header[1] == 'I'.code.toByte() &&
+                header[2] == 'F'.code.toByte() && header[3] == 'F'.code.toByte() &&
+                header[8] == 'W'.code.toByte() && header[9] == 'A'.code.toByte() &&
+                header[10] == 'V'.code.toByte() && header[11] == 'E'.code.toByte()
+            ) {
+                return AudioContainerFormat.WAV
+            }
+            // ISO BMFF / MP4 / M4A: bytes 4..7 == "ftyp"
+            if (header[4] == 'f'.code.toByte() && header[5] == 't'.code.toByte() &&
+                header[6] == 'y'.code.toByte() && header[7] == 'p'.code.toByte()
+            ) {
+                return AudioContainerFormat.M4A_AAC
+            }
+            // WebM / Matroska EBML header: 1A 45 DF A3
+            if ((header[0].toInt() and 0xFF) == 0x1A &&
+                (header[1].toInt() and 0xFF) == 0x45 &&
+                (header[2].toInt() and 0xFF) == 0xDF &&
+                (header[3].toInt() and 0xFF) == 0xA3
+            ) {
+                return AudioContainerFormat.WEBM_OGG_OPUS
+            }
+            // Ogg container: "OggS"
+            if (header[0] == 'O'.code.toByte() && header[1] == 'g'.code.toByte() &&
+                header[2] == 'g'.code.toByte() && header[3] == 'S'.code.toByte()
+            ) {
+                return AudioContainerFormat.WEBM_OGG_OPUS
+            }
+            // ID3v2 tag header ("ID3") or direct MPEG frame sync (0xFF 0xE0)
+            if (header[0] == 'I'.code.toByte() && header[1] == 'D'.code.toByte() && header[2] == '3'.code.toByte()) {
+                return AudioContainerFormat.MP3
+            }
+            if ((header[0].toInt() and 0xFF) == 0xFF && ((header[1].toInt() and 0xE0) == 0xE0)) {
+                return AudioContainerFormat.MP3
+            }
+        }
+        val nameLower = (file?.name ?: song.format).lowercase()
+        return when {
+            nameLower.endsWith("wav") -> AudioContainerFormat.WAV
+            nameLower.endsWith("m4a") || nameLower.endsWith("mp4") || nameLower.endsWith("aac") -> AudioContainerFormat.M4A_AAC
+            nameLower.endsWith("ogg") || nameLower.endsWith("webm") || nameLower.endsWith("opus") -> AudioContainerFormat.WEBM_OGG_OPUS
+            else -> AudioContainerFormat.MP3
+        }
+    }
+
+    private fun compute6AcousticFeaturesFromEnvelope(
+        frameEnergies: List<Float>,
+        durationSec: Int,
+        fileLengthBytes: Long,
+        bitrateBps: Int,
+        sampleRateHz: Int
+    ): FloatArray {
+        val n = frameEnergies.size
+        var sum = 0f
+        for (e in frameEnergies) sum += e
+        val mean = sum / n
+
+        var varSum = 0f
+        var beatOnsets = 0
+        var strongAttacks = 0
+        var sustainedFrames = 0
+        val onsetIntervals = ArrayList<Int>(40)
+        var lastOnsetIdx = -1
+
+        for (i in 0 until n) {
+            val diff = frameEnergies[i] - mean
+            varSum += diff * diff
+            if (i > 0) {
+                val delta = frameEnergies[i] - frameEnergies[i - 1]
+                // Positive energy attack above local baseline = percussive onset
+                if (delta > 0.048f && frameEnergies[i] > mean * 0.96f) {
+                    beatOnsets++
+                    if (lastOnsetIdx >= 0) {
+                        val gap = i - lastOnsetIdx
+                        if (gap in 2..18) onsetIntervals.add(gap)
+                    }
+                    lastOnsetIdx = i
+                }
+                if (delta > 0.085f) {
+                    strongAttacks++
+                }
+                if (abs(delta) < 0.032f) {
+                    sustainedFrames++
+                }
+            }
+        }
+
+        val stdDev = sqrt(varSum / n)
+        val onsetRate = beatOnsets.toFloat() / n.toFloat()
+        val attackRate = strongAttacks.toFloat() / n.toFloat()
+        val sustainRate = sustainedFrames.toFloat() / n.toFloat()
+
+        // Compute Beat Regularity (Groove Consistency) from inter-onset interval variance
+        val beatRegularityRaw = if (onsetIntervals.size >= 4) {
+            var avgGap = 0f
+            for (g in onsetIntervals) avgGap += g
+            avgGap /= onsetIntervals.size
+            var gapVar = 0f
+            for (g in onsetIntervals) {
+                val gd = g - avgGap
+                gapVar += gd * gd
+            }
+            val gapStd = sqrt(gapVar / onsetIntervals.size)
+            val cv = if (avgGap > 0.5f) gapStd / avgGap else 1f
+            // Low coefficient of variation (steady beat interval) -> high beat regularity
+            (1.0f - (cv * 1.35f)).coerceIn(-0.8f, 1.0f)
+        } else {
+            -0.35f
+        }
+
+        // Factor in track duration & byte-rate density
+        val dur = if (durationSec > 0) durationSec else 200
+        val effectiveBps = if (bitrateBps > 0) bitrateBps.toLong() else ((fileLengthBytes * 8L) / dur.coerceAtLeast(60))
+        val densityNudge = when {
+            effectiveBps >= 240_000L -> 0.10f
+            effectiveBps <= 110_000L -> -0.06f
+            else -> 0.02f
+        } + (if (sampleRateHz >= 48000) 0.04f else 0f)
+
+        val durationTempoNudge = when {
+            dur in 95..175 -> 0.16f   // Tight upbeat pop / dance / hip-hop structure
+            dur in 176..220 -> 0.06f  // Standard modern pop / groove length
+            dur >= 260 -> -0.18f      // Extended ballad / instrumental length
+            else -> 0.0f
+        }
+
+        val normEnergy = (((mean - 0.49f) * 3.9f) + densityNudge).coerceIn(-1f, 1f)
+        val normDynamicVar = ((stdDev - 0.085f) * 7.8f).coerceIn(-1f, 1f)
+        val normTempoPulse = (((onsetRate - 0.19f) * 5.4f) + durationTempoNudge).coerceIn(-1f, 1f)
+        val normTransientPunch = ((attackRate - 0.105f) * 6.5f).coerceIn(-1f, 1f)
+        val normBeatRegularity = (beatRegularityRaw * 0.80f + normTempoPulse * 0.20f).coerceIn(-1f, 1f)
+        val normSustainSmooth = (((sustainRate - 0.42f) * 3.6f) - (normTransientPunch * 0.30f)).coerceIn(-1f, 1f)
+
+        return floatArrayOf(
+            normEnergy,
+            normDynamicVar,
+            normTempoPulse,
+            normTransientPunch,
+            normBeatRegularity,
+            normSustainSmooth
         )
     }
 
     /**
      * Resolves the local audio File on disk from `song.uriString` or MusicHub's storage directories.
      */
-    private fun resolveLocalAudioFile(song: SongItem): File? {
+    internal fun resolveLocalAudioFile(song: SongItem): File? {
         try {
             val uriStr = song.uriString
             if (uriStr.isNotBlank() && !uriStr.startsWith("content://") && !uriStr.startsWith("http")) {
@@ -1438,6 +1710,7 @@ object AiAudioMoodEngine {
     /**
      * Parses genuine MPEG-1/MPEG-2 Layer III (MP3) frame sync headers (`0xFF`, `(b1 & 0xE0) == 0xE0`)
      * and reads the 8-bit `global_gain` loudness scale factor from the MP3 granule side-information.
+     * Falls back to compressed frame contour analysis if the stream is actually an M4A/WebM container.
      */
     private fun extractMp3GlobalGainEnergies(buf: ByteArray, length: Int, out: MutableList<Float>) {
         var i = 0
@@ -1445,7 +1718,6 @@ object AiAudioMoodEngine {
         while (i < length - 12 && foundFrames < 48) {
             val b0 = buf[i].toInt() and 0xFF
             val b1 = buf[i + 1].toInt() and 0xFF
-            // Check 11-bit MP3 frame sync word and valid Layer III (bits 1..2 of b1 == 01)
             val isSync = (b0 == 0xFF) && ((b1 and 0xE0) == 0xE0)
             val layerBits = (b1 shr 1) and 0x03
             val b2 = buf[i + 2].toInt() and 0xFF
@@ -1456,7 +1728,6 @@ object AiAudioMoodEngine {
                 val hasCrc = (b1 and 0x01) == 0
                 val sideInfoOffset = i + 4 + (if (hasCrc) 2 else 0)
                 if (sideInfoOffset + 6 < length) {
-                    // In MPEG-1 Layer III side info, granule 0 channel 0 global_gain sits across bytes 3..5 of side info
                     val s2 = buf[sideInfoOffset + 2].toInt() and 0xFF
                     val s3 = buf[sideInfoOffset + 3].toInt() and 0xFF
                     val s4 = buf[sideInfoOffset + 4].toInt() and 0xFF
@@ -1465,14 +1736,14 @@ object AiAudioMoodEngine {
                     val combinedGain = ((rawGain + rawGain2) * 0.5f / 255f).coerceIn(0.05f, 1.0f)
                     out.add(combinedGain)
                     foundFrames++
-                    i += 144 // Advance past minimum MP3 frame distance
+                    i += 144
                     continue
                 }
             }
             i++
         }
-        if (foundFrames < 6) {
-            extractAacFrameContourEnergies(buf, length, out)
+        if (foundFrames < 8) {
+            extractCompressedFrameContourEnergies(buf, length, out)
         }
     }
 
@@ -1488,7 +1759,7 @@ object AiAudioMoodEngine {
             var j = offset
             while (j + 1 < offset + windowBytes) {
                 val lo = buf[j].toInt() and 0xFF
-                val hi = buf[j + 1].toInt() // signed
+                val hi = buf[j + 1].toInt()
                 val pcm = ((hi shl 8) or lo) / 32768.0
                 sumSq += pcm * pcm
                 samples++
@@ -1503,29 +1774,44 @@ object AiAudioMoodEngine {
     }
 
     /**
-     * Measures frame-level byte-transition density and peak excursion across 512-byte windows
-     * for M4A/AAC/OGG streams.
+     * Measures sub-frame spectral/entropy dynamics, byte-transition energy, and peak excursion
+     * across 384-byte acoustic windows for M4A/AAC and WebM/Opus audio streams.
      */
-    private fun extractAacFrameContourEnergies(buf: ByteArray, length: Int, out: MutableList<Float>) {
-        val windowBytes = 512
+    private fun extractCompressedFrameContourEnergies(buf: ByteArray, length: Int, out: MutableList<Float>) {
+        val windowBytes = 384
         var offset = 0
         while (offset + windowBytes <= length) {
             var highExcursions = 0
             var deltaSum = 0
+            var zeroRunCount = 0
             for (j in offset until (offset + windowBytes - 1)) {
                 val v = buf[j].toInt() and 0xFF
                 val next = buf[j + 1].toInt() and 0xFF
-                if (v in 1..18 || v in 238..254) highExcursions++
-                deltaSum += abs(v - next)
+                val diff = abs(v - next)
+                deltaSum += diff
+                if (diff >= 115) highExcursions++
+                if (v == 0 || v == 255) zeroRunCount++
             }
-            val deltaNorm = (deltaSum.toFloat() / (windowBytes * 128f)).coerceIn(0f, 1f)
-            val excNorm = (highExcursions.toFloat() / (windowBytes * 0.25f)).coerceIn(0f, 1f)
-            out.add(((deltaNorm * 0.65f) + (excNorm * 0.35f)).coerceIn(0.05f, 1.0f))
+            val deltaNorm = (deltaSum.toFloat() / (windowBytes * 110f)).coerceIn(0f, 1f)
+            val excNorm = (highExcursions.toFloat() / (windowBytes * 0.34f)).coerceIn(0f, 1f)
+            val silencePenalty = (zeroRunCount.toFloat() / (windowBytes * 0.45f)).coerceIn(0f, 0.45f)
+            val energy = ((deltaNorm * 0.58f) + (excNorm * 0.42f) - (silencePenalty * 0.35f)).coerceIn(0.05f, 1.0f)
+            out.add(energy)
             offset += windowBytes
         }
     }
 
-    private fun skipSafely(stream: InputStream, bytesToSkip: Long) {
+    internal fun readFullyUpTo(stream: InputStream, buf: ByteArray): Int {
+        var total = 0
+        while (total < buf.size) {
+            val r = stream.read(buf, total, buf.size - total)
+            if (r <= 0) break
+            total += r
+        }
+        return total
+    }
+
+    internal fun skipSafely(stream: InputStream, bytesToSkip: Long) {
         var remaining = bytesToSkip
         val skipBuf = ByteArray(4096)
         while (remaining > 0) {
@@ -1543,20 +1829,21 @@ object AiAudioMoodEngine {
     private fun serializeProfile(profile: SongMoodProfile): String {
         val probsStr = profile.probabilities.joinToString(",") { "%.4f".format(it) }
         val explicitFlag = if (profile.hasExplicitSemanticSignal) 1 else 0
-        return "${profile.primaryMood.ordinal}|${profile.secondaryMood.ordinal}|${"%.3f".format(profile.energyScore)}|${"%.3f".format(profile.tempoScore)}|${"%.3f".format(profile.valenceScore)}|$explicitFlag|$probsStr"
+        return "${profile.primaryMood.ordinal}|${profile.secondaryMood.ordinal}|${"%.3f".format(profile.energyScore)}|${"%.3f".format(profile.tempoScore)}|${"%.3f".format(profile.valenceScore)}|$explicitFlag|${"%.3f".format(profile.confidenceScore)}|$probsStr"
     }
 
     private fun deserializeProfile(songId: String, raw: String): SongMoodProfile? {
         return try {
             val parts = raw.split("|")
-            if (parts.size < 7) return null
+            if (parts.size < 8) return null
             val pIdx = parts[0].toInt().coerceIn(0, moodCategories.size - 1)
             val sIdx = parts[1].toInt().coerceIn(0, moodCategories.size - 1)
             val energy = parts[2].toFloat()
             val tempo = parts[3].toFloat()
             val valence = parts[4].toFloat()
             val explicit = parts[5].toInt() == 1
-            val probParts = parts[6].split(",")
+            val conf = parts[6].toFloat().coerceIn(0.05f, 1.0f)
+            val probParts = parts[7].split(",")
             if (probParts.size != moodCategories.size) return null
             val probs = FloatArray(moodCategories.size) { i -> probParts[i].toFloat() }
             SongMoodProfile(
@@ -1567,7 +1854,8 @@ object AiAudioMoodEngine {
                 energyScore = energy,
                 tempoScore = tempo,
                 valenceScore = valence,
-                hasExplicitSemanticSignal = explicit
+                hasExplicitSemanticSignal = explicit,
+                confidenceScore = conf
             )
         } catch (_: Throwable) {
             null
