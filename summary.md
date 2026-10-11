@@ -382,6 +382,25 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.71
+- 100% On-Device AI Audio Mood, Sport & Activity Mix Engine (`AiAudioMoodEngine`) & On-Device Smart Recommendations (`RecommendationEngine`):
+  - Replaced legacy crash-prone `MediaCodec` / `MediaExtractor` calls in `AudioWaveformFingerprinter.kt` with a 100% crash-free On-Device AI Audio & Semantic Classifier (`AiAudioMoodEngine`) that requires zero external APIs and zero manual training.
+  - Extracts a 12-dimensional acoustic & multi-language (English/Khmer) feature vector per song using lightweight byte-frame envelope/transient analysis and runs a pre-trained 2-layer neural network (`12 -> 16 tanh -> 7 softmax`) with `ConcurrentHashMap` and `SharedPreferences` caching.
+  - Upgraded **Your Mix** (`HomeScreen`) to dynamically generate personalized AI mixes and mood/activity stations from the user's local library:
+    - **My Mix** (`ចម្រៀងចម្រុះរបស់ខ្ញុំ`) — AI-sequenced personal taste and smooth mood transitions
+    - **Artist Mix** (`[Top Artist] Mix`) — Top artist tracks blended with acoustically similar mood tracks
+    - **Workout & Sport** (`សម្រាប់ហាត់កីឡា`)
+    - **Party & Remix** (`កន្ត្រាក់អារម្មណ៍ & Remix`)
+    - **Chill & Lofi** (`ស្ងប់ស្ងាត់ & Chill`)
+    - **Sad & Emotional** (`មនោសញ្ចេតនា & សេដ`)
+    - **Romantic & Love** (`ស្នេហា & ផ្អែមល្ហែម`)
+    - **Focus & Study** (`ផ្តោតអារម្មណ៍ & សិក្សា`)
+    - **Driving & Vibe** (`ស្តាប់ពេលធ្វើដំណើរ & Vibe`)
+  - Replaced the legacy external-API `RecommendationEngine` with 100% On-Device AI recommendation scoring (`RecommendationEngine.getPersonalizedRecommendations`) that ranks the user's songs using cosine similarity against their listening history taste vector, currently playing track's AI mood profile, favorite status, rediscovery weighting, and recent search intent (`SearchPreferenceTracker`), displaying each track's AI mood badge directly on the **Recommended for You** cards.
+  - Upgraded `findSmartNextTrack` to select the next track using `AiAudioMoodEngine.computeMoodSimilarity`.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 71` and `versionName = "1.0.71"` in `app/build.gradle.kts`.
+
 ### Version 1.0.70
 - YouTube Music-Style 2-Stage Smooth Queue Transition & Stationary Finger-Locked Physics:
   - Upgraded `UnifiedExpandablePlayerCard` to a 2-stage connected transition (`queueStage`: `0` = Full Now Playing, `1` = Split Compact Now Playing + Half Queue, `2` = Top Mini-Player + Full Queue):

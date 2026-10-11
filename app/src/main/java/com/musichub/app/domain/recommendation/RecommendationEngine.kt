@@ -1,15 +1,13 @@
 package com.musichub.app.domain.recommendation
 
 import android.content.Context
-import com.musichub.app.domain.downloader.LocalMediaExtractor
+import com.musichub.app.domain.audio.AiAudioMoodEngine
+import com.musichub.app.domain.audio.SongMoodCategory
+import com.musichub.app.presentation.PlayCountTracker
 import com.musichub.app.presentation.SongItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import org.json.JSONArray
-import org.json.JSONObject
-import java.net.URLEncoder
 import java.util.UUID
 
 data class RecommendedTrack(
@@ -19,7 +17,10 @@ data class RecommendedTrack(
     val artworkUrl: String,
     val duration: String,
     val previewUrl: String? = null,
-    val downloadQuery: String
+    val downloadQuery: String,
+    val localSongId: String? = null,
+    val moodLabelEn: String = "",
+    val moodLabelKm: String = ""
 )
 
 object SearchPreferenceTracker {
@@ -41,7 +42,6 @@ object SearchPreferenceTracker {
                     list.add(item)
                 }
             }
-            // Put latest search at the front
             list.add(0, clean)
             val trimmedList = list.take(MAX_SAVED_QUERIES)
 
@@ -70,95 +70,107 @@ object SearchPreferenceTracker {
     }
 }
 
+/**
+ * 100% On-Device AI Recommendation Engine (Zero external API calls).
+ *
+ * Uses AiAudioMoodEngine to analyze the acoustic & mood profile of all local songs,
+ * the user's listening history, favorites, currently playing track, and recent search queries
+ * to rank and recommend tracks matching the user's preferred mood and vibe.
+ */
 object RecommendationEngine {
 
     suspend fun getPersonalizedRecommendations(
+        context: Context,
         existingSongs: List<SongItem>,
-        client: OkHttpClient,
+        currentSong: SongItem? = null,
         searchQueries: List<String> = emptyList()
     ): List<RecommendedTrack> = withContext(Dispatchers.IO) {
-        val resultList = mutableListOf<RecommendedTrack>()
-        val existingNormalizedTitles = existingSongs.map {
-            it.title.lowercase().replace(Regex("[^\\p{L}\\p{Nd}]"), "")
-        }.toMutableSet()
+        if (existingSongs.isEmpty()) return@withContext emptyList()
 
-        // Extract top artists from user's current library
-        val topArtists = existingSongs
-            .filter { it.artist.isNotBlank() && it.artist != "MusicHub" && it.artist != "<unknown>" }
-            .groupBy { it.artist.trim() }
-            .mapValues { it.value.size }
-            .toList()
-            .sortedByDescending { it.second }
-            .take(4)
-            .map { it.first }
+        val profiles = existingSongs.associateWith { AiAudioMoodEngine.getSongMoodProfile(context, it) }
+        val baseTasteVec = AiAudioMoodEngine.computeUserTasteVector(context, existingSongs, profiles)
+        val contextVec = baseTasteVec.copyOf()
 
-        val queries = mutableListOf<String>()
-
-        // 1. Prioritize user's recent search interests (up to 3 distinct search terms)
-        val validSearches = searchQueries
-            .filter { it.isNotBlank() && it.length >= 2 }
-            .distinctBy { it.lowercase() }
-            .take(3)
-        queries.addAll(validSearches)
-
-        // 2. Add library top artists
-        for (artist in topArtists) {
-            if (!queries.any { it.equals(artist, ignoreCase = true) }) {
-                queries.add(artist)
+        // Blend in the currently playing song's AI mood vector so recommendations adapt to live listening vibe
+        if (currentSong != null) {
+            val currentProf = profiles[currentSong] ?: AiAudioMoodEngine.getSongMoodProfile(context, currentSong)
+            for (i in contextVec.indices) {
+                contextVec[i] = (contextVec[i] * 0.60f) + (currentProf.probabilities[i] * 0.40f)
             }
         }
 
-        // Always add popular/trending query categories if queries list is small
-        if (queries.isEmpty()) {
-            queries.add("Top Hits")
-            queries.add("Acoustic Chill")
-            queries.add("Pop Music")
-        } else if (queries.size < 3) {
-            queries.add("Popular Hits")
+        // Blend in recent search queries if they correspond to a mood or artist
+        val cleanQueries = searchQueries.map { it.lowercase().trim() }.filter { it.length >= 2 }.take(5)
+        if (cleanQueries.isNotEmpty()) {
+            val queryDummySong = SongItem(
+                id = "search_intent",
+                title = cleanQueries.joinToString(" "),
+                artist = "",
+                album = "",
+                duration = "3:00",
+                durationSec = 180
+            )
+            val queryProf = AiAudioMoodEngine.getSongMoodProfile(context, queryDummySong)
+            for (i in contextVec.indices) {
+                contextVec[i] = (contextVec[i] * 0.78f) + (queryProf.probabilities[i] * 0.22f)
+            }
         }
 
-        for (query in queries.take(6)) {
-            try {
-                val itunesUrl = "https://itunes.apple.com/search?term=${URLEncoder.encode(query, "UTF-8")}&entity=song&limit=8"
-                val req = Request.Builder()
-                    .url(itunesUrl)
-                    .header("User-Agent", LocalMediaExtractor.USER_AGENT)
-                    .build()
-                val resp = client.newCall(req).execute()
-                if (resp.isSuccessful) {
-                    val body = resp.body?.string() ?: ""
-                    val json = JSONObject(body)
-                    val array = json.optJSONArray("results") ?: JSONArray()
-                    for (i in 0 until array.length()) {
-                        val obj = array.getJSONObject(i)
-                        val title = obj.optString("trackName", "")
-                        val artist = obj.optString("artistName", "")
-                        val preview = obj.optString("previewUrl", "")
-                        val art100 = obj.optString("artworkUrl100", "")
-                        val artHd = art100.replace("100x100bb.jpg", "600x600bb.jpg")
-                        val durMs = obj.optLong("trackTimeMillis", 0L)
-                        val durSec = durMs / 1000
-                        val durStr = if (durSec > 0) "%d:%02d".format(durSec / 60, durSec % 60) else "3:30"
+        // Top artists affinity
+        val topArtists = existingSongs
+            .filter { it.artist.isNotBlank() && it.artist != "MusicHub" && it.artist != "<unknown>" }
+            .groupBy { it.artist.trim().lowercase() }
+            .mapValues { entry ->
+                entry.value.sumOf { PlayCountTracker.getPlayCount(context, it.id) } * 2 + entry.value.size
+            }
 
-                        val normTitle = title.lowercase().replace(Regex("[^\\p{L}\\p{Nd}]"), "")
-                        if (title.isNotBlank() && !existingNormalizedTitles.contains(normTitle)) {
-                            existingNormalizedTitles.add(normTitle)
-                            resultList.add(
-                                RecommendedTrack(
-                                    title = title,
-                                    artist = artist,
-                                    artworkUrl = artHd,
-                                    duration = durStr,
-                                    previewUrl = preview.ifBlank { null },
-                                    downloadQuery = "$artist - $title"
-                                )
-                            )
-                        }
-                    }
-                }
-            } catch (_: Exception) {}
+        val maxArtistScore = (topArtists.values.maxOrNull() ?: 1).coerceAtLeast(1)
+
+        val candidates = if (existingSongs.size > 4 && currentSong != null) {
+            existingSongs.filter { it.id != currentSong.id }
+        } else {
+            existingSongs
         }
 
-        resultList.shuffled().take(12)
+        val scoredCandidates = candidates.map { song ->
+            val prof = profiles[song] ?: AiAudioMoodEngine.getSongMoodProfile(context, song)
+            val moodSim = AiAudioMoodEngine.cosineSimilarity(prof.probabilities, contextVec)
+
+            val artistKey = song.artist.trim().lowercase()
+            val artistAffinity = ((topArtists[artistKey] ?: 0).toFloat() / maxArtistScore.toFloat()) * 0.18f
+
+            val playCount = PlayCountTracker.getPlayCount(context, song.id)
+            // Rediscovery curve: songs with 1..10 plays or matching mood get a discovery boost
+            val playAffinity = when {
+                playCount in 1..8 -> 0.16f
+                playCount > 8 -> 0.12f
+                else -> 0.08f
+            }
+            val favBoost = if (song.isFavorite) 0.12f else 0f
+
+            val textLower = "${song.title} ${song.artist} ${prof.primaryMood.enShort} ${prof.primaryMood.kmShort}".lowercase()
+            val searchBoost = if (cleanQueries.any { q -> textLower.contains(q) }) 0.28f else 0f
+
+            val totalScore = (moodSim * 0.65f) + artistAffinity + playAffinity + favBoost + searchBoost
+            Triple(song, prof, totalScore)
+        }.sortedByDescending { it.third }
+
+        // Select up to 12 tracks while ensuring good variety across the user's top matching moods
+        val selected = scoredCandidates.take(12)
+
+        selected.map { (song, prof, _) ->
+            RecommendedTrack(
+                id = song.id,
+                title = song.title,
+                artist = song.artist,
+                artworkUrl = song.artworkUrl,
+                duration = song.duration,
+                previewUrl = song.uriString.ifBlank { null },
+                downloadQuery = "${song.artist} - ${song.title}",
+                localSongId = song.id,
+                moodLabelEn = prof.primaryMood.enShort,
+                moodLabelKm = prof.primaryMood.kmShort
+            )
+        }
     }
 }

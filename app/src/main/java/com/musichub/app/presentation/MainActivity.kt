@@ -109,6 +109,8 @@ import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import com.musichub.app.player.MediaPlaybackService
 import com.musichub.app.domain.downloader.LocalMediaExtractor
+import com.musichub.app.domain.audio.AiAudioMoodEngine
+import com.musichub.app.domain.audio.AiMoodMix
 import com.musichub.app.domain.audio.AudioWaveformFingerprinter
 import com.musichub.app.domain.recommendation.RecommendationEngine
 import com.musichub.app.domain.recommendation.RecommendedTrack
@@ -183,26 +185,21 @@ fun findSmartNextTrack(current: SongItem, allSongs: List<SongItem>, context: Con
     val candidates = allSongs.filter { it.id != current.id }
     if (candidates.isEmpty()) return null
 
-    // 1. Same artist (if any)
-    val sameArtist = candidates.filter {
-        it.artist.isNotBlank() && it.artist != "MusicHub" &&
-        it.artist.equals(current.artist, ignoreCase = true)
+    return try {
+        candidates.maxByOrNull { candidate ->
+            val moodSim = AiAudioMoodEngine.computeMoodSimilarity(context, current, candidate)
+            val sameArtistBonus = if (
+                candidate.artist.isNotBlank() &&
+                candidate.artist != "MusicHub" &&
+                candidate.artist.equals(current.artist, ignoreCase = true)
+            ) 0.25f else 0f
+            val playBonus = (PlayCountTracker.getPlayCount(context, candidate.id).coerceAtMost(15) / 15f) * 0.15f
+            val favBonus = if (candidate.isFavorite) 0.10f else 0f
+            (moodSim * 0.65f) + sameArtistBonus + playBonus + favBonus
+        } ?: candidates.random()
+    } catch (_: Throwable) {
+        candidates.random()
     }
-    if (sameArtist.isNotEmpty()) {
-        return sameArtist.random()
-    }
-
-    // 2. Similar duration (within 45s tempo/length match)
-    val similarDuration = candidates.filter {
-        current.durationSec > 0 && it.durationSec > 0 &&
-        kotlin.math.abs(it.durationSec - current.durationSec) <= 45
-    }
-    if (similarDuration.isNotEmpty()) {
-        return similarDuration.maxByOrNull { PlayCountTracker.getPlayCount(context, it.id) } ?: similarDuration.random()
-    }
-
-    // 3. Most played candidate
-    return candidates.maxByOrNull { PlayCountTracker.getPlayCount(context, it.id) } ?: candidates.random()
 }
 
 
@@ -1573,15 +1570,17 @@ fun MusicHubApp() {
     var playbackDurationMs by remember { mutableLongStateOf(0L) }
 
     var searchVersion by remember { mutableIntStateOf(0) }
+    var playCountVersion by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(songsList.size, searchVersion) {
+    LaunchedEffect(songsList.size, currentSong?.id, playCountVersion, searchVersion) {
         if (songsList.isNotEmpty()) {
             withContext(Dispatchers.IO) {
                 try {
                     val searchQueries = SearchPreferenceTracker.getRecentSearchQueries(context)
                     val recs = RecommendationEngine.getPersonalizedRecommendations(
+                        context = context,
                         existingSongs = songsList,
-                        client = OkHttpClient(),
+                        currentSong = currentSong,
                         searchQueries = searchQueries
                     )
                     withContext(Dispatchers.Main) {
@@ -1790,7 +1789,6 @@ fun MusicHubApp() {
     var showEqualizerModal by remember { mutableStateOf(false) }
     var showDownloadModal by remember { mutableStateOf(false) }
     var downloadPrefill by remember { mutableStateOf<DownloadPrefill?>(null) }
-    var playCountVersion by remember { mutableIntStateOf(0) }
     var countedSongSessionId by remember { mutableStateOf<String?>(null) }
     var showUpdateModal by remember { mutableStateOf(false) }
     var editingSong by remember { mutableStateOf<SongItem?>(null) }
@@ -2725,16 +2723,37 @@ fun MusicHubApp() {
                         playCountVersion = playCountVersion,
                         onHeroClick = { showOfflineLibraryModal = true },
                         onRecommendedPlay = { recTrack ->
-                            val online = OnlineSearchResult(
-                                id = "rec_" + recTrack.id,
-                                title = recTrack.title,
-                                artist = recTrack.artist,
-                                duration = recTrack.duration,
-                                artworkUrl = recTrack.artworkUrl,
-                                webUrl = recTrack.downloadQuery,
-                                previewUrl = recTrack.previewUrl
-                            )
-                            handlePlayOnlineTrack(online)
+                            val localMatch = recTrack.localSongId?.let { localId ->
+                                songsList.find { it.id == localId }
+                            } ?: songsList.find {
+                                it.id == recTrack.id ||
+                                    (it.title.equals(recTrack.title, ignoreCase = true) &&
+                                        it.artist.equals(recTrack.artist, ignoreCase = true))
+                            }
+                            if (localMatch != null) {
+                                activePlaylistId = null
+                                activeArtistName = null
+                                activeMixTitle = null
+                                activeMixTracks = emptyList()
+                                activeLibraryFilter = null
+                                if (currentSong?.id == localMatch.id) {
+                                    isPlaying = !isPlaying
+                                } else {
+                                    currentSong = localMatch
+                                    isPlaying = true
+                                }
+                            } else {
+                                val online = OnlineSearchResult(
+                                    id = "rec_" + recTrack.id,
+                                    title = recTrack.title,
+                                    artist = recTrack.artist,
+                                    duration = recTrack.duration,
+                                    artworkUrl = recTrack.artworkUrl,
+                                    webUrl = recTrack.downloadQuery,
+                                    previewUrl = recTrack.previewUrl
+                                )
+                                handlePlayOnlineTrack(online)
+                            }
                         },
                         onRecommendedDownload = { recTrack ->
                             val online = OnlineSearchResult(
@@ -6614,22 +6633,18 @@ fun HomeScreen(
             .sortedByDescending { it.second.size }
     }
 
-    // Your Mix (Clean playlist-styled mix tracks)
-    val myMixTracks = remember(songs, playCountVersion) {
-        val mostListened = songs.filter { PlayCountTracker.getPlayCount(context, it.id) > 0 }
-            .sortedByDescending { PlayCountTracker.getPlayCount(context, it.id) }
-        val favorites = songs.filter { it.isFavorite }
-        val mixPool = (mostListened + favorites + songs.shuffled()).distinctBy { it.id }
-        mixPool.take(25)
-    }
-
-    val artistMixTracks = remember(songs, topArtistGroup) {
-        if (topArtistGroup != null && topArtistGroup.value.isNotEmpty()) {
-            val artistSongs = topArtistGroup.value
-            val otherSongs = songs.filter { it.artist != topArtistGroup.key }.shuffled()
-            (artistSongs + otherSongs).distinctBy { it.id }.take(20)
+    // 100% On-Device AI Mood & Activity Mixes (My Mix, Artist Mix, Workout & Sport, Party & Remix, Chill, Sad, Romantic, Focus, Driving)
+    var aiMoodMixes by remember { mutableStateOf<List<AiMoodMix>>(emptyList()) }
+    LaunchedEffect(songs, playCountVersion, isKhmer) {
+        if (songs.isNotEmpty()) {
+            withContext(Dispatchers.IO) {
+                val built = AiAudioMoodEngine.buildAiMoodMixes(context, songs, isKhmer)
+                withContext(Dispatchers.Main) {
+                    aiMoodMixes = built
+                }
+            }
         } else {
-            emptyList()
+            aiMoodMixes = emptyList()
         }
     }
 
@@ -6876,8 +6891,8 @@ fun HomeScreen(
             }
         }
 
-        // 1. Your Mix (Clean playlist-styled mix cards, no emojis)
-        if (myMixTracks.isNotEmpty()) {
+        // 1. Your Mix (100% On-Device AI Mood, Sport & Activity Mixes — no emojis)
+        if (aiMoodMixes.isNotEmpty()) {
             item {
                 Column {
                     Row(
@@ -6888,7 +6903,7 @@ fun HomeScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = if (isKhmer) "ការចាក់ចម្រៀងចម្រុះ (Mix)" else "Your Mix",
+                            text = if (isKhmer) "ការចាក់ចម្រៀងចម្រុះ (AI Mix)" else "Your Mix",
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
@@ -6901,17 +6916,23 @@ fun HomeScreen(
                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                         contentPadding = PaddingValues(bottom = 6.dp)
                     ) {
-                        // Mix 1: My Mix
-                        item {
-                            val firstArt = myMixTracks.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
-                            val mixTitle = if (isKhmer) "ចម្រៀងចម្រុះរបស់ខ្ញុំ" else "My Mix"
-                            val isMyMixPlaying = isPlaying && (activeMixTitle == mixTitle || activeMixTitle == "My Mix" || activeMixTitle == "ចម្រៀងចម្រុះរបស់ខ្ញុំ")
+                        items(
+                            items = aiMoodMixes,
+                            key = { it.id }
+                        ) { mix ->
+                            val firstArt = mix.coverArtworkUrl.ifBlank {
+                                mix.songs.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
+                            }
+                            val isThisMixPlaying = isPlaying && (
+                                activeMixTitle == mix.title ||
+                                (mix.id == "ai_my_mix" && (activeMixTitle == "My Mix" || activeMixTitle == "ចម្រៀងចម្រុះរបស់ខ្ញុំ"))
+                            )
                             Surface(
                                 modifier = Modifier
-                                    .width(136.dp)
+                                    .width(142.dp)
                                     .clip(RoundedCornerShape(10.dp))
                                     .clickable {
-                                        onMixClick(mixTitle, myMixTracks)
+                                        onMixClick(mix.title, mix.songs)
                                     },
                                 color = MaterialTheme.colorScheme.surface,
                                 shadowElevation = 2.dp
@@ -6920,15 +6941,18 @@ fun HomeScreen(
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(116.dp)
+                                            .height(118.dp)
                                             .clip(RoundedCornerShape(8.dp))
                                             .background(
                                                 Brush.linearGradient(
-                                                    listOf(Color(0xFF6366F1), Color(0xFF1E1B4B))
+                                                    listOf(
+                                                        Color(mix.gradientStartHex),
+                                                        Color(mix.gradientEndHex)
+                                                    )
                                                 )
                                             )
                                             .then(
-                                                if (isMyMixPlaying) Modifier.border(
+                                                if (isThisMixPlaying) Modifier.border(
                                                     width = 2.dp,
                                                     color = MaterialTheme.colorScheme.primary.copy(alpha = heroGlowAlpha),
                                                     shape = RoundedCornerShape(8.dp)
@@ -6939,20 +6963,33 @@ fun HomeScreen(
                                         if (firstArt.isNotBlank()) {
                                             SmartArtworkImage(
                                                 artworkUrl = firstArt,
-                                                contentDescription = "My Mix",
+                                                contentDescription = mix.title,
                                                 contentScale = ContentScale.Crop,
                                                 modifier = Modifier.fillMaxSize()
+                                            )
+                                            // Subtle gradient tint over artwork so mood identity shines through
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(
+                                                        Brush.verticalGradient(
+                                                            colors = listOf(
+                                                                Color.Transparent,
+                                                                Color(mix.gradientEndHex).copy(alpha = 0.55f)
+                                                            )
+                                                        )
+                                                    )
                                             )
                                         } else {
                                             Icon(
                                                 imageVector = Icons.Default.QueueMusic,
                                                 contentDescription = null,
-                                                tint = Color.White.copy(alpha = 0.8f),
+                                                tint = Color.White.copy(alpha = 0.85f),
                                                 modifier = Modifier.size(38.dp)
                                             )
                                         }
 
-                                        if (isMyMixPlaying) {
+                                        if (isThisMixPlaying) {
                                             Box(
                                                 modifier = Modifier
                                                     .fillMaxSize()
@@ -6976,7 +7013,7 @@ fun HomeScreen(
                                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                                         ) {
                                             Text(
-                                                text = "${myMixTracks.size}",
+                                                text = "${mix.songs.size}",
                                                 fontSize = 10.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = Color.White
@@ -6987,10 +7024,10 @@ fun HomeScreen(
                                     Spacer(modifier = Modifier.height(8.dp))
 
                                     Text(
-                                        text = if (isKhmer) "ចម្រៀងចម្រុះរបស់ខ្ញុំ" else "My Mix",
+                                        text = mix.title,
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = if (isMyMixPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                        color = if (isThisMixPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -6998,120 +7035,12 @@ fun HomeScreen(
                                     Spacer(modifier = Modifier.height(2.dp))
 
                                     Text(
-                                        text = if (isKhmer) "${myMixTracks.size} បទ" else "${myMixTracks.size} songs",
+                                        text = mix.subtitle,
                                         fontSize = 11.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
-                                }
-                            }
-                        }
-
-                        // Mix 2: Artist Mix (if top artist available)
-                        if (artistMixTracks.isNotEmpty() && topArtistGroup != null) {
-                            item {
-                                val topArtist = topArtistGroup.key
-                                val artistArt = artistMixTracks.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
-                                val mixTitle = "$topArtist Mix"
-                                val isArtistMixPlaying = isPlaying && activeMixTitle == mixTitle
-                                Surface(
-                                    modifier = Modifier
-                                        .width(136.dp)
-                                        .clip(RoundedCornerShape(10.dp))
-                                    .clickable {
-                                        onMixClick(mixTitle, artistMixTracks)
-                                    },
-                                    color = MaterialTheme.colorScheme.surface,
-                                    shadowElevation = 2.dp
-                                ) {
-                                    Column(modifier = Modifier.padding(10.dp)) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(116.dp)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(
-                                                    Brush.linearGradient(
-                                                        listOf(Color(0xFF3B82F6), Color(0xFF1E293B))
-                                                    )
-                                                )
-                                                .then(
-                                                    if (isArtistMixPlaying) Modifier.border(
-                                                        width = 2.dp,
-                                                        color = MaterialTheme.colorScheme.primary.copy(alpha = heroGlowAlpha),
-                                                        shape = RoundedCornerShape(8.dp)
-                                                    ) else Modifier
-                                                ),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            if (artistArt.isNotBlank()) {
-                                                SmartArtworkImage(
-                                                    artworkUrl = artistArt,
-                                                    contentDescription = "$topArtist Mix",
-                                                    contentScale = ContentScale.Crop,
-                                                    modifier = Modifier.fillMaxSize()
-                                                )
-                                            } else {
-                                                Icon(
-                                                    imageVector = Icons.Default.QueueMusic,
-                                                    contentDescription = null,
-                                                    tint = Color.White.copy(alpha = 0.8f),
-                                                    modifier = Modifier.size(38.dp)
-                                                )
-                                            }
-
-                                            if (isArtistMixPlaying) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .fillMaxSize()
-                                                        .background(Color.Black.copy(alpha = 0.4f)),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    AnimatedEqualizer(
-                                                        barColor = Color.White,
-                                                        isPlaying = true
-                                                    )
-                                                }
-                                            }
-
-                                            // Badge indicating song count in bottom-right
-                                            Box(
-                                                modifier = Modifier
-                                                    .align(Alignment.BottomEnd)
-                                                    .padding(6.dp)
-                                                .clip(RoundedCornerShape(6.dp))
-                                                .background(Color(0xCC000000))
-                                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                                            ) {
-                                                Text(
-                                                    text = "${artistMixTracks.size}",
-                                                    fontSize = 10.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color.White
-                                                )
-                                            }
-                                        }
-
-                                        Spacer(modifier = Modifier.height(8.dp))
-
-                                        Text(
-                                            text = "$topArtist Mix",
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (isArtistMixPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-
-                                        Spacer(modifier = Modifier.height(2.dp))
-
-                                        Text(
-                                            text = if (isKhmer) "${artistMixTracks.size} បទ" else "${artistMixTracks.size} songs",
-                                            fontSize = 11.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1
-                                        )
-                                    }
                                 }
                             }
                         }
@@ -7221,7 +7150,7 @@ fun HomeScreen(
             }
         }
 
-        // Smart Recommended For You (Level 2 Discovery)
+        // 3. Smart Recommended For You (100% On-Device AI Mood & Taste Scoring)
         if (recommendedTracks.isNotEmpty()) {
             item {
                 Column {
@@ -7246,8 +7175,17 @@ fun HomeScreen(
                         horizontalArrangement = Arrangement.spacedBy(14.dp),
                         contentPadding = PaddingValues(bottom = 6.dp)
                     ) {
-                        items(recommendedTracks) { track ->
-                            val isTrackPlaying = isPlaying && (currentSong?.id == "stream_rec_" + track.id || currentSong?.title.equals(track.title, ignoreCase = true) || (currentSong?.artist.equals(track.artist, ignoreCase = true) && currentSong?.title?.contains(track.title, ignoreCase = true) == true))
+                        items(
+                            items = recommendedTracks,
+                            key = { it.id }
+                        ) { track ->
+                            val isTrackPlaying = isPlaying && (
+                                (track.localSongId != null && currentSong?.id == track.localSongId) ||
+                                currentSong?.id == track.id ||
+                                currentSong?.id == "stream_rec_" + track.id ||
+                                currentSong?.title.equals(track.title, ignoreCase = true)
+                            )
+                            val moodTag = if (isKhmer) track.moodLabelKm else track.moodLabelEn
                             Surface(
                                 modifier = Modifier
                                     .width(140.dp)
@@ -7286,24 +7224,47 @@ fun HomeScreen(
                                             }
                                         }
 
-                                        // Action Button Overlay (Download)
-                                        val isDarkRec = LocalDarkMode.current
-                                        Surface(
-                                            modifier = Modifier
-                                                .align(Alignment.BottomEnd)
-                                                .padding(6.dp)
-                                                .size(28.dp)
-                                                .clip(CircleShape)
-                                                .clickable { onRecommendedDownload(track) },
-                                            color = if (isDarkRec) Color.White else Color(0xFF14161D)
-                                        ) {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Download,
-                                                    contentDescription = "Download",
-                                                    tint = if (isDarkRec) Color(0xFF0C0E12) else Color.White,
-                                                    modifier = Modifier.size(14.dp)
+                                        // AI Mood Tag Badge in bottom-left
+                                        if (moodTag.isNotBlank()) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .align(Alignment.BottomStart)
+                                                    .padding(6.dp)
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(Color(0xCC000000))
+                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                            ) {
+                                                Text(
+                                                    text = moodTag,
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = Color.White,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
+                                            }
+                                        }
+
+                                        // Only show Download button if track is not already a local song
+                                        if (track.localSongId == null) {
+                                            val isDarkRec = LocalDarkMode.current
+                                            Surface(
+                                                modifier = Modifier
+                                                    .align(Alignment.BottomEnd)
+                                                    .padding(6.dp)
+                                                    .size(28.dp)
+                                                    .clip(CircleShape)
+                                                    .clickable { onRecommendedDownload(track) },
+                                                color = if (isDarkRec) Color.White else Color(0xFF14161D)
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Download,
+                                                        contentDescription = "Download",
+                                                        tint = if (isDarkRec) Color(0xFF0C0E12) else Color.White,
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -7314,7 +7275,7 @@ fun HomeScreen(
                                         text = track.title,
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface,
+                                        color = if (isTrackPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                                         maxLines = 2,
                                         minLines = 2,
                                         lineHeight = 16.sp,
