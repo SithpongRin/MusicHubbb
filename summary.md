@@ -382,6 +382,14 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.64
+- Instant Touch-and-Drag Playlist Song Reordering & Full `...` Options Menu in `PlaylistDetailDialog`:
+  - Replaced the single-step `^`/`v` arrows and `X` button on playlist song rows with a clean 2-button right layout: **`=` (`DragHandle`)** + **`...` (`MoreHoriz`)**.
+  - Implemented zero-delay (no long-press required) touch-and-drag reordering on the `=` handle at the `LazyColumn` container level (`PointerEventPass.Initial`) with real-time item elevation, continuous finger-locked offset compensation across item swaps, and automatic edge scrolling.
+  - Upgraded the `...` dropdown menu on each playlist song row with full track actions: Add/Remove Favorite, Move to Top, Move to Bottom, Add to Another Playlist, Edit Info, Share/Copy File, Remove from Playlist, and Delete Song.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 64` and `versionName = "1.0.64"` in `app/build.gradle.kts`.
+
 ### Version 1.0.63
 - Updated `UnifiedExpandablePlayerCard` Top Header Bar, Mini-Player Gestures, and Mini-Player Artwork Shape:
   - Redesigned Now Playing top header bar to `v` (`KeyboardArrowDown` collapse button) | `Switch Player Artwork Style` (`Album` / `CropSquare` toggle button) | `Share` | `EQ` (`Tune`), removing the `"Now Playing"` text label.

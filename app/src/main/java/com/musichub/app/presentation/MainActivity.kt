@@ -35,12 +35,16 @@ import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -3139,6 +3143,10 @@ fun MusicHubApp() {
                     savePlaylists(context, updatedPlaylists)
                 },
                 onFavoriteToggle = { song -> toggleFavorite(song) },
+                onEditSong = { song -> editingSong = song },
+                onDeleteSong = { song -> deleteSong(song) },
+                onAddToPlaylist = { song -> playlistForAddSong = song },
+                onShareSong = { song -> shareSongFile(context, song) },
                 onMiniPlayerClick = { showNowPlayingModal = true },
                 onTogglePlay = { togglePlayPause() },
                 onMiniPlayerDismiss = { dismissMiniPlayer() },
@@ -3992,6 +4000,10 @@ fun PlaylistDetailDialog(
     onSaveSongIds: (List<String>) -> Unit,
     onRemoveSong: (SongItem) -> Unit,
     onFavoriteToggle: (SongItem) -> Unit = {},
+    onEditSong: (SongItem) -> Unit = {},
+    onDeleteSong: (SongItem) -> Unit = {},
+    onAddToPlaylist: (SongItem) -> Unit = {},
+    onShareSong: (SongItem) -> Unit = {},
     onMiniPlayerClick: () -> Unit = {},
     onTogglePlay: () -> Unit = {},
     onMiniPlayerDismiss: () -> Unit = {},
@@ -4001,6 +4013,15 @@ fun PlaylistDetailDialog(
     var showSelectSongsDialog by remember { mutableStateOf(false) }
 
     var songsOrder by remember(playlist.songIds) { mutableStateOf(playlist.songIds) }
+    val lazyListState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+    val density = LocalDensity.current
+
+    var draggingSongId by remember { mutableStateOf<String?>(null) }
+    var draggingDeltaY by remember { mutableFloatStateOf(0f) }
+
+    val currentSongsOrderState = rememberUpdatedState(songsOrder)
+    val currentOnSaveState = rememberUpdatedState(onSaveSongIds)
 
     if (showSelectSongsDialog) {
         SelectPlaylistSongsDialog(
@@ -4173,18 +4194,112 @@ fun PlaylistDetailDialog(
                     }
                 } else {
                     LazyColumn(
+                        state = lazyListState,
+                        userScrollEnabled = draggingSongId == null,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .weight(1f),
+                            .weight(1f)
+                            .pointerInput(Unit) {
+                                val handleRightOffsetPx = with(density) { 45.dp.toPx() }
+                                val handleLeftOffsetPx = with(density) { 94.dp.toPx() }
+                                val edgeScrollZonePx = with(density) { 52.dp.toPx() }
+
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                                    val handleStartX = size.width - handleLeftOffsetPx
+                                    val handleEndX = size.width - handleRightOffsetPx
+
+                                    if (down.position.x in handleStartX..handleEndX) {
+                                        val hitItem = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
+                                            down.position.y.toInt() in item.offset..(item.offset + item.size)
+                                        }
+                                        val activeId = hitItem?.key as? String
+                                        if (activeId != null) {
+                                            // Instant touch-and-drag on '=' handle without waiting for long press
+                                            down.consume()
+                                            draggingSongId = activeId
+                                            draggingDeltaY = 0f
+                                            val pointerId = down.id
+
+                                            while (true) {
+                                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+
+                                                if (!change.pressed) {
+                                                    change.consume()
+                                                    draggingSongId = null
+                                                    draggingDeltaY = 0f
+                                                    currentOnSaveState.value(currentSongsOrderState.value)
+                                                    break
+                                                } else {
+                                                    val dy = change.positionChangeIgnoreConsumed().y
+                                                    change.consume()
+                                                    if (dy != 0f) {
+                                                        draggingDeltaY += dy
+                                                    }
+
+                                                    val currentInfo = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == activeId }
+                                                    if (currentInfo != null) {
+                                                        val currentCenterY = currentInfo.offset + (currentInfo.size / 2f) + draggingDeltaY
+                                                        val targetInfo = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { other ->
+                                                            other.key != activeId && (
+                                                                (draggingDeltaY < 0f && other.index < currentInfo.index && currentCenterY < other.offset + other.size * 0.55f) ||
+                                                                (draggingDeltaY > 0f && other.index > currentInfo.index && currentCenterY > other.offset + other.size * 0.45f)
+                                                            )
+                                                        }
+
+                                                        if (targetInfo != null) {
+                                                            val targetId = targetInfo.key as? String
+                                                            val mutable = currentSongsOrderState.value.toMutableList()
+                                                            val fromIdx = mutable.indexOf(activeId)
+                                                            val toIdx = if (targetId != null) mutable.indexOf(targetId) else -1
+                                                            if (fromIdx != -1 && toIdx != -1 && fromIdx != toIdx) {
+                                                                val moved = mutable.removeAt(fromIdx)
+                                                                mutable.add(toIdx, moved)
+                                                                songsOrder = mutable
+                                                                currentOnSaveState.value(mutable)
+                                                                draggingDeltaY += (currentInfo.offset - targetInfo.offset)
+                                                            }
+                                                        }
+                                                    }
+
+                                                    if (change.position.y < edgeScrollZonePx && lazyListState.canScrollBackward) {
+                                                        coroutineScope.launch { lazyListState.scrollBy(-12f) }
+                                                    } else if (change.position.y > size.height - edgeScrollZonePx && lazyListState.canScrollForward) {
+                                                        coroutineScope.launch { lazyListState.scrollBy(12f) }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         itemsIndexed(playlistSongs, key = { _, song -> song.id }) { index, song ->
+                            val isDraggingThis = draggingSongId == song.id
+                            val isCurrentSong = currentSong?.id == song.id
+
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .zIndex(if (isDraggingThis) 10f else 0f)
+                                    .graphicsLayer {
+                                        translationY = if (isDraggingThis) draggingDeltaY else 0f
+                                        scaleX = if (isDraggingThis) 1.02f else 1f
+                                        scaleY = if (isDraggingThis) 1.02f else 1f
+                                        shadowElevation = if (isDraggingThis) 18f else 0f
+                                    }
                                     .clip(RoundedCornerShape(14.dp))
-                                    .clickable { onSongClick(song) },
-                                color = if (currentSong?.id == song.id) (if (isDark) Color(0xFF1B1E25) else Color.White) else Color.Transparent
+                                    .clickable(enabled = draggingSongId == null) { onSongClick(song) },
+                                color = when {
+                                    isDraggingThis -> if (isDark) Color(0xFF252934) else Color.White
+                                    isCurrentSong -> if (isDark) Color(0xFF1B1E25) else Color.White
+                                    else -> Color.Transparent
+                                },
+                                border = if (isDraggingThis) {
+                                    androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF818CF8).copy(alpha = 0.7f))
+                                } else null
                             ) {
                                 Row(
                                     modifier = Modifier
@@ -4195,8 +4310,8 @@ fun PlaylistDetailDialog(
                                     Text(
                                         text = String.format("%02d", index + 1),
                                         fontSize = 12.sp,
-                                        color = if (isDark) Color(0xFF64748B) else Color(0xFF8A909E),
-                                        fontWeight = FontWeight.Medium,
+                                        color = if (isCurrentSong) Color(0xFF818CF8) else (if (isDark) Color(0xFF64748B) else Color(0xFF8A909E)),
+                                        fontWeight = if (isCurrentSong) FontWeight.Bold else FontWeight.Medium,
                                         modifier = Modifier.width(24.dp)
                                     )
 
@@ -4217,6 +4332,20 @@ fun PlaylistDetailDialog(
                                         } else {
                                             Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B), modifier = Modifier.size(20.dp))
                                         }
+
+                                        if (isCurrentSong && isPlaying) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(Color.Black.copy(alpha = 0.45f)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                AnimatedEqualizer(
+                                                    barColor = Color(0xFF818CF8),
+                                                    isPlaying = true
+                                                )
+                                            }
+                                        }
                                     }
 
                                     Spacer(modifier = Modifier.width(10.dp))
@@ -4226,7 +4355,7 @@ fun PlaylistDetailDialog(
                                             text = song.title,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 13.sp,
-                                            color = if (currentSong?.id == song.id) (if (isDark) Color(0xFF818CF8) else Color(0xFF14161D)) else (if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)),
+                                            color = if (isCurrentSong) (if (isDark) Color(0xFF818CF8) else Color(0xFF14161D)) else (if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)),
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
@@ -4239,137 +4368,225 @@ fun PlaylistDetailDialog(
                                         )
                                     }
 
-                                    var showReorderMenu by remember { mutableStateOf(false) }
-
-                                    // 1-Tap Quick Move Up
-                                    IconButton(
-                                        onClick = {
-                                            if (index > 0) {
-                                                val mutable = songsOrder.toMutableList()
-                                                val item = mutable.removeAt(index)
-                                                mutable.add(index - 1, item)
-                                                songsOrder = mutable
-                                                onSaveSongIds(mutable)
-                                            }
-                                        },
-                                        enabled = index > 0,
-                                        modifier = Modifier.size(30.dp)
+                                    // 1. Instant Touch-and-Drag Handle (=)
+                                    Box(
+                                        modifier = Modifier.size(40.dp),
+                                        contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Default.KeyboardArrowUp,
-                                            contentDescription = "Move Up",
-                                            tint = if (index > 0) (if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)) else (if (isDark) Color(0xFF475569) else Color(0xFFCBD5E1)),
-                                            modifier = Modifier.size(20.dp)
+                                            imageVector = Icons.Default.DragHandle,
+                                            contentDescription = "Drag to Reorder",
+                                            tint = if (isDraggingThis) Color(0xFF818CF8) else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
+                                            modifier = Modifier.size(22.dp)
                                         )
                                     }
 
-                                    // 1-Tap Quick Move Down
-                                    IconButton(
-                                        onClick = {
-                                            if (index < playlistSongs.size - 1) {
-                                                val mutable = songsOrder.toMutableList()
-                                                val item = mutable.removeAt(index)
-                                                mutable.add(index + 1, item)
-                                                songsOrder = mutable
-                                                onSaveSongIds(mutable)
-                                            }
-                                        },
-                                        enabled = index < playlistSongs.size - 1,
-                                        modifier = Modifier.size(30.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.KeyboardArrowDown,
-                                            contentDescription = "Move Down",
-                                            tint = if (index < playlistSongs.size - 1) (if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)) else (if (isDark) Color(0xFF475569) else Color(0xFFCBD5E1)),
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
+                                    Spacer(modifier = Modifier.width(4.dp))
 
-                                    // Quick Reorder Menu Button
+                                    // 2. Options Menu Button (...)
+                                    var showOptionsMenu by remember { mutableStateOf(false) }
                                     Box {
                                         IconButton(
-                                            onClick = { showReorderMenu = true },
-                                            modifier = Modifier.size(32.dp)
+                                            onClick = { showOptionsMenu = true },
+                                            modifier = Modifier.size(34.dp)
                                         ) {
                                             Icon(
-                                                imageVector = Icons.Default.MoreVert,
-                                                contentDescription = "Reorder options",
+                                                imageVector = Icons.Default.MoreHoriz,
+                                                contentDescription = "Options",
                                                 tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
-                                                modifier = Modifier.size(18.dp)
+                                                modifier = Modifier.size(20.dp)
                                             )
                                         }
 
-                                        // 1-Tap Quick Reorder Dropdown Menu
                                         DropdownMenu(
-                                            expanded = showReorderMenu,
-                                            onDismissRequest = { showReorderMenu = false }
+                                            expanded = showOptionsMenu,
+                                            onDismissRequest = { showOptionsMenu = false },
+                                            modifier = Modifier.background(if (isDark) Color(0xFF1B1E25) else Color.White)
                                         ) {
                                             DropdownMenuItem(
-                                                text = { Text(if (isKhmer) "ឡើងលើ (Move Up)" else "Move Up") },
-                                                leadingIcon = { Icon(Icons.Default.ArrowUpward, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                                enabled = index > 0,
+                                                text = {
+                                                    Text(
+                                                        text = if (song.isFavorite) {
+                                                            if (isKhmer) "ដកចេញពីចូលចិត្ត" else "Remove from Favorites"
+                                                        } else {
+                                                            if (isKhmer) "ដាក់ក្នុងចូលចិត្ត" else "Add to Favorites"
+                                                        },
+                                                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                                                    )
+                                                },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                                        contentDescription = null,
+                                                        tint = if (song.isFavorite) Color(0xFFEF4444) else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                },
                                                 onClick = {
-                                                    val mutable = songsOrder.toMutableList()
-                                                    val item = mutable.removeAt(index)
-                                                    mutable.add(index - 1, item)
-                                                    songsOrder = mutable
-                                                    onSaveSongIds(mutable)
-                                                    showReorderMenu = false
+                                                    showOptionsMenu = false
+                                                    onFavoriteToggle(song)
                                                 }
                                             )
+
+                                            if (index > 0) {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Text(
+                                                            text = if (isKhmer) "ផ្លាស់ទីទៅលើគេបង្អស់" else "Move to Top",
+                                                            color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                                                        )
+                                                    },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            imageVector = Icons.Default.VerticalAlignTop,
+                                                            contentDescription = null,
+                                                            tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                                            modifier = Modifier.size(18.dp)
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        val mutable = songsOrder.toMutableList()
+                                                        val item = mutable.removeAt(index)
+                                                        mutable.add(0, item)
+                                                        songsOrder = mutable
+                                                        onSaveSongIds(mutable)
+                                                        showOptionsMenu = false
+                                                    }
+                                                )
+                                            }
+
+                                            if (index < playlistSongs.size - 1) {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Text(
+                                                            text = if (isKhmer) "ផ្លាស់ទីទៅក្រោមគេបង្អស់" else "Move to Bottom",
+                                                            color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                                                        )
+                                                    },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            imageVector = Icons.Default.VerticalAlignBottom,
+                                                            contentDescription = null,
+                                                            tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                                            modifier = Modifier.size(18.dp)
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        val mutable = songsOrder.toMutableList()
+                                                        val item = mutable.removeAt(index)
+                                                        mutable.add(mutable.size, item)
+                                                        songsOrder = mutable
+                                                        onSaveSongIds(mutable)
+                                                        showOptionsMenu = false
+                                                    }
+                                                )
+                                            }
+
                                             DropdownMenuItem(
-                                                text = { Text(if (isKhmer) "ចុះក្រោម (Move Down)" else "Move Down") },
-                                                leadingIcon = { Icon(Icons.Default.ArrowDownward, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                                enabled = index < playlistSongs.size - 1,
+                                                text = {
+                                                    Text(
+                                                        text = if (isKhmer) "បញ្ចូលក្នុង Playlist ផ្សេង" else "Add to Playlist",
+                                                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                                                    )
+                                                },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        imageVector = Icons.Default.PlaylistAdd,
+                                                        contentDescription = null,
+                                                        tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                },
                                                 onClick = {
-                                                    val mutable = songsOrder.toMutableList()
-                                                    val item = mutable.removeAt(index)
-                                                    mutable.add(index + 1, item)
-                                                    songsOrder = mutable
-                                                    onSaveSongIds(mutable)
-                                                    showReorderMenu = false
+                                                    showOptionsMenu = false
+                                                    onAddToPlaylist(song)
                                                 }
                                             )
+
                                             DropdownMenuItem(
-                                                text = { Text(if (isKhmer) "ឡើងលើគេបង្អស់ (To Top)" else "Move to Top") },
-                                                leadingIcon = { Icon(Icons.Default.VerticalAlignTop, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                                enabled = index > 0,
+                                                text = {
+                                                    Text(
+                                                        text = if (isKhmer) "កែសម្រួលព័ត៌មាន" else "Edit Info",
+                                                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                                                    )
+                                                },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Edit,
+                                                        contentDescription = null,
+                                                        tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                },
                                                 onClick = {
-                                                    val mutable = songsOrder.toMutableList()
-                                                    val item = mutable.removeAt(index)
-                                                    mutable.add(0, item)
-                                                    songsOrder = mutable
-                                                    onSaveSongIds(mutable)
-                                                    showReorderMenu = false
+                                                    showOptionsMenu = false
+                                                    onEditSong(song)
                                                 }
                                             )
+
                                             DropdownMenuItem(
-                                                text = { Text(if (isKhmer) "ចុះក្រោមគេបង្អស់ (To Bottom)" else "Move to Bottom") },
-                                                leadingIcon = { Icon(Icons.Default.VerticalAlignBottom, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                                enabled = index < playlistSongs.size - 1,
+                                                text = {
+                                                    Text(
+                                                        text = if (isKhmer) "ចែករំលែក ឬ Copy ឯកសារ" else "Share / Copy File",
+                                                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                                                    )
+                                                },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Share,
+                                                        contentDescription = null,
+                                                        tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                },
                                                 onClick = {
-                                                    val mutable = songsOrder.toMutableList()
-                                                    val item = mutable.removeAt(index)
-                                                    mutable.add(mutable.size, item)
-                                                    songsOrder = mutable
-                                                    onSaveSongIds(mutable)
-                                                    showReorderMenu = false
+                                                    showOptionsMenu = false
+                                                    onShareSong(song)
+                                                }
+                                            )
+
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        text = if (isKhmer) "ដកចេញពី Playlist នេះ" else "Remove from Playlist",
+                                                        color = Color(0xFFF59E0B)
+                                                    )
+                                                },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        imageVector = Icons.Default.RemoveCircleOutline,
+                                                        contentDescription = null,
+                                                        tint = Color(0xFFF59E0B),
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                },
+                                                onClick = {
+                                                    showOptionsMenu = false
+                                                    onRemoveSong(song)
+                                                }
+                                            )
+
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        text = if (isKhmer) "លុបចេញពីកម្មវិធី" else "Delete Song",
+                                                        color = Color(0xFFEF4444)
+                                                    )
+                                                },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Delete,
+                                                        contentDescription = null,
+                                                        tint = Color(0xFFEF4444),
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                },
+                                                onClick = {
+                                                    showOptionsMenu = false
+                                                    onDeleteSong(song)
                                                 }
                                             )
                                         }
-                                    }
-
-                                    // Remove Song from Playlist
-                                    IconButton(
-                                        onClick = { onRemoveSong(song) },
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Close,
-                                            contentDescription = "Remove",
-                                            tint = Color(0xFF94A3B8),
-                                            modifier = Modifier.size(16.dp)
-                                        )
                                     }
                                 }
                             }
