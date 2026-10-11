@@ -382,6 +382,13 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.58
+- Ultra-clean `NowPlayingDialog` header and `NavigationBar` Dark Mode color harmony:
+  - Removed the top-left down-arrow button and the top drag-pill indicator from `NowPlayingDialog` so the header displays a clean centered "Now Playing" title with Share and EQ icons on the right while relying on natural swipe-down-to-minimize anywhere on the screen.
+  - Fixed `NavigationBar` Dark Mode color mismatch caused by Material 3 `tonalElevation = 8.dp` blue-purple tinting: set `surfaceTint = Color.Transparent` in `darkColorScheme`, `tonalElevation = 0.dp`, and deep obsidian `Color(0xFF0A0A0D)` container color on `NavigationBar` (with `Color(0xFF1D1D24)` active pill indicator), plus harmonized `MiniPlayerCard` dark surface (`Color(0xFF141418)` with subtle `Color(0xFF23232B)` border).
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 58` and `versionName = "1.0.58"` in `app/build.gradle.kts`.
+
 ### Version 1.0.57
 - Refined `NowPlayingDialog` layout and interactions:
   - Removed the redundant bottom volume slider from `NowPlayingDialog` (volume control remains available in `SettingsScreen`), creating a cleaner, uncluttered player layout.

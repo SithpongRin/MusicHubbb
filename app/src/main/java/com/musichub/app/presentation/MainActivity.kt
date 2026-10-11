@@ -2331,6 +2331,7 @@ fun MusicHubApp() {
             background = Color(0xFF030303),
             surface = Color(0xFF121216),
             surfaceVariant = Color(0xFF1D1D24),
+            surfaceTint = Color.Transparent,
             onPrimary = Color.White,
             onBackground = Color(0xFFFAFAFA),
             onSurface = Color(0xFFFAFAFA),
@@ -2344,6 +2345,7 @@ fun MusicHubApp() {
             background = Color(0xFFF5F6F9),
             surface = Color(0xFFFFFFFF),
             surfaceVariant = Color(0xFFEBEDF2),
+            surfaceTint = Color.Transparent,
             onPrimary = Color.White,
             onBackground = Color(0xFF111318),
             onSurface = Color(0xFF181A20),
@@ -2379,9 +2381,9 @@ fun MusicHubApp() {
 
                     // Bottom Navigation Bar
                     NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        tonalElevation = 8.dp,
-                        modifier = Modifier.shadow(12.dp)
+                        containerColor = if (isDarkMode) Color(0xFF0A0A0D) else Color.White,
+                        tonalElevation = 0.dp,
+                        modifier = Modifier.shadow(if (isDarkMode) 0.dp else 12.dp)
                     ) {
                         Screen.values().forEach { screen ->
                             NavigationBarItem(
@@ -2405,7 +2407,7 @@ fun MusicHubApp() {
                                     selectedTextColor = if (isDarkMode) Color(0xFF818CF8) else Color(0xFF14161D),
                                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    indicatorColor = MaterialTheme.colorScheme.surfaceVariant
+                                    indicatorColor = if (isDarkMode) Color(0xFF1D1D24) else MaterialTheme.colorScheme.surfaceVariant
                                 )
                             )
                         }
@@ -5110,7 +5112,8 @@ fun MiniPlayerCard(
                     }
                 }
             },
-        color = Color(0xFF14161D)
+        color = if (LocalDarkMode.current) Color(0xFF141418) else Color(0xFF14161D),
+        border = if (LocalDarkMode.current) androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF23232B)) else null
     ) {
         Row(
             modifier = Modifier
@@ -8319,44 +8322,27 @@ fun NowPlayingDialog(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // Top Header Section with Subtle Swipe-Down Pill Indicator
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                // Clean Minimal Top Header (Swipe-down anywhere minimizes, no down-arrow or pill clutter)
+                Box(
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .width(38.dp)
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.30f))
+                    Text(
+                        text = if (isKhmer) "កំពុងចាក់" else "Now Playing",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.align(Alignment.Center)
                     )
 
-                    Spacer(modifier = Modifier.height(6.dp))
-
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.align(Alignment.CenterEnd),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        IconButton(onClick = onDismiss) {
-                            Icon(imageVector = Icons.Default.KeyboardArrowDown, contentDescription = "Down", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
+                        IconButton(onClick = onShareClick) {
+                            Icon(imageVector = Icons.Default.Share, contentDescription = "Share", tint = MaterialTheme.colorScheme.onSurface)
                         }
-
-                        Text(
-                            text = if (isKhmer) "កំពុងចាក់" else "Now Playing",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = onShareClick) {
-                                Icon(imageVector = Icons.Default.Share, contentDescription = "Share", tint = MaterialTheme.colorScheme.onSurface)
-                            }
-                            IconButton(onClick = onEqualizerClick) {
-                                Icon(imageVector = Icons.Default.Tune, contentDescription = "EQ", tint = MaterialTheme.colorScheme.onSurface)
-                            }
+                        IconButton(onClick = onEqualizerClick) {
+                            Icon(imageVector = Icons.Default.Tune, contentDescription = "EQ", tint = MaterialTheme.colorScheme.onSurface)
                         }
                     }
                 }
