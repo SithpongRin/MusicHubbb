@@ -382,6 +382,16 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.67
+- Swipe-Up Playing Queue Sheet in Now Playing, Artist Song Drag-and-Drop (`=`), Update Dialog Button Contrast Fix, and Single-Line Search Placeholder:
+  - Added a minimal bottom handle bar (no text) below the Now Playing controls in `UnifiedExpandablePlayerCard` and enabled swiping up (or tapping the handle bar) to smoothly open the active Playing Queue sheet (`currentQueue`), while preserving swipe-down to minimize into the Mini-Player.
+  - Inside the swipe-up Playing Queue sheet, displayed the active queue title and track count, auto-scrolled to the currently playing song, enabled 1-tap track switching, and added `220ms` press-and-hold drag-and-drop reordering (`=`) without `...` menu buttons.
+  - Added `220ms` press-and-hold drag-and-drop reordering (`=`) and Move to Top / Move to Bottom options to `ArtistDetailDialog`, persisting artist track order in library storage.
+  - Fixed button text and icon contrast in `AppUpdateDialog` (`Download via Browser`, `Download & Install`, and `Close` buttons) so text is always crisp and visible in Dark Mode.
+  - Prevented the search input placeholder and tab labels in `SearchScreen` from wrapping onto multiple lines (`maxLines = 1, overflow = TextOverflow.Ellipsis`).
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 67` and `versionName = "1.0.67"` in `app/build.gradle.kts`.
+
 ### Version 1.0.66
 - Smooth Shape-Matched Button Borders & Single `+` on Library Create Playlist Button:
   - Added explicit `shape` parameters (`RoundedCornerShape` / `CircleShape`) directly to all bordered `Surface` components (`EN` language pill, `+` import button, `Loop Off` toggle button, `+ New` playlist button, Rescan button, `MiniPlayerCard`, and `UnifiedExpandablePlayerCard`) so `BorderStroke` renders smoothly around every curved edge instead of clipping a rectangular border.

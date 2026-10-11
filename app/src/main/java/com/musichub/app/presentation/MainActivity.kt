@@ -1621,6 +1621,75 @@ fun MusicHubApp() {
         getCurrentPlaybackQueue()
     }
 
+    val currentQueueTitle: String = remember(activeArtistName, activePlaylistId, activeMixTitle, playlists, isKhmer) {
+        val pid = activePlaylistId
+        if (pid != null) {
+            val pl = playlists.find { it.id.trim() == pid.trim() }
+            if (pl != null) return@remember pl.title
+        }
+        val artist = activeArtistName
+        if (artist != null) {
+            return@remember artist
+        }
+        val mix = activeMixTitle
+        if (mix != null) {
+            return@remember mix
+        }
+        if (isKhmer) "បញ្ជីបទកំពុងចាក់" else "Playing Queue"
+    }
+
+    fun reorderArtistSongs(artistName: String, newOrderedIds: List<String>) {
+        val artistSongsMap = songsList
+            .filter { it.artist.trim().equals(artistName.trim(), ignoreCase = true) }
+            .associateBy { it.id }
+        val reorderedArtistSongs = newOrderedIds.mapNotNull { artistSongsMap[it] }
+        val remainingArtistSongs = artistSongsMap.values.filter { it.id !in newOrderedIds.toSet() }
+        val finalArtistIterator = (reorderedArtistSongs + remainingArtistSongs).iterator()
+        val updatedList = songsList.map { s ->
+            if (s.artist.trim().equals(artistName.trim(), ignoreCase = true) && finalArtistIterator.hasNext()) {
+                finalArtistIterator.next()
+            } else {
+                s
+            }
+        }
+        songsList = updatedList
+        saveSongs(context, updatedList)
+    }
+
+    fun reorderPlaybackQueue(newOrderedIds: List<String>) {
+        val pid = activePlaylistId
+        if (pid != null) {
+            val updatedPlaylists = playlists.map { p ->
+                if (p.id.trim() == pid.trim()) p.copy(songIds = newOrderedIds) else p
+            }
+            playlists = updatedPlaylists
+            savePlaylists(context, updatedPlaylists)
+            return
+        }
+        val artist = activeArtistName
+        if (artist != null) {
+            reorderArtistSongs(artist, newOrderedIds)
+            return
+        }
+        if (activeMixTitle != null && activeMixTracks.isNotEmpty()) {
+            val mixMap = activeMixTracks.associateBy { it.id }
+            val reorderedMix = newOrderedIds.mapNotNull { mixMap[it] }
+            val remainingMix = activeMixTracks.filter { it.id !in newOrderedIds.toSet() }
+            val updatedMix = reorderedMix + remainingMix
+            activeMixTracks = updatedMix
+            if (viewingMix != null && viewingMix!!.first == activeMixTitle) {
+                viewingMix = Pair(viewingMix!!.first, updatedMix)
+            }
+            return
+        }
+        val songMap = songsList.associateBy { it.id }
+        val reorderedAll = newOrderedIds.mapNotNull { songMap[it] }
+        val remainingAll = songsList.filter { it.id !in newOrderedIds.toSet() }
+        val updatedAll = reorderedAll + remainingAll
+        songsList = updatedAll
+        saveSongs(context, updatedAll)
+    }
+
     var showNowPlayingModal by remember { mutableStateOf(false) }
     var showOfflineLibraryModal by remember { mutableStateOf(false) }
     var showEqualizerModal by remember { mutableStateOf(false) }
@@ -3208,6 +3277,7 @@ fun MusicHubApp() {
                         isPlaying = true
                     }
                 },
+                onSaveSongIds = { newSongIds -> reorderArtistSongs(aName, newSongIds) },
                 onFavoriteToggle = { song -> toggleFavorite(song) },
                 onEditSong = { song -> editingSong = song },
                 onDeleteSong = { song -> deleteSong(song) },
@@ -3243,6 +3313,19 @@ fun MusicHubApp() {
                 positionMs = playbackPositionMs,
                 isShuffle = isShuffle,
                 loopMode = loopMode,
+                queueSongs = currentQueue,
+                queueTitle = currentQueueTitle,
+                onQueueSongClick = { selectedSong ->
+                    if (currentSong?.id == selectedSong.id) {
+                        togglePlayPause()
+                    } else {
+                        currentSong = selectedSong
+                        isPlaying = true
+                    }
+                },
+                onReorderQueue = { newOrderedIds ->
+                    reorderPlaybackQueue(newOrderedIds)
+                },
                 onProgressChange = { frac ->
                     playbackProgress = frac
                     val dur = if (exoPlayer.duration > 0) exoPlayer.duration else ((currentSong?.durationSec ?: 0) * 1000L)
@@ -4655,6 +4738,7 @@ fun ArtistDetailDialog(
     onSongClick: (SongItem) -> Unit,
     onPlayAll: () -> Unit,
     onShufflePlay: () -> Unit,
+    onSaveSongIds: (List<String>) -> Unit = {},
     onFavoriteToggle: (SongItem) -> Unit,
     onEditSong: (SongItem) -> Unit,
     onDeleteSong: (SongItem) -> Unit,
@@ -4667,8 +4751,26 @@ fun ArtistDetailDialog(
     onDismiss: () -> Unit
 ) {
     val isDark = LocalDarkMode.current
-    val artistCover = remember(artistSongs) {
-        artistSongs.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
+    var songsOrder by remember(artistName, artistSongs) { mutableStateOf(artistSongs.map { it.id }) }
+    val orderedArtistSongs = remember(songsOrder, artistSongs) {
+        val map = artistSongs.associateBy { it.id }
+        val ordered = songsOrder.mapNotNull { map[it] }
+        val remaining = artistSongs.filter { it.id !in songsOrder.toSet() }
+        ordered + remaining
+    }
+
+    val lazyListState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+    val density = LocalDensity.current
+
+    var draggingSongId by remember { mutableStateOf<String?>(null) }
+    var draggingDeltaY by remember { mutableFloatStateOf(0f) }
+
+    val currentSongsOrderState = rememberUpdatedState(songsOrder)
+    val currentOnSaveState = rememberUpdatedState(onSaveSongIds)
+
+    val artistCover = remember(orderedArtistSongs) {
+        orderedArtistSongs.firstOrNull { it.artworkUrl.isNotBlank() }?.artworkUrl ?: ""
     }
 
     val isThisArtistPlaying = isPlaying && activeArtistName != null && activeArtistName.trim().equals(artistName.trim(), ignoreCase = true)
@@ -4738,6 +4840,7 @@ fun ArtistDetailDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp)),
+                    shape = RoundedCornerShape(12.dp),
                     color = if (isDark) Color(0xFF1B1E25) else Color.White,
                     shadowElevation = 2.dp
                 ) {
@@ -4836,7 +4939,7 @@ fun ArtistDetailDialog(
                             }
                             Spacer(modifier = Modifier.height(3.dp))
                             Text(
-                                text = if (isKhmer) "${artistSongs.size} បទចម្រៀង" else "${artistSongs.size} tracks available",
+                                text = if (isKhmer) "${orderedArtistSongs.size} បទចម្រៀង" else "${orderedArtistSongs.size} tracks available",
                                 fontSize = 12.sp,
                                 color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E)
                             )
@@ -4902,7 +5005,7 @@ fun ArtistDetailDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = if (isKhmer) "${artistSongs.size} បទចម្រៀង" else "${artistSongs.size} tracks",
+                        text = if (isKhmer) "${orderedArtistSongs.size} បទចម្រៀង" else "${orderedArtistSongs.size} tracks",
                         fontSize = 13.sp,
                         color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E),
                         fontWeight = FontWeight.Medium
@@ -4913,6 +5016,7 @@ fun ArtistDetailDialog(
                         modifier = Modifier
                             .clip(RoundedCornerShape(10.dp))
                             .clickable { onLoopModeToggle() },
+                        shape = RoundedCornerShape(10.dp),
                         color = if (loopMode != LoopMode.OFF) primaryBtnBg else (if (isDark) Color(0xFF1B1E25) else Color.White),
                         border = androidx.compose.foundation.BorderStroke(
                             1.dp,
@@ -4946,27 +5050,403 @@ fun ArtistDetailDialog(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Songs List
+                // Songs List with Drag-and-Drop Reorder (=)
                 LazyColumn(
+                    state = lazyListState,
+                    userScrollEnabled = draggingSongId == null,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f),
+                        .weight(1f)
+                        .pointerInput(Unit) {
+                            val handleRightOffsetPx = with(density) { 45.dp.toPx() }
+                            val handleLeftOffsetPx = with(density) { 94.dp.toPx() }
+                            val edgeScrollZonePx = with(density) { 52.dp.toPx() }
+
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                                val handleStartX = size.width - handleLeftOffsetPx
+                                val handleEndX = size.width - handleRightOffsetPx
+
+                                if (down.position.x in handleStartX..handleEndX) {
+                                    val hitItem = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
+                                        down.position.y.toInt() in item.offset..(item.offset + item.size)
+                                    }
+                                    val activeId = hitItem?.key as? String
+                                    if (activeId != null) {
+                                        val pointerId = down.id
+                                        val startPos = down.position
+                                        val touchSlop = viewConfiguration.touchSlop
+                                        val cancelledBeforeHold = withTimeoutOrNull(220L) {
+                                            while (true) {
+                                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                val change = event.changes.firstOrNull { it.id == pointerId }
+                                                if (change == null || !change.pressed) {
+                                                    return@withTimeoutOrNull true
+                                                }
+                                                val dx = change.position.x - startPos.x
+                                                val dy = change.position.y - startPos.y
+                                                if (dx * dx + dy * dy > touchSlop * touchSlop) {
+                                                    return@withTimeoutOrNull true
+                                                }
+                                            }
+                                            @Suppress("UNREACHABLE_CODE")
+                                            false
+                                        } ?: false
+
+                                        if (!cancelledBeforeHold) {
+                                            draggingSongId = activeId
+                                            draggingDeltaY = 0f
+
+                                            while (true) {
+                                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+
+                                                if (!change.pressed) {
+                                                    change.consume()
+                                                    draggingSongId = null
+                                                    draggingDeltaY = 0f
+                                                    currentOnSaveState.value(currentSongsOrderState.value)
+                                                    break
+                                                } else {
+                                                    val dy = change.positionChangeIgnoreConsumed().y
+                                                    change.consume()
+                                                    if (dy != 0f) {
+                                                        draggingDeltaY += dy
+                                                    }
+
+                                                    val currentInfo = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == activeId }
+                                                    if (currentInfo != null) {
+                                                        val currentCenterY = currentInfo.offset + (currentInfo.size / 2f) + draggingDeltaY
+                                                        val targetInfo = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { other ->
+                                                            other.key != activeId && (
+                                                                (draggingDeltaY < 0f && other.index < currentInfo.index && currentCenterY < other.offset + other.size * 0.55f) ||
+                                                                (draggingDeltaY > 0f && other.index > currentInfo.index && currentCenterY > other.offset + other.size * 0.45f)
+                                                            )
+                                                        }
+
+                                                        if (targetInfo != null) {
+                                                            val targetId = targetInfo.key as? String
+                                                            val mutable = currentSongsOrderState.value.toMutableList()
+                                                            val fromIdx = mutable.indexOf(activeId)
+                                                            val toIdx = if (targetId != null) mutable.indexOf(targetId) else -1
+                                                            if (fromIdx != -1 && toIdx != -1 && fromIdx != toIdx) {
+                                                                val moved = mutable.removeAt(fromIdx)
+                                                                mutable.add(toIdx, moved)
+                                                                songsOrder = mutable
+                                                                currentOnSaveState.value(mutable)
+                                                                draggingDeltaY += (currentInfo.offset - targetInfo.offset)
+                                                            }
+                                                        }
+                                                    }
+
+                                                    if (change.position.y < edgeScrollZonePx && lazyListState.canScrollBackward) {
+                                                        coroutineScope.launch { lazyListState.scrollBy(-12f) }
+                                                    } else if (change.position.y > size.height - edgeScrollZonePx && lazyListState.canScrollForward) {
+                                                        coroutineScope.launch { lazyListState.scrollBy(12f) }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    itemsIndexed(artistSongs) { index, song ->
-                        NumberedTrackRowItem(
-                            index = index + 1,
-                            isKhmer = isKhmer,
-                            song = song,
-                            isCurrent = currentSong?.id == song.id,
-                            isPlaying = isPlaying && currentSong?.id == song.id,
-                            onClick = { onSongClick(song) },
-                            onFavoriteToggle = { onFavoriteToggle(song) },
-                            onEditSong = { onEditSong(song) },
-                            onDeleteSong = { onDeleteSong(song) },
-                            onAddToPlaylist = { onAddToPlaylist(song) },
-                            onShareSong = { onShareSong(song) }
-                        )
+                    itemsIndexed(orderedArtistSongs, key = { _, song -> song.id }) { index, song ->
+                        val isDraggingThis = draggingSongId == song.id
+                        val isCurrentSong = currentSong?.id == song.id
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .zIndex(if (isDraggingThis) 10f else 0f)
+                                .graphicsLayer {
+                                    translationY = if (isDraggingThis) draggingDeltaY else 0f
+                                    scaleX = if (isDraggingThis) 1.02f else 1f
+                                    scaleY = if (isDraggingThis) 1.02f else 1f
+                                    shadowElevation = if (isDraggingThis) 18f else 0f
+                                }
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable(enabled = draggingSongId == null) { onSongClick(song) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = when {
+                                isDraggingThis -> if (isDark) Color(0xFF252934) else Color.White
+                                isCurrentSong -> if (isDark) Color(0xFF1B1E25) else Color.White
+                                else -> Color.Transparent
+                            },
+                            border = if (isDraggingThis) {
+                                androidx.compose.foundation.BorderStroke(1.dp, (if (isDark) Color.White else Color(0xFF14161D)).copy(alpha = 0.7f))
+                            } else null
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = String.format("%02d", index + 1),
+                                    fontSize = 12.sp,
+                                    color = if (isCurrentSong) (if (isDark) Color.White else Color(0xFF14161D)) else (if (isDark) Color(0xFF64748B) else Color(0xFF8A909E)),
+                                    fontWeight = if (isCurrentSong) FontWeight.Bold else FontWeight.Medium,
+                                    modifier = Modifier.width(24.dp)
+                                )
+
+                                Box(
+                                    modifier = Modifier
+                                        .size(42.dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (song.artworkUrl.isNotBlank()) {
+                                        SmartArtworkImage(
+                                            artworkUrl = song.artworkUrl,
+                                            contentDescription = song.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    } else {
+                                        Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B), modifier = Modifier.size(20.dp))
+                                    }
+
+                                    if (isCurrentSong && isPlaying) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(Color.Black.copy(alpha = 0.45f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            AnimatedEqualizer(
+                                                barColor = Color.White,
+                                                isPlaying = true
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.width(10.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = song.title,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = if (isCurrentSong) (if (isDark) Color.White else Color(0xFF14161D)) else (if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "${song.artist} • ${song.duration}",
+                                        fontSize = 11.sp,
+                                        color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+
+                                // 1. Touch-and-Drag Handle (=)
+                                Box(
+                                    modifier = Modifier.size(40.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.DragHandle,
+                                        contentDescription = "Drag to Reorder",
+                                        tint = if (isDraggingThis) (if (isDark) Color.White else Color(0xFF14161D)) else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.width(4.dp))
+
+                                // 2. Options Menu Button (...)
+                                var showOptionsMenu by remember { mutableStateOf(false) }
+                                Box {
+                                    IconButton(
+                                        onClick = { showOptionsMenu = true },
+                                        modifier = Modifier.size(34.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.MoreHoriz,
+                                            contentDescription = "Options",
+                                            tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+
+                                    DropdownMenu(
+                                        expanded = showOptionsMenu,
+                                        onDismissRequest = { showOptionsMenu = false },
+                                        modifier = Modifier.background(if (isDark) Color(0xFF1B1E25) else Color.White)
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = if (song.isFavorite) {
+                                                        if (isKhmer) "ដកចេញពីចូលចិត្ត" else "Remove from Favorites"
+                                                    } else {
+                                                        if (isKhmer) "ដាក់ក្នុងចូលចិត្ត" else "Add to Favorites"
+                                                    },
+                                                    color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                                    contentDescription = null,
+                                                    tint = if (song.isFavorite) Color(0xFFEF4444) else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            onClick = {
+                                                showOptionsMenu = false
+                                                onFavoriteToggle(song)
+                                            }
+                                        )
+
+                                        if (index > 0) {
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        text = if (isKhmer) "ផ្លាស់ទីទៅលើគេបង្អស់" else "Move to Top",
+                                                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                                                    )
+                                                },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        imageVector = Icons.Default.VerticalAlignTop,
+                                                        contentDescription = null,
+                                                        tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                },
+                                                onClick = {
+                                                    val mutable = songsOrder.toMutableList()
+                                                    val item = mutable.removeAt(index)
+                                                    mutable.add(0, item)
+                                                    songsOrder = mutable
+                                                    onSaveSongIds(mutable)
+                                                    showOptionsMenu = false
+                                                }
+                                            )
+                                        }
+
+                                        if (index < orderedArtistSongs.size - 1) {
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        text = if (isKhmer) "ផ្លាស់ទីទៅក្រោមគេបង្អស់" else "Move to Bottom",
+                                                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                                                    )
+                                                },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        imageVector = Icons.Default.VerticalAlignBottom,
+                                                        contentDescription = null,
+                                                        tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                },
+                                                onClick = {
+                                                    val mutable = songsOrder.toMutableList()
+                                                    val item = mutable.removeAt(index)
+                                                    mutable.add(mutable.size, item)
+                                                    songsOrder = mutable
+                                                    onSaveSongIds(mutable)
+                                                    showOptionsMenu = false
+                                                }
+                                            )
+                                        }
+
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = if (isKhmer) "បញ្ចូលក្នុង Playlist ផ្សេង" else "Add to Playlist",
+                                                    color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Default.PlaylistAdd,
+                                                    contentDescription = null,
+                                                    tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            onClick = {
+                                                showOptionsMenu = false
+                                                onAddToPlaylist(song)
+                                            }
+                                        )
+
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = if (isKhmer) "កែសម្រួលព័ត៌មាន" else "Edit Info",
+                                                    color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Default.Edit,
+                                                    contentDescription = null,
+                                                    tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            onClick = {
+                                                showOptionsMenu = false
+                                                onEditSong(song)
+                                            }
+                                        )
+
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = if (isKhmer) "ចែករំលែក ឬ Copy ឯកសារ" else "Share / Copy File",
+                                                    color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Default.Share,
+                                                    contentDescription = null,
+                                                    tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            onClick = {
+                                                showOptionsMenu = false
+                                                onShareSong(song)
+                                            }
+                                        )
+
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = if (isKhmer) "លុបចេញពីកម្មវិធី" else "Delete Song",
+                                                    color = Color(0xFFEF4444)
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Default.Delete,
+                                                    contentDescription = null,
+                                                    tint = Color(0xFFEF4444),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            onClick = {
+                                                showOptionsMenu = false
+                                                onDeleteSong(song)
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                     item { Spacer(modifier = Modifier.height(12.dp)) }
                 }
@@ -7084,7 +7564,9 @@ fun SearchScreen(
                                 text = if (isKhmer) "ក្នុងម៉ាស៊ីន (Offline)" else "Offline Tracks",
                                 fontSize = 13.sp,
                                 fontWeight = if (currentTab == SearchTab.OFFLINE) FontWeight.Bold else FontWeight.Medium,
-                                color = if (currentTab == SearchTab.OFFLINE) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (currentTab == SearchTab.OFFLINE) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -7121,7 +7603,9 @@ fun SearchScreen(
                                 text = if (isKhmer) "លើអ៊ីនធឺណិត (Online)" else "Search Online",
                                 fontSize = 13.sp,
                                 fontWeight = if (currentTab == SearchTab.ONLINE) FontWeight.Bold else FontWeight.Medium,
-                                color = if (currentTab == SearchTab.ONLINE) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (currentTab == SearchTab.ONLINE) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -7148,12 +7632,14 @@ fun SearchScreen(
                 placeholder = {
                     Text(
                         text = if (currentTab == SearchTab.OFFLINE) {
-                            if (isKhmer) "ស្វែងរកតាមចំណងជើង ឬអ្នកចម្រៀងក្នុងម៉ាស៊ីន..." else "Search title or artist in offline library..."
+                            if (isKhmer) "ស្វែងរកចំណងជើង ឬអ្នកចម្រៀង..." else "Search title or artist..."
                         } else {
-                            if (isKhmer) "វាយចំណងជើង ឬអ្នកចម្រៀងដើម្បីស្វែងរកលើ internet..." else "Search songs or artists online..."
+                            if (isKhmer) "វាយចំណងជើង ឬអ្នកចម្រៀងលើអ៊ីនធឺណិត..." else "Search songs or artists online..."
                         },
                         fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 },
                 leadingIcon = {
@@ -8518,6 +9004,10 @@ fun UnifiedExpandablePlayerCard(
     positionMs: Long = 0L,
     isShuffle: Boolean,
     loopMode: LoopMode,
+    queueSongs: List<SongItem> = emptyList(),
+    queueTitle: String = "",
+    onQueueSongClick: (SongItem) -> Unit = {},
+    onReorderQueue: (List<String>) -> Unit = {},
     onProgressChange: (Float) -> Unit,
     onPlayPause: () -> Unit,
     onPrevious: () -> Unit,
@@ -8535,8 +9025,13 @@ fun UnifiedExpandablePlayerCard(
     val density = LocalDensity.current
 
     val expandProgress = remember { Animatable(if (isExpanded) 1f else 0f) }
+    var isQueueSheetOpen by remember { mutableStateOf(false) }
+    val queueProgress = remember { Animatable(0f) }
 
     LaunchedEffect(isExpanded) {
+        if (!isExpanded) {
+            isQueueSheetOpen = false
+        }
         val target = if (isExpanded) 1f else 0f
         if (Math.abs(expandProgress.value - target) > 0.01f) {
             expandProgress.animateTo(
@@ -8549,16 +9044,31 @@ fun UnifiedExpandablePlayerCard(
         }
     }
 
-    BackHandler(enabled = isExpanded || expandProgress.value > 0.5f) {
-        onExpandedChange(false)
-        coroutineScope.launch {
-            expandProgress.animateTo(
-                targetValue = 0f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow
-                )
+    LaunchedEffect(isQueueSheetOpen) {
+        val targetQ = if (isQueueSheetOpen) 1f else 0f
+        queueProgress.animateTo(
+            targetValue = targetQ,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessMediumLow
             )
+        )
+    }
+
+    BackHandler(enabled = isExpanded || expandProgress.value > 0.5f) {
+        if (isQueueSheetOpen || queueProgress.value > 0.1f) {
+            isQueueSheetOpen = false
+        } else {
+            onExpandedChange(false)
+            coroutineScope.launch {
+                expandProgress.animateTo(
+                    targetValue = 0f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                )
+            }
         }
     }
 
@@ -8627,12 +9137,15 @@ fun UnifiedExpandablePlayerCard(
                 .height(cardHeight)
                 .shadow(lerpDp(12.dp, 24.dp, p), RoundedCornerShape(cornerRadius))
                 .clip(RoundedCornerShape(cornerRadius))
-                .pointerInput(song.id, expandDragRangePx, collapsedBottomPadding) {
+                .pointerInput(song.id, expandDragRangePx, collapsedBottomPadding, isQueueSheetOpen) {
                     val touchSlop = viewConfiguration.touchSlop
                     val collapsedBottomPx = with(density) { collapsedBottomPadding.toPx() }
                     val collapsedSidePx = with(density) { 16.dp.toPx() }
 
                     awaitEachGesture {
+                        if (isQueueSheetOpen || queueProgress.value > 0.05f) {
+                            return@awaitEachGesture
+                        }
                         val down = awaitFirstDown(requireUnconsumed = false)
                         if (down.isConsumed) {
                             return@awaitEachGesture
@@ -8689,7 +9202,7 @@ fun UnifiedExpandablePlayerCard(
 
                                 if (!isDragging) {
                                     if (startP < 0.5f) {
-                                        // Mini-Player: swipe up expands into Now Playing (swipe-to-dismiss removed)
+                                        // Mini-Player: swipe up expands into Now Playing
                                         if (totalDragY < -touchSlop && Math.abs(totalDragY) > Math.abs(totalDragX) * 0.7f) {
                                             isDragging = true
                                             change.consume()
@@ -8697,10 +9210,16 @@ fun UnifiedExpandablePlayerCard(
                                             break
                                         }
                                     } else {
-                                        // Expanded Now Playing: vertical drag down morphs card back into Mini-Player
-                                        if (Math.abs(totalDragY) > touchSlop && Math.abs(totalDragY) > Math.abs(totalDragX)) {
+                                        // Expanded Now Playing:
+                                        // Swipe DOWN (totalDragY > touchSlop) -> morphs card back into Mini-Player
+                                        // Swipe UP (totalDragY < -touchSlop) -> opens the Playing Queue sheet
+                                        if (totalDragY > touchSlop && Math.abs(totalDragY) > Math.abs(totalDragX)) {
                                             isDragging = true
                                             change.consume()
+                                        } else if (totalDragY < -touchSlop * 1.2f && Math.abs(totalDragY) > Math.abs(totalDragX)) {
+                                            change.consume()
+                                            isQueueSheetOpen = true
+                                            break
                                         } else if (Math.abs(totalDragX) > touchSlop * 1.5f) {
                                             break
                                         }
@@ -8755,7 +9274,7 @@ fun UnifiedExpandablePlayerCard(
                                     )
                                 } else Modifier
                             )
-                            .padding(horizontal = 24.dp, vertical = 18.dp),
+                            .padding(horizontal = 24.dp, vertical = 14.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.SpaceBetween
                     ) {
@@ -8995,55 +9514,81 @@ fun UnifiedExpandablePlayerCard(
                             onSeek = onProgressChange
                         )
 
-                        // Controls Row: Shuffle, Prev, Big Play/Pause, Next, Loop Mode
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 14.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                        // Controls + Bottom Queue Handle Bar
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            IconButton(onClick = onShuffleToggle, enabled = p > 0.5f) {
-                                Icon(
-                                    imageVector = Icons.Default.Shuffle,
-                                    contentDescription = "Shuffle",
-                                    tint = if (isShuffle) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                )
-                            }
-
-                            IconButton(onClick = onPrevious, enabled = p > 0.5f, modifier = Modifier.size(48.dp)) {
-                                Icon(imageVector = Icons.Default.SkipPrevious, contentDescription = "Previous", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
-                            }
-
-                            // Main Big Circular Play/Pause Button
-                            Surface(
-                                modifier = Modifier
-                                    .size(74.dp)
-                                    .shadow(12.dp, CircleShape)
-                                    .clip(CircleShape)
-                                    .clickable(enabled = p > 0.5f) { onPlayPause() },
-                                color = if (isDark) Color.White else Color(0xFF14161D)
+                            // Controls Row: Shuffle, Prev, Big Play/Pause, Next, Loop Mode
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Box(contentAlignment = Alignment.Center) {
+                                IconButton(onClick = onShuffleToggle, enabled = p > 0.5f) {
                                     Icon(
-                                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                        contentDescription = "Play/Pause",
-                                        tint = if (isDark) Color(0xFF0C0E12) else Color.White,
-                                        modifier = Modifier.size(36.dp)
+                                        imageVector = Icons.Default.Shuffle,
+                                        contentDescription = "Shuffle",
+                                        tint = if (isShuffle) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                    )
+                                }
+
+                                IconButton(onClick = onPrevious, enabled = p > 0.5f, modifier = Modifier.size(48.dp)) {
+                                    Icon(imageVector = Icons.Default.SkipPrevious, contentDescription = "Previous", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
+                                }
+
+                                // Main Big Circular Play/Pause Button
+                                Surface(
+                                    modifier = Modifier
+                                        .size(74.dp)
+                                        .shadow(12.dp, CircleShape)
+                                        .clip(CircleShape)
+                                        .clickable(enabled = p > 0.5f) { onPlayPause() },
+                                    shape = CircleShape,
+                                    color = if (isDark) Color.White else Color(0xFF14161D)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                            contentDescription = "Play/Pause",
+                                            tint = if (isDark) Color(0xFF0C0E12) else Color.White,
+                                            modifier = Modifier.size(36.dp)
+                                        )
+                                    }
+                                }
+
+                                IconButton(onClick = onNext, enabled = p > 0.5f, modifier = Modifier.size(48.dp)) {
+                                    Icon(imageVector = Icons.Default.SkipNext, contentDescription = "Next", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
+                                }
+
+                                IconButton(onClick = onLoopModeToggle, enabled = p > 0.5f) {
+                                    Icon(
+                                        imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                                        contentDescription = "Loop Mode",
+                                        tint = if (loopMode != LoopMode.OFF) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                        modifier = Modifier.size(24.dp)
                                     )
                                 }
                             }
 
-                            IconButton(onClick = onNext, enabled = p > 0.5f, modifier = Modifier.size(48.dp)) {
-                                Icon(imageVector = Icons.Default.SkipNext, contentDescription = "Next", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
-                            }
+                            Spacer(modifier = Modifier.height(10.dp))
 
-                            IconButton(onClick = onLoopModeToggle, enabled = p > 0.5f) {
-                                Icon(
-                                    imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
-                                    contentDescription = "Loop Mode",
-                                    tint = if (loopMode != LoopMode.OFF) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                                    modifier = Modifier.size(24.dp)
+                            // Minimal Bottom Handle Bar (Swipe up or tap to open Playing Queue)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(22.dp)
+                                    .clickable(enabled = p > 0.5f) {
+                                        isQueueSheetOpen = true
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(42.dp)
+                                        .height(4.5.dp)
+                                        .clip(RoundedCornerShape(50))
+                                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
                                 )
                             }
                         }
@@ -9135,6 +9680,7 @@ fun UnifiedExpandablePlayerCard(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
                                 .clickable(enabled = p < 0.25f) { onPlayPause() },
+                            shape = RoundedCornerShape(10.dp),
                             color = Color.White
                         ) {
                             Box(
@@ -9147,6 +9693,351 @@ fun UnifiedExpandablePlayerCard(
                                     tint = Color(0xFF14161D),
                                     modifier = Modifier.size(20.dp)
                                 )
+                            }
+                        }
+                    }
+                }
+
+                // 3. Swipe-Up Playing Queue Sheet inside Expanded Player
+                val qp = queueProgress.value.coerceIn(0f, 1f)
+                if (p > 0.5f && qp > 0.01f) {
+                    var queueOrderIds by remember(queueSongs) { mutableStateOf(queueSongs.map { it.id }) }
+                    val orderedQueueSongs = remember(queueOrderIds, queueSongs) {
+                        val map = queueSongs.associateBy { it.id }
+                        val ordered = queueOrderIds.mapNotNull { map[it] }
+                        val remaining = queueSongs.filter { it.id !in queueOrderIds.toSet() }
+                        ordered + remaining
+                    }
+                    val queueListState = rememberLazyListState()
+                    var draggingQueueSongId by remember { mutableStateOf<String?>(null) }
+                    var draggingQueueDeltaY by remember { mutableFloatStateOf(0f) }
+
+                    val currentQueueOrderState = rememberUpdatedState(queueOrderIds)
+                    val currentOnReorderQueueState = rememberUpdatedState(onReorderQueue)
+
+                    LaunchedEffect(isQueueSheetOpen) {
+                        if (isQueueSheetOpen) {
+                            val activeIdx = orderedQueueSongs.indexOfFirst { it.id == song.id }
+                            if (activeIdx > 0) {
+                                queueListState.scrollToItem((activeIdx - 1).coerceAtLeast(0))
+                            }
+                        }
+                    }
+
+                    val sheetHeight = fullScreenHeight * 0.72f
+                    val sheetHeightPx = with(density) { sheetHeight.toPx() }
+
+                    // Scrim behind the Queue Sheet
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.55f * qp))
+                            .pointerInput(Unit) {
+                                detectTapGestures {
+                                    isQueueSheetOpen = false
+                                }
+                            }
+                    )
+
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(sheetHeight)
+                            .graphicsLayer {
+                                translationY = (1f - qp) * sheetHeightPx
+                            }
+                            .shadow(24.dp, RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                            .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)),
+                        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                        color = if (isDark) Color(0xFF14171F) else Color(0xFFF5F6F9),
+                        border = if (isDark) {
+                            androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF282D3A))
+                        } else null
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 18.dp, vertical = 12.dp)
+                        ) {
+                            // Queue Sheet Header (Tap or swipe down to close)
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .pointerInput(Unit) {
+                                        val touchSlop = viewConfiguration.touchSlop
+                                        awaitEachGesture {
+                                            val down = awaitFirstDown(requireUnconsumed = false)
+                                            val startY = down.position.y
+                                            val pointerId = down.id
+                                            while (true) {
+                                                val event = awaitPointerEvent()
+                                                val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+                                                if (!change.pressed) {
+                                                    if (!change.isConsumed && Math.abs(change.position.y - startY) <= touchSlop) {
+                                                        isQueueSheetOpen = false
+                                                    }
+                                                    break
+                                                } else {
+                                                    val dy = change.position.y - startY
+                                                    if (dy > touchSlop * 1.2f) {
+                                                        change.consume()
+                                                        isQueueSheetOpen = false
+                                                        break
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(42.dp)
+                                        .height(4.5.dp)
+                                        .clip(RoundedCornerShape(50))
+                                        .background(if (isDark) Color(0xFF475569) else Color(0xFFCBD5E1))
+                                )
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = queueTitle.ifBlank { if (isKhmer) "បញ្ជីបទកំពុងចាក់" else "Playing Queue" },
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = if (isKhmer) "${orderedQueueSongs.size} បទ" else "${orderedQueueSongs.size} tracks",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(12.dp))
+                            }
+
+                            // Queue Songs List with Press-and-Hold (=) Drag-and-Drop Reordering (No ... button)
+                            LazyColumn(
+                                state = queueListState,
+                                userScrollEnabled = draggingQueueSongId == null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .pointerInput(Unit) {
+                                        val handleLeftOffsetPx = with(density) { 56.dp.toPx() }
+                                        val edgeScrollZonePx = with(density) { 52.dp.toPx() }
+
+                                        awaitEachGesture {
+                                            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                                            val handleStartX = size.width - handleLeftOffsetPx
+                                            val handleEndX = size.width.toFloat()
+
+                                            if (down.position.x in handleStartX..handleEndX) {
+                                                val hitItem = queueListState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
+                                                    down.position.y.toInt() in item.offset..(item.offset + item.size)
+                                                }
+                                                val activeId = hitItem?.key as? String
+                                                if (activeId != null) {
+                                                    val pointerId = down.id
+                                                    val startPos = down.position
+                                                    val touchSlop = viewConfiguration.touchSlop
+                                                    val cancelledBeforeHold = withTimeoutOrNull(220L) {
+                                                        while (true) {
+                                                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                            val change = event.changes.firstOrNull { it.id == pointerId }
+                                                            if (change == null || !change.pressed) {
+                                                                return@withTimeoutOrNull true
+                                                            }
+                                                            val dx = change.position.x - startPos.x
+                                                            val dy = change.position.y - startPos.y
+                                                            if (dx * dx + dy * dy > touchSlop * touchSlop) {
+                                                                return@withTimeoutOrNull true
+                                                            }
+                                                        }
+                                                        @Suppress("UNREACHABLE_CODE")
+                                                        false
+                                                    } ?: false
+
+                                                    if (!cancelledBeforeHold) {
+                                                        draggingQueueSongId = activeId
+                                                        draggingQueueDeltaY = 0f
+
+                                                        while (true) {
+                                                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                            val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+
+                                                            if (!change.pressed) {
+                                                                change.consume()
+                                                                draggingQueueSongId = null
+                                                                draggingQueueDeltaY = 0f
+                                                                currentOnReorderQueueState.value(currentQueueOrderState.value)
+                                                                break
+                                                            } else {
+                                                                val dy = change.positionChangeIgnoreConsumed().y
+                                                                change.consume()
+                                                                if (dy != 0f) {
+                                                                    draggingQueueDeltaY += dy
+                                                                }
+
+                                                                val currentInfo = queueListState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == activeId }
+                                                                if (currentInfo != null) {
+                                                                    val currentCenterY = currentInfo.offset + (currentInfo.size / 2f) + draggingQueueDeltaY
+                                                                    val targetInfo = queueListState.layoutInfo.visibleItemsInfo.firstOrNull { other ->
+                                                                        other.key != activeId && (
+                                                                            (draggingQueueDeltaY < 0f && other.index < currentInfo.index && currentCenterY < other.offset + other.size * 0.55f) ||
+                                                                            (draggingQueueDeltaY > 0f && other.index > currentInfo.index && currentCenterY > other.offset + other.size * 0.45f)
+                                                                        )
+                                                                    }
+
+                                                                    if (targetInfo != null) {
+                                                                        val targetId = targetInfo.key as? String
+                                                                        val mutable = currentQueueOrderState.value.toMutableList()
+                                                                        val fromIdx = mutable.indexOf(activeId)
+                                                                        val toIdx = if (targetId != null) mutable.indexOf(targetId) else -1
+                                                                        if (fromIdx != -1 && toIdx != -1 && fromIdx != toIdx) {
+                                                                            val moved = mutable.removeAt(fromIdx)
+                                                                            mutable.add(toIdx, moved)
+                                                                            queueOrderIds = mutable
+                                                                            currentOnReorderQueueState.value(mutable)
+                                                                            draggingQueueDeltaY += (currentInfo.offset - targetInfo.offset)
+                                                                        }
+                                                                    }
+                                                                }
+
+                                                                if (change.position.y < edgeScrollZonePx && queueListState.canScrollBackward) {
+                                                                    coroutineScope.launch { queueListState.scrollBy(-12f) }
+                                                                } else if (change.position.y > size.height - edgeScrollZonePx && queueListState.canScrollForward) {
+                                                                    coroutineScope.launch { queueListState.scrollBy(12f) }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                itemsIndexed(orderedQueueSongs, key = { _, qSong -> qSong.id }) { index, qSong ->
+                                    val isDraggingThis = draggingQueueSongId == qSong.id
+                                    val isCurrentSong = song.id == qSong.id
+
+                                    Surface(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .zIndex(if (isDraggingThis) 10f else 0f)
+                                            .graphicsLayer {
+                                                translationY = if (isDraggingThis) draggingQueueDeltaY else 0f
+                                                scaleX = if (isDraggingThis) 1.02f else 1f
+                                                scaleY = if (isDraggingThis) 1.02f else 1f
+                                                shadowElevation = if (isDraggingThis) 18f else 0f
+                                            }
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable(enabled = draggingQueueSongId == null) { onQueueSongClick(qSong) },
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = when {
+                                            isDraggingThis -> if (isDark) Color(0xFF252934) else Color.White
+                                            isCurrentSong -> if (isDark) Color(0xFF1E222D) else Color.White
+                                            else -> Color.Transparent
+                                        },
+                                        border = if (isDraggingThis) {
+                                            androidx.compose.foundation.BorderStroke(1.dp, (if (isDark) Color.White else Color(0xFF14161D)).copy(alpha = 0.7f))
+                                        } else null
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = String.format("%02d", index + 1),
+                                                fontSize = 12.sp,
+                                                color = if (isCurrentSong) (if (isDark) Color.White else Color(0xFF14161D)) else (if (isDark) Color(0xFF64748B) else Color(0xFF8A909E)),
+                                                fontWeight = if (isCurrentSong) FontWeight.Bold else FontWeight.Medium,
+                                                modifier = Modifier.width(24.dp)
+                                            )
+
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(42.dp)
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(if (isDark) Color(0xFF282F3E) else Color(0xFFECEEF2)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                if (qSong.artworkUrl.isNotBlank()) {
+                                                    SmartArtworkImage(
+                                                        artworkUrl = qSong.artworkUrl,
+                                                        contentDescription = qSong.title,
+                                                        contentScale = ContentScale.Crop,
+                                                        modifier = Modifier.fillMaxSize()
+                                                    )
+                                                } else {
+                                                    Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B), modifier = Modifier.size(20.dp))
+                                                }
+
+                                                if (isCurrentSong && isPlaying) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .fillMaxSize()
+                                                            .background(Color.Black.copy(alpha = 0.45f)),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        AnimatedEqualizer(
+                                                            barColor = Color.White,
+                                                            isPlaying = true
+                                                        )
+                                                    }
+                                                }
+                                            }
+
+                                            Spacer(modifier = Modifier.width(10.dp))
+
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = qSong.title,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 13.sp,
+                                                    color = if (isCurrentSong) (if (isDark) Color.White else Color(0xFF14161D)) else (if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D)),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = "${qSong.artist} • ${qSong.duration}",
+                                                    fontSize = 11.sp,
+                                                    color = if (isDark) Color(0xFF94A3B8) else Color(0xFF8A909E),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+
+                                            // Press-and-Hold Drag Handle (=) Only (No ... button)
+                                            Box(
+                                                modifier = Modifier.size(40.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.DragHandle,
+                                                    contentDescription = "Drag to Reorder",
+                                                    tint = if (isDraggingThis) (if (isDark) Color.White else Color(0xFF14161D)) else (if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)),
+                                                    modifier = Modifier.size(22.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                item { Spacer(modifier = Modifier.height(16.dp)) }
                             }
                         }
                     }
@@ -9660,7 +10551,11 @@ fun AppUpdateDialog(
                                 .graphicsLayer { rotationZ = rotation }
                         )
                         Spacer(modifier = Modifier.width(12.dp))
-                        Text(if (isKhmer) "កំពុងពិនិត្យមើលពី GitHub..." else "Checking GitHub releases...", fontSize = 13.sp)
+                        Text(
+                            text = if (isKhmer) "កំពុងពិនិត្យមើលពី GitHub..." else "Checking GitHub releases...",
+                            fontSize = 13.sp,
+                            color = Color(0xFF14161D)
+                        )
                     }
                 } else if (isDownloadingApk) {
                     Column(
@@ -9699,6 +10594,7 @@ fun AppUpdateDialog(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp)),
+                            shape = RoundedCornerShape(10.dp),
                             color = Color(0xFFF5F6F9)
                         ) {
                             Column(modifier = Modifier.padding(14.dp)) {
@@ -9726,6 +10622,7 @@ fun AppUpdateDialog(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp)),
+                                shape = RoundedCornerShape(8.dp),
                                 color = Color(0xFFFEF2F2)
                             ) {
                                 Column(modifier = Modifier.padding(10.dp)) {
@@ -9753,11 +10650,17 @@ fun AppUpdateDialog(
                                 }
                             },
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp)
+                            shape = RoundedCornerShape(10.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF14161D))
                         ) {
-                            Icon(imageVector = Icons.Default.Public, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(imageVector = Icons.Default.Public, contentDescription = null, tint = Color(0xFF14161D), modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(if (isKhmer) "ទាញយកតាម Browser (Chrome)" else "Download via Browser")
+                            Text(
+                                text = if (isKhmer) "ទាញយកតាម Browser (Chrome)" else "Download via Browser",
+                                color = Color(0xFF14161D),
+                                fontWeight = FontWeight.SemiBold
+                            )
                         }
                     } else {
                         Row(
@@ -9806,24 +10709,38 @@ fun AppUpdateDialog(
                         }
                     },
                     shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF14161D),
+                        contentColor = Color.White
+                    )
                 ) {
-                    Text(if (isKhmer) "ទាញយក និងដំឡើង" else "Download & Install")
+                    Text(
+                        text = if (isKhmer) "ទាញយក និងដំឡើង" else "Download & Install",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             } else if (!isChecking && !isDownloadingApk) {
                 Button(
                     onClick = onDismiss,
                     shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF14161D))
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF14161D),
+                        contentColor = Color.White
+                    )
                 ) {
-                    Text(if (isKhmer) "បិទ" else "Close")
+                    Text(
+                        text = if (isKhmer) "បិទ" else "Close",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         },
         dismissButton = {
             if (!isDownloadingApk && updateInfo?.hasUpdate == true) {
                 TextButton(onClick = onDismiss) {
-                    Text(if (isKhmer) "ពេលក្រោយ" else "Later", color = Color(0xFF8A909E))
+                    Text(if (isKhmer) "ពេលក្រោយ" else "Later", color = Color(0xFF64748B), fontWeight = FontWeight.Medium)
                 }
             }
         }
