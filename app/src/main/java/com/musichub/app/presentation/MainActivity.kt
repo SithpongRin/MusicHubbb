@@ -3226,6 +3226,7 @@ fun MusicHubApp() {
                 song = resolvedPlayerSong,
                 isPlaying = isPlaying,
                 isVinylStyle = isVinylStyle,
+                onVinylStyleToggle = { onVinylStyleChange(!isVinylStyle) },
                 isExpanded = showNowPlayingModal,
                 onExpandedChange = { showNowPlayingModal = it },
                 collapsedBottomPadding = targetCollapsedBottomPadding,
@@ -8243,6 +8244,7 @@ fun UnifiedExpandablePlayerCard(
     song: SongItem,
     isPlaying: Boolean,
     isVinylStyle: Boolean = true,
+    onVinylStyleToggle: () -> Unit = {},
     isExpanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     collapsedBottomPadding: androidx.compose.ui.unit.Dp,
@@ -8267,15 +8269,6 @@ fun UnifiedExpandablePlayerCard(
     val density = LocalDensity.current
 
     val expandProgress = remember { Animatable(if (isExpanded) 1f else 0f) }
-    val dismissOffsetX = remember { Animatable(0f) }
-    val dismissOffsetY = remember { Animatable(0f) }
-    val dismissAlpha = remember { Animatable(1f) }
-
-    LaunchedEffect(song.id) {
-        dismissOffsetX.snapTo(0f)
-        dismissOffsetY.snapTo(0f)
-        dismissAlpha.snapTo(1f)
-    }
 
     LaunchedEffect(isExpanded) {
         val target = if (isExpanded) 1f else 0f
@@ -8366,17 +8359,10 @@ fun UnifiedExpandablePlayerCard(
                 .padding(start = sidePadding, end = sidePadding, bottom = bottomPadding)
                 .fillMaxWidth()
                 .height(cardHeight)
-                .graphicsLayer {
-                    translationX = dismissOffsetX.value
-                    translationY = dismissOffsetY.value
-                    alpha = dismissAlpha.value
-                }
                 .shadow(lerpDp(12.dp, 24.dp, p), RoundedCornerShape(cornerRadius))
                 .clip(RoundedCornerShape(cornerRadius))
                 .pointerInput(song.id, expandDragRangePx, collapsedBottomPadding) {
                     val touchSlop = viewConfiguration.touchSlop
-                    val dismissXThreshold = with(density) { 65.dp.toPx() }
-                    val dismissYThreshold = with(density) { 38.dp.toPx() }
                     val collapsedBottomPx = with(density) { collapsedBottomPadding.toPx() }
                     val collapsedSidePx = with(density) { 16.dp.toPx() }
 
@@ -8389,8 +8375,6 @@ fun UnifiedExpandablePlayerCard(
                         val startFingerFromBottom = (collapsedBottomPx * (1f - startP)) + (size.height - down.position.y)
                         val startFingerFromLeft = (collapsedSidePx * (1f - startP)) + down.position.x
                         var isDragging = false
-                        // 0 = undecided, 1 = collapsing Now Playing down into Mini-Player, 2 = dismissing Mini-Player
-                        var gestureMode = 0
                         val pointerId = down.id
 
                         while (true) {
@@ -8399,44 +8383,17 @@ fun UnifiedExpandablePlayerCard(
 
                             if (!change.pressed) {
                                 if (isDragging) {
-                                    if (gestureMode == 1) {
-                                        val finalP = expandProgress.value
-                                        val shouldStayExpanded = finalP > 0.82f
-                                        onExpandedChange(shouldStayExpanded)
-                                        coroutineScope.launch {
-                                            expandProgress.animateTo(
-                                                targetValue = if (shouldStayExpanded) 1f else 0f,
-                                                animationSpec = spring(
-                                                    dampingRatio = Spring.DampingRatioNoBouncy,
-                                                    stiffness = Spring.StiffnessMediumLow
-                                                )
+                                    val finalP = expandProgress.value
+                                    val shouldExpand = if (startP < 0.5f) finalP > 0.14f else finalP > 0.82f
+                                    onExpandedChange(shouldExpand)
+                                    coroutineScope.launch {
+                                        expandProgress.animateTo(
+                                            targetValue = if (shouldExpand) 1f else 0f,
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                                stiffness = Spring.StiffnessMediumLow
                                             )
-                                        }
-                                    } else if (gestureMode == 2) {
-                                        coroutineScope.launch {
-                                            val currentX = dismissOffsetX.value
-                                            val currentY = dismissOffsetY.value
-                                            if (currentY > dismissYThreshold) {
-                                                launch { dismissOffsetY.animateTo(currentY + 350f, tween(160)) }
-                                                launch { dismissAlpha.animateTo(0f, tween(160)) }
-                                                delay(160)
-                                                onDismissMiniPlayer()
-                                            } else if (currentX > dismissXThreshold) {
-                                                launch { dismissOffsetX.animateTo(currentX + 900f, tween(160)) }
-                                                launch { dismissAlpha.animateTo(0f, tween(160)) }
-                                                delay(160)
-                                                onDismissMiniPlayer()
-                                            } else if (currentX < -dismissXThreshold) {
-                                                launch { dismissOffsetX.animateTo(currentX - 900f, tween(160)) }
-                                                launch { dismissAlpha.animateTo(0f, tween(160)) }
-                                                delay(160)
-                                                onDismissMiniPlayer()
-                                            } else {
-                                                launch { dismissOffsetX.animateTo(0f, spring(dampingRatio = 0.75f, stiffness = 450f)) }
-                                                launch { dismissOffsetY.animateTo(0f, spring(dampingRatio = 0.75f, stiffness = 450f)) }
-                                                launch { dismissAlpha.animateTo(1f, tween(100)) }
-                                            }
-                                        }
+                                        )
                                     }
                                 } else {
                                     // Tap when collapsed -> smoothly expand the single card into Now Playing
@@ -8466,17 +8423,17 @@ fun UnifiedExpandablePlayerCard(
 
                                 if (!isDragging) {
                                     if (startP < 0.5f) {
-                                        // Mini-Player: any drag (left, right, or down) is dedicated to dismissing Mini-Player
-                                        if (Math.abs(totalDragX) > touchSlop || totalDragY > touchSlop) {
+                                        // Mini-Player: swipe up expands into Now Playing (swipe-to-dismiss removed)
+                                        if (totalDragY < -touchSlop && Math.abs(totalDragY) > Math.abs(totalDragX) * 0.7f) {
                                             isDragging = true
-                                            gestureMode = 2
                                             change.consume()
+                                        } else if (Math.abs(totalDragX) > touchSlop * 1.5f || totalDragY > touchSlop * 1.5f) {
+                                            break
                                         }
                                     } else {
                                         // Expanded Now Playing: vertical drag down morphs card back into Mini-Player
                                         if (Math.abs(totalDragY) > touchSlop && Math.abs(totalDragY) > Math.abs(totalDragX)) {
                                             isDragging = true
-                                            gestureMode = 1
                                             change.consume()
                                         } else if (Math.abs(totalDragX) > touchSlop * 1.5f) {
                                             break
@@ -8484,22 +8441,9 @@ fun UnifiedExpandablePlayerCard(
                                     }
                                 } else {
                                     change.consume()
-                                    if (gestureMode == 1) {
-                                        val nextP = (startP - (totalDragY / expandDragRangePx)).coerceIn(0f, 1f)
-                                        coroutineScope.launch {
-                                            expandProgress.snapTo(nextP)
-                                        }
-                                    } else if (gestureMode == 2) {
-                                        val effectiveY = if (totalDragY > 0f) totalDragY else (totalDragY * 0.15f).coerceAtLeast(-20f)
-                                        coroutineScope.launch {
-                                            dismissOffsetX.snapTo(totalDragX)
-                                            dismissOffsetY.snapTo(effectiveY)
-                                            val progressDismiss = maxOf(
-                                                Math.abs(totalDragX) / (dismissXThreshold * 2.2f),
-                                                (effectiveY / (dismissYThreshold * 2.2f)).coerceAtLeast(0f)
-                                            )
-                                            dismissAlpha.snapTo((1f - progressDismiss * 0.6f).coerceIn(0.2f, 1f))
-                                        }
+                                    val nextP = (startP - (totalDragY / expandDragRangePx)).coerceIn(0f, 1f)
+                                    coroutineScope.launch {
+                                        expandProgress.snapTo(nextP)
                                     }
                                 }
                             }
@@ -8548,12 +8492,43 @@ fun UnifiedExpandablePlayerCard(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.SpaceBetween
                     ) {
-                        // Balanced Symmetrical Top Header: Share on left, Now Playing centered, EQ on right
+                        // Top Header Bar: Collapse (v) | Switch Player Artwork Style | Share | EQ
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            IconButton(
+                                onClick = {
+                                    onExpandedChange(false)
+                                    coroutineScope.launch {
+                                        expandProgress.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                                stiffness = Spring.StiffnessMediumLow
+                                            )
+                                        )
+                                    }
+                                },
+                                enabled = p > 0.5f
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Minimize",
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+
+                            IconButton(onClick = onVinylStyleToggle, enabled = p > 0.5f) {
+                                Icon(
+                                    imageVector = if (isVinylStyle) Icons.Default.Album else Icons.Default.CropSquare,
+                                    contentDescription = "Switch Player Artwork Style",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+
                             IconButton(onClick = onShareClick, enabled = p > 0.5f) {
                                 Icon(
                                     imageVector = Icons.Default.Share,
@@ -8561,13 +8536,6 @@ fun UnifiedExpandablePlayerCard(
                                     tint = MaterialTheme.colorScheme.onSurface
                                 )
                             }
-
-                            Text(
-                                text = if (isKhmer) "កំពុងចាក់" else "Now Playing",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
 
                             IconButton(onClick = onEqualizerClick, enabled = p > 0.5f) {
                                 Icon(
@@ -8830,7 +8798,7 @@ fun UnifiedExpandablePlayerCard(
                         Box(
                             modifier = Modifier
                                 .size(46.dp)
-                                .clip(CircleShape)
+                                .clip(RoundedCornerShape(10.dp))
                                 .background(Color(0xFF2E3244)),
                             contentAlignment = Alignment.Center
                         ) {

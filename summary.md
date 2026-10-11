@@ -382,6 +382,14 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.63
+- Updated `UnifiedExpandablePlayerCard` Top Header Bar, Mini-Player Gestures, and Mini-Player Artwork Shape:
+  - Redesigned Now Playing top header bar to `v` (`KeyboardArrowDown` collapse button) | `Switch Player Artwork Style` (`Album` / `CropSquare` toggle button) | `Share` | `EQ` (`Tune`), removing the `"Now Playing"` text label.
+  - Removed swipe-to-dismiss from the Mini-Player and restored smooth real-time **Swipe-Up + Tap to Expand** on the Mini-Player (`0f -> 1f`) paired with **Swipe-Down + `v` button to Collapse** on Now Playing (`1f -> 0f`).
+  - Changed the Mini-Player song artwork thumbnail from `CircleShape` to rounded square (`RoundedCornerShape(10.dp)`).
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 63` and `versionName = "1.0.63"` in `app/build.gradle.kts`.
+
 ### Version 1.0.62
 - Refined `UnifiedExpandablePlayerCard` Mini-Player Dismissal & Expansion UX:
   - Dedicated Mini-Player swipe gestures (left, right, and down) 100% to dismissing/closing the Mini-Player (`dismissXThreshold = 65.dp`, `dismissYThreshold = 38.dp`) and removed swipe-up-to-expand on the collapsed Mini-Player so diagonal or quick horizontal swipes never conflict with closing the Mini-Player.
