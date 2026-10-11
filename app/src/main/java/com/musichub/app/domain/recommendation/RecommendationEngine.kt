@@ -127,7 +127,7 @@ object RecommendationEngine {
             // Find user's #1 and #2 learned AI Mood Categories from pure audio taste
             val sortedMoodCategories = SongMoodCategory.entries
                 .sortedByDescending { cat -> userTasteVec[cat.ordinal] }
-            val topMood1 = sortedMoodCategories.getOrNull(0) ?: SongMoodCategory.DRIVING
+            val topMood1 = sortedMoodCategories.getOrNull(0) ?: SongMoodCategory.ENERGETIC
             val topMood2 = sortedMoodCategories.getOrNull(1) ?: SongMoodCategory.ROMANTIC
 
             // 2. Synthesize Smart Hybrid Discovery Queries (Search + Artist + Audio Mood + Title Vibe)
@@ -338,23 +338,17 @@ object RecommendationEngine {
     private fun buildMoodDiscoveryQuery(mood: SongMoodCategory, prefersKhmer: Boolean): String {
         return if (prefersKhmer) {
             when (mood) {
-                SongMoodCategory.WORKOUT -> "Khmer workout gym motivation music"
-                SongMoodCategory.PARTY -> "បទញាក់ Remix ថ្មីៗ ពិរោះៗ"
-                SongMoodCategory.CHILL -> "បទខ្មែរ Chill ពិរោះៗ ស្ងប់ស្ងាត់"
-                SongMoodCategory.SAD -> "បទសេដ មនោសញ្ចេតនា ពិរោះៗ"
-                SongMoodCategory.ROMANTIC -> "បទស្នេហា ផ្អែមល្ហែម ពិរោះៗ"
-                SongMoodCategory.FOCUS -> "ភ្លេងសុទ្ធ Acoustic Piano ពិរោះៗ"
-                SongMoodCategory.DRIVING -> "បទខ្មែរពិរោះៗ ស្តាប់ពេលធ្វើដំណើរ"
+                SongMoodCategory.CALM -> "បទខ្មែរពិរោះៗ ស្ងប់ស្ងាត់ ស្តាប់ពេលសម្រាក"
+                SongMoodCategory.ENERGETIC -> "បទញាក់ Remix ថ្មីៗ ស្វាហាប់ ពិរោះៗ"
+                SongMoodCategory.SAD -> "បទកម្សត់ សេដ ពិរោះៗ"
+                SongMoodCategory.ROMANTIC -> "បទមនោសញ្ចេតនា ស្នេហា ផ្អែមល្ហែម ពិរោះៗ"
             }
         } else {
             when (mood) {
-                SongMoodCategory.WORKOUT -> "workout gym motivation music hits"
-                SongMoodCategory.PARTY -> "party club dance remix hits"
-                SongMoodCategory.CHILL -> "chill lofi relax vibes music"
+                SongMoodCategory.CALM -> "calm relaxing acoustic chill lofi music"
+                SongMoodCategory.ENERGETIC -> "energetic workout party dance remix hits"
                 SongMoodCategory.SAD -> "sad emotional ballad songs"
-                SongMoodCategory.ROMANTIC -> "romantic love songs hits"
-                SongMoodCategory.FOCUS -> "acoustic piano study focus music"
-                SongMoodCategory.DRIVING -> "night drive pop vibe songs"
+                SongMoodCategory.ROMANTIC -> "romantic sweet love songs hits"
             }
         }
     }

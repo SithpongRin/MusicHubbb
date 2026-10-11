@@ -382,6 +382,31 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.74
+- 4 Core Moods in `Your Mix` (`Calm`, `Energetic`, `Sad`, `Romantic` alongside `My Mix` & `Artist Mix`), 3-Stage Precision Acoustic Engine (`MP4 stsz`, Exact MP3 Frame-Stepping, Ogg/WebM Packet Lacing, Autocorrelation BPM), Library-Wide Z-Score Self-Calibration, Self-Learning 4x6 Neural Weight Matrix (`Delta-W`), and Unified `140.dp` `Your Mix` Card Size:
+  - **Unified `Your Mix` Card Dimensions (`140.dp x 120.dp`)**:
+    - Restored `Your Mix` card width to `140.dp` and artwork height to `120.dp` in `MainActivity.kt` so `Your Mix` cards match the exact dimensions of `Because You Listen to ...` and `Recommended for You` cards.
+  - **Streamlined `Your Mix` Lineup (`My Mix`, `Artist Mix`, and 4 Core Moods)**:
+    - Replaced the previous 7 overlapping mood categories with the 4 core emotional/acoustic moods requested by the user alongside `My Mix` (`ចម្រៀងចម្រុះខ្ញុំ`) and `Artist Mix`:
+      1. **`Calm`** (`ស្ងប់ស្ងាត់`): Low/relaxed energy, slow/gentle tempo, high melodic sustain, minimal transient punch, low dynamic variance.
+      2. **`Energetic`** (`ស្វាហាប់`): High energy, fast tempo pulse, strong percussive punch, driving groove regularity.
+      3. **`Sad`** (`កម្សត់`): Slow tempo, soft non-percussive attacks, low groove regularity, high melodic sustain & emotional swell.
+      4. **`Romantic`** (`មនោសញ្ចេតនា`): Warm mid-tempo, balanced energy, smooth melodic sustain, gentle groove & expressive phrasing.
+  - **3-Stage Precision Acoustic Feature Extraction (Zero `MediaCodec`)**:
+    - **Stage 1 (True Frame-Table & Frame-Stepping)**:
+      - Added `extractM4aStszEnergies` to parse the ISO BMFF `stsz` (Sample Size Box) table in M4A/MP4 files, reading the exact byte sizes of variable-length `23.22ms` AAC audio frames across the track.
+      - Upgraded `extractMp3ExactFrameEnergies` to step by exact MPEG-1/2 Layer III frame byte length (`(144 * bitrate) / sampleRate + padding`) and verify next-frame `0xFF` sync, reading true `global_gain` (1.5 dB logarithmic loudness) and `main_data_begin` transient bursts without false sync hits.
+      - Added `extractWebmOggPacketEnergies` to parse Ogg (`OggS`) segment lacing tables alongside compressed frame contour analysis.
+    - **Stage 2 (Percentile Self-Normalization & Autocorrelation True BPM)**:
+      - Self-normalizes each song's frame envelope using its $P_{10}, P_{25}, P_{50}, P_{75}, P_{90}$ percentiles and Coefficient of Variation so compressed bitstreams do not artificially saturate energy.
+      - Computes first-order onset flux $O[t] = \max(0, E[t] - E[t-1])$ and runs Normalized Autocorrelation $R(\tau)$ across tempo lags (`60 BPM .. 180 BPM`) to extract true BPM tempo speed and periodic groove regularity.
+    - **Stage 3 (Library-Wide Z-Score Self-Calibration)**:
+      - Added `calibrateLibraryAcousticSpace` to standardize all 6 acoustic features across the user's library (`z = tanh((raw - mean) / (1.05 * std))`), ensuring songs accurately populate all 4 Core Mood Mixes (`Calm`, `Energetic`, `Sad`, `Romantic`).
+  - **On-Device Self-Learning 4x6 Neural Weight Matrix (`Delta-W`) & Historical Bootstrap**:
+    - Added `updateLearnedNeuralWeights` (`learned_w_{moodIdx}_{featIdx}`) trained via Online Gradient Descent from user Star Ratings (`1-5 Stars`) and listening completions/early skips, plus `bootstrapHistoricalLearningIfNeeded` to incorporate existing `PlayCountTracker` and `isFavorite` history.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 74` and `versionName = "1.0.74"` in `app/build.gradle.kts`.
+
 ### Version 1.0.73
 - 100% Pure Audio Signal Mood Classification for `Your Mix`, Conditional AI Uncertainty Star Rating (`1-5 Stars`), 3-Signal Hybrid `Recommended for You` Engine, and Crash-Free Song Info Saving:
   - **100% Pure Audio Signal Analysis for `Your Mix` (`AiAudioMoodEngine`)**:

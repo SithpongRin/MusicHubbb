@@ -7181,7 +7181,7 @@ fun HomeScreen(
                             )
                             Surface(
                                 modifier = Modifier
-                                    .width(156.dp)
+                                    .width(140.dp)
                                     .clip(RoundedCornerShape(10.dp))
                                     .clickable {
                                         onMixClick(mix.title, mix.songs)
@@ -7193,7 +7193,7 @@ fun HomeScreen(
                                     Box(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(124.dp)
+                                            .height(120.dp)
                                             .clip(RoundedCornerShape(8.dp))
                                             .background(
                                                 Brush.linearGradient(
@@ -7277,12 +7277,11 @@ fun HomeScreen(
 
                                     Text(
                                         text = mix.title,
-                                        fontSize = if (mix.title.length > 16) 11.5.sp else 12.5.sp,
+                                        fontSize = if (mix.title.length > 15) 11.5.sp else 12.5.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = if (isThisMixPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                                         maxLines = 1,
-                                        softWrap = false,
-                                        overflow = TextOverflow.Visible
+                                        overflow = TextOverflow.Ellipsis
                                     )
 
                                     Spacer(modifier = Modifier.height(2.dp))
