@@ -12,8 +12,8 @@ android {
         applicationId = "com.musichub.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 67
-        versionName = "1.0.67"
+        versionCode = 68
+        versionName = "1.0.68"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

@@ -382,6 +382,15 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.68
+- Fixed Playing Queue Crash, Connected Context-Strict Playing Queue, Added `=` Drag-and-Drop Reordering to Offline Music Lists, and Removed Redundant Artwork Style Card from Settings:
+  - Fixed the `awaitEachGesture` non-suspending infinite loop crash in `UnifiedExpandablePlayerCard` when opening the Playing Queue sheet by always awaiting `awaitFirstDown` before checking `isQueueSheetOpen` and removing `isQueueSheetOpen` from `pointerInput` keys, plus added continuous finger-tracking morphing (`queueProgress`) between Now Playing and Playing Queue.
+  - Strictly connected `getCurrentPlaybackQueue()` and `currentQueueTitle` to the active playback source: playing inside a Playlist (e.g. Playlist A) populates Playing Queue exclusively with Playlist A's songs; playing inside an Artist populates only that Artist's songs; playing inside a Mix populates only that Mix's songs; playing inside Library Favorites/Downloaded populates only that filtered list; and playing inside Offline Library populates all offline songs.
+  - Added `220ms` press-and-hold `=` (`Icons.Default.DragHandle`) drag-and-drop reordering and `Move to Top` / `Move to Bottom` menu options to `OfflineLibraryDialog` and `LibraryScreen` song lists, persisting custom order to storage.
+  - Removed the `Player Artwork Style` card from `SettingsScreen` since the toggle button is directly accessible in the Now Playing top header bar.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 68` and `versionName = "1.0.68"` in `app/build.gradle.kts`.
+
 ### Version 1.0.67
 - Swipe-Up Playing Queue Sheet in Now Playing, Artist Song Drag-and-Drop (`=`), Update Dialog Button Contrast Fix, and Single-Line Search Placeholder:
   - Added a minimal bottom handle bar (no text) below the Now Playing controls in `UnifiedExpandablePlayerCard` and enabled swiping up (or tapping the handle bar) to smoothly open the active Playing Queue sheet (`currentQueue`), while preserving swipe-down to minimize into the Mini-Player.
