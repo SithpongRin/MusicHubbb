@@ -382,6 +382,15 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.57
+- Refined `NowPlayingDialog` layout and interactions:
+  - Removed the redundant bottom volume slider from `NowPlayingDialog` (volume control remains available in `SettingsScreen`), creating a cleaner, uncluttered player layout.
+  - Enlarged both the Spinning Vinyl Disc and Static Square Card artwork from `290.dp` to `326.dp` for a more immersive full-bleed presentation.
+  - Added smooth interactive Swipe-Down-to-Minimize gesture (`detectVerticalDragGestures` with `Animatable` offset and subtle top pill handle) allowing users to drag the Now Playing screen downward to smoothly minimize it into the Mini-Player, with spring snap-back if released early.
+- Upgraded Dark Mode color palette to a YouTube Music-inspired deep obsidian black theme (`#030303` background, `#121216` card surface, `#1D1D24` surfaceVariant, `#FAFAFA` crisp foreground) across the main scaffold and all full-screen dialogs (`OfflineLibraryDialog`, `PlaylistDetailDialog`, `ArtistDetailDialog`, and `NowPlayingDialog`).
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 57` and `versionName = "1.0.57"` in `app/build.gradle.kts`.
+
 ### Version 1.0.56
 - Added "Player Artwork Style" setting in Settings screen (`SettingsScreen`):
   - Allows users to switch between "Vinyl Disc" (Spinning Picture Disc with center spindle hub) and "Static Card" (290.dp rounded-corner square card without rotation or scale animation, showing full unobscured album cover).

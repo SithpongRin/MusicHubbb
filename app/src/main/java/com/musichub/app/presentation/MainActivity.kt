@@ -2328,14 +2328,14 @@ fun MusicHubApp() {
         darkColorScheme(
             primary = Color(0xFF818CF8),
             secondary = Color(0xFF6366F1),
-            background = Color(0xFF0F1117),
-            surface = Color(0xFF1A1D26),
-            surfaceVariant = Color(0xFF262A36),
+            background = Color(0xFF030303),
+            surface = Color(0xFF121216),
+            surfaceVariant = Color(0xFF1D1D24),
             onPrimary = Color.White,
-            onBackground = Color(0xFFF1F3F9),
-            onSurface = Color(0xFFF1F3F9),
-            onSurfaceVariant = Color(0xFF9CA3AF),
-            outline = Color(0xFF2E3344)
+            onBackground = Color(0xFFFAFAFA),
+            onSurface = Color(0xFFFAFAFA),
+            onSurfaceVariant = Color(0xFFA1A1AA),
+            outline = Color(0xFF272730)
         )
     } else {
         lightColorScheme(
@@ -2877,7 +2877,7 @@ fun MusicHubApp() {
             val (existing, candidate) = duplicateConflictSong!!
             AlertDialog(
                 onDismissRequest = { duplicateConflictSong = null },
-                containerColor = if (isDarkMode) Color(0xFF1E222D) else Color.White,
+                containerColor = if (isDarkMode) Color(0xFF121216) else Color.White,
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(imageVector = Icons.Default.Info, contentDescription = null, tint = Color(0xFF6366F1))
@@ -3225,8 +3225,6 @@ fun MusicHubApp() {
                 },
                 onEditClick = { editingSong = currentSong },
                 onEqualizerClick = { showEqualizerModal = true },
-                appVolume = appVolume,
-                onVolumeChange = { appVolume = it },
                 onShareClick = { currentSong?.let { shareSongFile(context, it) } },
                 onDismiss = { showNowPlayingModal = false }
             )
@@ -3765,7 +3763,7 @@ fun SelectPlaylistSongsDialog(
                 .fillMaxSize()
                 .padding(16.dp),
             shape = RoundedCornerShape(24.dp),
-            color = if (isDark) Color(0xFF1E222D) else Color.White
+            color = if (isDark) Color(0xFF121216) else Color.White
         ) {
             Column(
                 modifier = Modifier
@@ -3833,7 +3831,7 @@ fun SelectPlaylistSongsDialog(
                                         selectedIds + song.id
                                     }
                                 },
-                            color = if (isSelected) (if (isDark) Color(0xFF282F3E) else Color(0xFFF1F5F9)) else (if (isDark) Color(0xFF1E222D) else Color.White),
+                            color = if (isSelected) (if (isDark) Color(0xFF282F3E) else Color(0xFFF1F5F9)) else (if (isDark) Color(0xFF121216) else Color.White),
                             border = androidx.compose.foundation.BorderStroke(
                                 1.dp,
                                 if (isSelected) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFE2E8F0))
@@ -3990,7 +3988,7 @@ fun PlaylistDetailDialog(
         val isDark = LocalDarkMode.current
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = if (isDark) Color(0xFF14161D) else Color(0xFFF5F6F9)
+            color = if (isDark) Color(0xFF030303) else Color(0xFFF5F6F9)
         ) {
             Column(
                 modifier = Modifier
@@ -4007,7 +4005,7 @@ fun PlaylistDetailDialog(
                         onClick = onDismiss,
                         modifier = Modifier
                             .size(40.dp)
-                            .background(if (isDark) Color(0xFF1E222D) else Color.White, CircleShape)
+                            .background(if (isDark) Color(0xFF121216) else Color.White, CircleShape)
                     ) {
                         Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D))
                     }
@@ -4027,7 +4025,7 @@ fun PlaylistDetailDialog(
                         onClick = { showSelectSongsDialog = true },
                         modifier = Modifier
                             .size(40.dp)
-                            .background(if (isDark) Color(0xFF1E222D) else Color.White, CircleShape)
+                            .background(if (isDark) Color(0xFF121216) else Color.White, CircleShape)
                     ) {
                         Icon(imageVector = Icons.Default.PlaylistAdd, contentDescription = "Select Songs", tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D))
                     }
@@ -4057,7 +4055,7 @@ fun PlaylistDetailDialog(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(20.dp))
                                 .clickable { onLoopModeToggle() },
-                            color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF1E222D) else Color.White),
+                            color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF121216) else Color.White),
                             border = androidx.compose.foundation.BorderStroke(
                                 1.dp,
                                 if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
@@ -4145,7 +4143,7 @@ fun PlaylistDetailDialog(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(14.dp))
                                     .clickable { onSongClick(song) },
-                                color = if (currentSong?.id == song.id) (if (isDark) Color(0xFF1E222D) else Color.White) else Color.Transparent
+                                color = if (currentSong?.id == song.id) (if (isDark) Color(0xFF121216) else Color.White) else Color.Transparent
                             ) {
                                 Row(
                                     modifier = Modifier
@@ -4413,7 +4411,7 @@ fun ArtistDetailDialog(
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = if (isDark) Color(0xFF14161D) else Color(0xFFF5F6F9)
+            color = if (isDark) Color(0xFF030303) else Color(0xFFF5F6F9)
         ) {
             Column(
                 modifier = Modifier
@@ -4430,7 +4428,7 @@ fun ArtistDetailDialog(
                         onClick = onDismiss,
                         modifier = Modifier
                             .size(40.dp)
-                            .background(if (isDark) Color(0xFF1E222D) else Color.White, CircleShape)
+                            .background(if (isDark) Color(0xFF121216) else Color.White, CircleShape)
                     ) {
                         Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D))
                     }
@@ -4450,7 +4448,7 @@ fun ArtistDetailDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(22.dp)),
-                    color = if (isDark) Color(0xFF1E222D) else Color.White,
+                    color = if (isDark) Color(0xFF121216) else Color.White,
                     shadowElevation = 2.dp
                 ) {
                     Row(
@@ -4619,7 +4617,7 @@ fun ArtistDetailDialog(
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
                             .clickable { onLoopModeToggle() },
-                        color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF1E222D) else Color.White),
+                        color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF121216) else Color.White),
                         border = androidx.compose.foundation.BorderStroke(
                             1.dp,
                             if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
@@ -4726,7 +4724,7 @@ fun OfflineLibraryDialog(
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = if (isDark) Color(0xFF14161D) else Color(0xFFF5F6F9)
+            color = if (isDark) Color(0xFF030303) else Color(0xFFF5F6F9)
         ) {
             Column(
                 modifier = Modifier
@@ -4743,7 +4741,7 @@ fun OfflineLibraryDialog(
                         onClick = onDismiss,
                         modifier = Modifier
                             .size(40.dp)
-                            .background(if (isDark) Color(0xFF1E222D) else Color.White, CircleShape)
+                            .background(if (isDark) Color(0xFF121216) else Color.White, CircleShape)
                     ) {
                         Icon(
                             imageVector = Icons.Default.ArrowBack,
@@ -4840,7 +4838,7 @@ fun OfflineLibraryDialog(
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
                             .clickable { onLoopModeToggle() },
-                        color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF1E222D) else Color.White),
+                        color = if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF121216) else Color.White),
                         border = androidx.compose.foundation.BorderStroke(
                             1.dp,
                             if (loopMode != LoopMode.OFF) (if (isDark) Color(0xFF6366F1) else Color(0xFF14161D)) else (if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1))
@@ -8230,11 +8228,14 @@ fun NowPlayingDialog(
     onFavoriteToggle: () -> Unit,
     onEditClick: () -> Unit,
     onEqualizerClick: () -> Unit,
-    appVolume: Float = 0.60f,
-    onVolumeChange: (Float) -> Unit = {},
     onShareClick: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
+    val coroutineScope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val dismissThresholdPx = remember(density) { with(density) { 105.dp.toPx() } }
+    val dragOffsetY = remember { Animatable(0f) }
+
     val artScale by animateFloatAsState(
         targetValue = if (!isVinylStyle || isPlaying) 1.0f else 0.95f,
         animationSpec = spring(stiffness = Spring.StiffnessLow),
@@ -8256,49 +8257,115 @@ fun NowPlayingDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
+        val dragFraction = (dragOffsetY.value / (dismissThresholdPx * 3.2f)).coerceIn(0f, 1f)
+        val topCornerRadius = (dragFraction * 32f).dp
+
         Surface(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    translationY = dragOffsetY.value
+                    val scaleFactor = 1f - (dragFraction * 0.04f)
+                    scaleX = scaleFactor
+                    scaleY = scaleFactor
+                }
+                .clip(RoundedCornerShape(topStart = topCornerRadius, topEnd = topCornerRadius))
+                .pointerInput(Unit) {
+                    detectVerticalDragGestures(
+                        onVerticalDrag = { change, dragAmount ->
+                            if (dragAmount > 0f || dragOffsetY.value > 0f) {
+                                change.consume()
+                                val nextY = (dragOffsetY.value + dragAmount).coerceAtLeast(0f)
+                                coroutineScope.launch {
+                                    dragOffsetY.snapTo(nextY)
+                                }
+                            }
+                        },
+                        onDragEnd = {
+                            coroutineScope.launch {
+                                if (dragOffsetY.value > dismissThresholdPx) {
+                                    dragOffsetY.animateTo(
+                                        targetValue = 1800f,
+                                        animationSpec = tween(durationMillis = 165, easing = FastOutLinearInEasing)
+                                    )
+                                    onDismiss()
+                                } else {
+                                    dragOffsetY.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioNoBouncy,
+                                            stiffness = Spring.StiffnessMedium
+                                        )
+                                    )
+                                }
+                            }
+                        },
+                        onDragCancel = {
+                            coroutineScope.launch {
+                                dragOffsetY.animateTo(
+                                    targetValue = 0f,
+                                    animationSpec = spring(stiffness = Spring.StiffnessMedium)
+                                )
+                            }
+                        }
+                    )
+                },
             color = MaterialTheme.colorScheme.background
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 24.dp, vertical = 20.dp),
+                    .padding(horizontal = 24.dp, vertical = 18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // Top Header Row
-                Row(
+                // Top Header Section with Subtle Swipe-Down Pill Indicator
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    IconButton(onClick = onDismiss) {
-                        Icon(imageVector = Icons.Default.KeyboardArrowDown, contentDescription = "Down", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
-                    }
-
-                    Text(
-                        text = if (isKhmer) "កំពុងចាក់" else "Now Playing",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                    Box(
+                        modifier = Modifier
+                            .width(38.dp)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.30f))
                     )
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = onShareClick) {
-                            Icon(imageVector = Icons.Default.Share, contentDescription = "Share", tint = MaterialTheme.colorScheme.onSurface)
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = onDismiss) {
+                            Icon(imageVector = Icons.Default.KeyboardArrowDown, contentDescription = "Down", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
                         }
-                        IconButton(onClick = onEqualizerClick) {
-                            Icon(imageVector = Icons.Default.Tune, contentDescription = "EQ", tint = MaterialTheme.colorScheme.onSurface)
+
+                        Text(
+                            text = if (isKhmer) "កំពុងចាក់" else "Now Playing",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = onShareClick) {
+                                Icon(imageVector = Icons.Default.Share, contentDescription = "Share", tint = MaterialTheme.colorScheme.onSurface)
+                            }
+                            IconButton(onClick = onEqualizerClick) {
+                                Icon(imageVector = Icons.Default.Tune, contentDescription = "EQ", tint = MaterialTheme.colorScheme.onSurface)
+                            }
                         }
                     }
                 }
 
                 if (isVinylStyle) {
-                    // Rotating Picture Disc with full-bleed artwork and enlarged center spindle hub
+                    // Enlarged Rotating Picture Disc (326.dp) with full-bleed artwork and center spindle hub
                     Box(
                         modifier = Modifier
-                            .size(290.dp)
+                            .size(326.dp)
                             .scale(artScale)
                             .shadow(24.dp, CircleShape)
                             .clip(CircleShape)
@@ -8327,7 +8394,7 @@ fun NowPlayingDialog(
                                     imageVector = Icons.Default.MusicNote,
                                     contentDescription = null,
                                     tint = Color.White,
-                                    modifier = Modifier.size(72.dp)
+                                    modifier = Modifier.size(76.dp)
                                 )
                             }
                         }
@@ -8358,7 +8425,7 @@ fun NowPlayingDialog(
                                 .border(1.5.dp, Color(0x35000000), CircleShape)
                         )
 
-                        // Center Spindle Hub & Metallic Silver Ring (further enlarged per user request)
+                        // Center Spindle Hub & Metallic Silver Ring
                         Box(
                             modifier = Modifier
                                 .size(76.dp)
@@ -8378,11 +8445,11 @@ fun NowPlayingDialog(
                         }
                     }
                 } else {
-                    // Static Square Card with Rounded Corners (No animation, full unobscured artwork)
+                    // Enlarged Static Square Card (326.dp) with Rounded Corners (No animation, full unobscured artwork)
                     Box(
                         modifier = Modifier
-                            .size(290.dp)
-                            .shadow(22.dp, RoundedCornerShape(28.dp))
+                            .size(326.dp)
+                            .shadow(24.dp, RoundedCornerShape(28.dp))
                             .clip(RoundedCornerShape(28.dp))
                             .background(Color(0xFF1E212D))
                             .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(28.dp)),
@@ -8406,7 +8473,7 @@ fun NowPlayingDialog(
                                     imageVector = Icons.Default.MusicNote,
                                     contentDescription = null,
                                     tint = Color.White,
-                                    modifier = Modifier.size(72.dp)
+                                    modifier = Modifier.size(76.dp)
                                 )
                             }
                         }
@@ -8482,7 +8549,9 @@ fun NowPlayingDialog(
 
                 // Controls Row: Shuffle, Prev, Big Play/Pause, Next, Loop Mode
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -8501,7 +8570,7 @@ fun NowPlayingDialog(
                     // Main Big Circular Play/Pause Button
                     Surface(
                         modifier = Modifier
-                            .size(72.dp)
+                            .size(74.dp)
                             .shadow(12.dp, CircleShape)
                             .clip(CircleShape)
                             .clickable { onPlayPause() },
@@ -8530,43 +8599,6 @@ fun NowPlayingDialog(
                         )
                     }
                 }
-
-                // In-App Software Gain / Headphone Volume Control
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = if (appVolume <= 0.08f) Icons.Default.VolumeMute else if (appVolume < 0.5f) Icons.Default.VolumeDown else Icons.Default.VolumeUp,
-                        contentDescription = "Volume",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Slider(
-                        value = appVolume,
-                        onValueChange = onVolumeChange,
-                        valueRange = 0.05f..1f,
-                        modifier = Modifier.weight(1f),
-                        colors = SliderDefaults.colors(
-                            thumbColor = MaterialTheme.colorScheme.onSurface,
-                            activeTrackColor = MaterialTheme.colorScheme.onSurface,
-                            inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "${(appVolume * 100).toInt()}%",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.width(32.dp)
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
             }
         }
     }
@@ -8664,7 +8696,7 @@ fun MediaLinkDownloadDialog(
 
     AlertDialog(
         onDismissRequest = { if (!isDownloading) onDismiss() },
-        containerColor = if (isDark) Color(0xFF1E222D) else Color.White,
+        containerColor = if (isDark) Color(0xFF121216) else Color.White,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(imageVector = Icons.Default.Download, contentDescription = null, tint = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D))
@@ -9253,7 +9285,7 @@ fun EqualizerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = if (isDark) Color(0xFF1E222D) else Color.White,
+        containerColor = if (isDark) Color(0xFF121216) else Color.White,
         title = {
             Text(
                 text = if (isKhmer) "ប្រព័ន្ធកែសំឡេង Equalizer" else "Sound Equalizer",
