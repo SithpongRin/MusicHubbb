@@ -9913,13 +9913,17 @@ fun UnifiedExpandablePlayerCard(
         }
     }
 
-    LaunchedEffect(isQueueSheetOpen) {
-        if (isQueueSheetOpen) {
+    val isQueueVisible = isQueueSheetOpen || queueProgress.value > 0.05f
+    LaunchedEffect(isQueueVisible, song.id, orderedQueueSongs.size) {
+        if (isQueueVisible && draggingQueueSongId == null) {
             val activeIdx = orderedQueueSongs.indexOfFirst { it.id == song.id }
-            if (activeIdx > 0) {
-                queueListState.scrollToItem((activeIdx - 1).coerceAtLeast(0))
+            if (activeIdx >= 0) {
+                queueListState.scrollToItem(activeIdx, 0)
             }
         }
+    }
+
+    LaunchedEffect(isQueueSheetOpen) {
         val targetQ = if (isQueueSheetOpen) 1f else 0f
         if (Math.abs(queueProgress.value - targetQ) > 0.01f) {
             queueProgress.animateTo(
@@ -9983,6 +9987,7 @@ fun UnifiedExpandablePlayerCard(
         val fullScreenHeight = maxHeight
         val p = expandProgress.value.coerceIn(0f, 1f)
         val collapsedHeight = 66.dp
+        val topMiniHeight = 68.dp
         val cardHeight = lerpDp(collapsedHeight, fullScreenHeight, p)
         val sidePadding = lerpDp(16.dp, 0.dp, p)
         val bottomPadding = lerpDp(collapsedBottomPadding, 0.dp, p)
@@ -9990,7 +9995,7 @@ fun UnifiedExpandablePlayerCard(
         val expandDragRangePx = with(density) {
             (fullScreenHeight - collapsedHeight - collapsedBottomPadding).toPx().coerceAtLeast(300f)
         }
-        val sheetHeight = fullScreenHeight * 0.72f
+        val sheetHeight = (fullScreenHeight - topMiniHeight).coerceAtLeast(250.dp)
         val sheetHeightPx = with(density) { sheetHeight.toPx().coerceAtLeast(250f) }
 
         // Background dim scrim as the card expands toward full screen
@@ -10111,7 +10116,7 @@ fun UnifiedExpandablePlayerCard(
                                     } else {
                                         // Expanded Now Playing:
                                         // Swipe DOWN (totalDragY > touchSlop) -> morphs card back into Mini-Player
-                                        // Swipe UP (totalDragY < -touchSlop) -> smoothly pulls up Playing Queue sheet
+                                        // Swipe UP (totalDragY < -touchSlop) -> morphs Now Playing into Top Mini-Player + attached Playing Queue
                                         if (totalDragY > touchSlop && Math.abs(totalDragY) > Math.abs(totalDragX)) {
                                             isDraggingExpand = true
                                             change.consume()
@@ -10150,365 +10155,425 @@ fun UnifiedExpandablePlayerCard(
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
                 val qp = queueProgress.value.coerceIn(0f, 1f)
-                // 1. Expanded Full-Screen Now Playing Layout inside the same card
+                // 1. Expanded Now Playing Section (morphs into Top Mini-Player as qp goes 0f -> 1f)
                 if (p > 0.02f) {
-                    val expandedAlpha = (((p - 0.05f) / 0.42f).coerceIn(0f, 1f)) * (1f - qp * 0.25f)
-                    val expandedScale = (0.92f + (0.08f * p)) * (1f - qp * 0.04f)
+                    val expandedAlpha = (((p - 0.05f) / 0.42f).coerceIn(0f, 1f)) * ((1f - qp * 1.85f).coerceIn(0f, 1f))
+                    val expandedScale = (0.92f + (0.08f * p)) * (1f - qp * 0.08f)
 
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .wrapContentHeight(align = Alignment.Top, unbounded = true)
-                            .height(fullScreenHeight)
-                            .graphicsLayer {
-                                alpha = expandedAlpha
-                                scaleX = expandedScale
-                                scaleY = expandedScale
-                                transformOrigin = TransformOrigin(0.5f, 0f)
-                            }
-                            .then(
-                                if (isDark) {
-                                    Modifier.background(
-                                        Brush.verticalGradient(
-                                            colorStops = arrayOf(
-                                                0.0f to Color(0xFF17232C).copy(alpha = p),
-                                                0.32f to Color(0xFF10141A).copy(alpha = p),
-                                                1.0f to Color(0xFF0C0E12).copy(alpha = p)
-                                            )
-                                        )
-                                    )
-                                } else Modifier
-                            )
-                            .padding(horizontal = 24.dp, vertical = 14.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        // Top Header Bar: Collapse (v) | Switch Player Artwork Style | Share | EQ
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            IconButton(
-                                onClick = {
-                                    onExpandedChange(false)
-                                    coroutineScope.launch {
-                                        expandProgress.animateTo(
-                                            targetValue = 0f,
-                                            animationSpec = spring(
-                                                dampingRatio = Spring.DampingRatioNoBouncy,
-                                                stiffness = Spring.StiffnessMediumLow
-                                            )
-                                        )
-                                    }
-                                },
-                                enabled = p > 0.5f && qp < 0.1f
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.KeyboardArrowDown,
-                                    contentDescription = "Minimize",
-                                    tint = MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.size(28.dp)
-                                )
-                            }
-
-                            IconButton(onClick = onVinylStyleToggle, enabled = p > 0.5f && qp < 0.1f) {
-                                Icon(
-                                    imageVector = if (isVinylStyle) Icons.Default.Album else Icons.Default.CropSquare,
-                                    contentDescription = "Switch Player Artwork Style",
-                                    tint = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-
-                            IconButton(onClick = onShareClick, enabled = p > 0.5f && qp < 0.1f) {
-                                Icon(
-                                    imageVector = Icons.Default.Share,
-                                    contentDescription = "Share",
-                                    tint = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-
-                            IconButton(onClick = onEqualizerClick, enabled = p > 0.5f && qp < 0.1f) {
-                                Icon(
-                                    imageVector = Icons.Default.Tune,
-                                    contentDescription = "EQ",
-                                    tint = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                        }
-
-                        if (isVinylStyle) {
-                            // Enlarged Rotating Picture Disc (326.dp) with full-bleed artwork and center spindle hub
-                            Box(
-                                modifier = Modifier
-                                    .size(326.dp)
-                                    .scale(artScale)
-                                    .shadow(24.dp, CircleShape)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF1E212D))
-                                    .graphicsLayer { rotationZ = discRotation },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (song.artworkUrl.isNotBlank()) {
-                                    SmartArtworkImage(
-                                        artworkUrl = song.artworkUrl,
-                                        contentDescription = song.title,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .scale(1.05f)
-                                    )
-                                } else {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .background(Color(0xFF1E212D)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.MusicNote,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(76.dp)
-                                        )
-                                    }
+                    if (expandedAlpha > 0.01f) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .wrapContentHeight(align = Alignment.Top, unbounded = true)
+                                .height(fullScreenHeight)
+                                .graphicsLayer {
+                                    alpha = expandedAlpha
+                                    scaleX = expandedScale
+                                    scaleY = expandedScale
+                                    translationY = -qp * sheetHeightPx * 0.35f
+                                    transformOrigin = TransformOrigin(0.5f, 0f)
                                 }
-
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .background(
-                                            Brush.sweepGradient(
-                                                listOf(
-                                                    Color.Transparent,
-                                                    Color.White.copy(alpha = 0.08f),
-                                                    Color.Transparent,
-                                                    Color.White.copy(alpha = 0.04f),
-                                                    Color.Transparent,
-                                                    Color.White.copy(alpha = 0.08f),
-                                                    Color.Transparent
+                                .then(
+                                    if (isDark) {
+                                        Modifier.background(
+                                            Brush.verticalGradient(
+                                                colorStops = arrayOf(
+                                                    0.0f to Color(0xFF17232C).copy(alpha = p),
+                                                    0.32f to Color(0xFF10141A).copy(alpha = p),
+                                                    1.0f to Color(0xFF0C0E12).copy(alpha = p)
                                                 )
                                             )
                                         )
+                                    } else Modifier
                                 )
-
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .border(1.5.dp, Color(0x35000000), CircleShape)
-                                )
-
-                                Box(
-                                    modifier = Modifier
-                                        .size(76.dp)
-                                        .shadow(8.dp, CircleShape)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF14161D))
-                                        .border(3.5.dp, Color(0xFFE2E8F0), CircleShape),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(34.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(0xFF0B0D12))
-                                            .border(1.2.dp, Color(0x70FFFFFF), CircleShape)
-                                    )
-                                }
-                            }
-                        } else {
-                            // Enlarged Static Square Card (326.dp) with Reduced Rounded Corners
-                            Box(
-                                modifier = Modifier
-                                    .size(326.dp)
-                                    .shadow(24.dp, RoundedCornerShape(12.dp))
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(Color(0xFF1E212D))
-                                    .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(12.dp)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (song.artworkUrl.isNotBlank()) {
-                                    SmartArtworkImage(
-                                        artworkUrl = song.artworkUrl,
-                                        contentDescription = song.title,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                } else {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .background(Color(0xFF1E212D)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.MusicNote,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(76.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        // Song Info Row: Heart on left, Centered Title/Artist, Options on right
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                                .padding(horizontal = 24.dp, vertical = 14.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.SpaceBetween
                         ) {
-                            IconButton(onClick = onFavoriteToggle, enabled = p > 0.5f && qp < 0.1f) {
-                                Icon(
-                                    imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                    contentDescription = "Favorite",
-                                    tint = if (song.isFavorite) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                            }
-
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text(
-                                    text = song.title,
-                                    fontSize = 20.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 1,
-                                    modifier = Modifier.basicMarquee(
-                                        iterations = Int.MAX_VALUE,
-                                        delayMillis = 1200,
-                                        initialDelayMillis = 1500,
-                                        velocity = 35.dp
-                                    )
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = song.artist,
-                                    fontSize = 14.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 1,
-                                    modifier = Modifier.basicMarquee(
-                                        iterations = Int.MAX_VALUE,
-                                        delayMillis = 1200,
-                                        initialDelayMillis = 1500,
-                                        velocity = 35.dp
-                                    )
-                                )
-                            }
-
-                            IconButton(onClick = onEditClick, enabled = p > 0.5f && qp < 0.1f) {
-                                Icon(
-                                    imageVector = Icons.Default.MoreHoriz,
-                                    contentDescription = "Options",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                            }
-                        }
-
-                        // Interactive Waveform Audio Scrubber
-                        WaveformScrubber(
-                            progress = progress,
-                            durationSec = song.durationSec,
-                            positionMs = positionMs,
-                            onSeek = onProgressChange
-                        )
-
-                        // Controls + Bottom Queue Handle Bar
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            // Controls Row: Shuffle, Prev, Big Play/Pause, Next, Loop Mode
+                            // Top Header Bar: Collapse (v) | Switch Player Artwork Style | Share | EQ
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                IconButton(onClick = onShuffleToggle, enabled = p > 0.5f && qp < 0.1f) {
+                                IconButton(
+                                    onClick = {
+                                        onExpandedChange(false)
+                                        coroutineScope.launch {
+                                            expandProgress.animateTo(
+                                                targetValue = 0f,
+                                                animationSpec = spring(
+                                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                                    stiffness = Spring.StiffnessMediumLow
+                                                )
+                                            )
+                                        }
+                                    },
+                                    enabled = p > 0.5f && qp < 0.1f
+                                ) {
                                     Icon(
-                                        imageVector = Icons.Default.Shuffle,
-                                        contentDescription = "Shuffle",
-                                        tint = if (isShuffle) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                        imageVector = Icons.Default.KeyboardArrowDown,
+                                        contentDescription = "Minimize",
+                                        tint = MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.size(28.dp)
                                     )
                                 }
 
-                                IconButton(onClick = onPrevious, enabled = p > 0.5f && qp < 0.1f, modifier = Modifier.size(48.dp)) {
-                                    Icon(imageVector = Icons.Default.SkipPrevious, contentDescription = "Previous", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
+                                IconButton(onClick = onVinylStyleToggle, enabled = p > 0.5f && qp < 0.1f) {
+                                    Icon(
+                                        imageVector = if (isVinylStyle) Icons.Default.Album else Icons.Default.CropSquare,
+                                        contentDescription = "Switch Player Artwork Style",
+                                        tint = MaterialTheme.colorScheme.onSurface
+                                    )
                                 }
 
-                                // Main Big Circular Play/Pause Button
-                                Surface(
+                                IconButton(onClick = onShareClick, enabled = p > 0.5f && qp < 0.1f) {
+                                    Icon(
+                                        imageVector = Icons.Default.Share,
+                                        contentDescription = "Share",
+                                        tint = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+
+                                IconButton(onClick = onEqualizerClick, enabled = p > 0.5f && qp < 0.1f) {
+                                    Icon(
+                                        imageVector = Icons.Default.Tune,
+                                        contentDescription = "EQ",
+                                        tint = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+
+                            if (isVinylStyle) {
+                                // Enlarged Rotating Picture Disc (326.dp) with full-bleed artwork and center spindle hub
+                                Box(
                                     modifier = Modifier
-                                        .size(74.dp)
-                                        .shadow(12.dp, CircleShape)
+                                        .size(326.dp)
+                                        .scale(artScale)
+                                        .shadow(24.dp, CircleShape)
                                         .clip(CircleShape)
-                                        .clickable(enabled = p > 0.5f && qp < 0.1f) { onPlayPause() },
-                                    shape = CircleShape,
-                                    color = if (isDark) Color.White else Color(0xFF14161D)
+                                        .background(Color(0xFF1E212D))
+                                        .graphicsLayer { rotationZ = discRotation },
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                            contentDescription = "Play/Pause",
-                                            tint = if (isDark) Color(0xFF0C0E12) else Color.White,
-                                            modifier = Modifier.size(36.dp)
+                                    if (song.artworkUrl.isNotBlank()) {
+                                        SmartArtworkImage(
+                                            artworkUrl = song.artworkUrl,
+                                            contentDescription = song.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .scale(1.05f)
+                                        )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(Color(0xFF1E212D)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.MusicNote,
+                                                contentDescription = null,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(76.dp)
+                                            )
+                                        }
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(
+                                                Brush.sweepGradient(
+                                                    listOf(
+                                                        Color.Transparent,
+                                                        Color.White.copy(alpha = 0.08f),
+                                                        Color.Transparent,
+                                                        Color.White.copy(alpha = 0.04f),
+                                                        Color.Transparent,
+                                                        Color.White.copy(alpha = 0.08f),
+                                                        Color.Transparent
+                                                    )
+                                                )
+                                            )
+                                    )
+
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .border(1.5.dp, Color(0x35000000), CircleShape)
+                                    )
+
+                                    Box(
+                                        modifier = Modifier
+                                            .size(76.dp)
+                                            .shadow(8.dp, CircleShape)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFF14161D))
+                                            .border(3.5.dp, Color(0xFFE2E8F0), CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(34.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFF0B0D12))
+                                                .border(1.2.dp, Color(0x70FFFFFF), CircleShape)
                                         )
                                     }
                                 }
+                            } else {
+                                // Enlarged Static Square Card (326.dp) with Reduced Rounded Corners
+                                Box(
+                                    modifier = Modifier
+                                        .size(326.dp)
+                                        .shadow(24.dp, RoundedCornerShape(12.dp))
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color(0xFF1E212D))
+                                        .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(12.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (song.artworkUrl.isNotBlank()) {
+                                        SmartArtworkImage(
+                                            artworkUrl = song.artworkUrl,
+                                            contentDescription = song.title,
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .background(Color(0xFF1E212D)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.MusicNote,
+                                                contentDescription = null,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(76.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
 
-                                IconButton(onClick = onNext, enabled = p > 0.5f && qp < 0.1f, modifier = Modifier.size(48.dp)) {
-                                    Icon(imageVector = Icons.Default.SkipNext, contentDescription = "Next", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
+                            // Song Info Row: Heart on left, Centered Title/Artist, Options on right
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                IconButton(onClick = onFavoriteToggle, enabled = p > 0.5f && qp < 0.1f) {
+                                    Icon(
+                                        imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                        contentDescription = "Favorite",
+                                        tint = if (song.isFavorite) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(24.dp)
+                                    )
                                 }
 
-                                IconButton(onClick = onLoopModeToggle, enabled = p > 0.5f && qp < 0.1f) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text(
+                                        text = song.title,
+                                        fontSize = 20.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1,
+                                        modifier = Modifier.basicMarquee(
+                                            iterations = Int.MAX_VALUE,
+                                            delayMillis = 1200,
+                                            initialDelayMillis = 1500,
+                                            velocity = 35.dp
+                                        )
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = song.artist,
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 1,
+                                        modifier = Modifier.basicMarquee(
+                                            iterations = Int.MAX_VALUE,
+                                            delayMillis = 1200,
+                                            initialDelayMillis = 1500,
+                                            velocity = 35.dp
+                                        )
+                                    )
+                                }
+
+                                IconButton(onClick = onEditClick, enabled = p > 0.5f && qp < 0.1f) {
                                     Icon(
-                                        imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
-                                        contentDescription = "Loop Mode",
-                                        tint = if (loopMode != LoopMode.OFF) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                        imageVector = Icons.Default.MoreHoriz,
+                                        contentDescription = "Options",
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.size(24.dp)
                                     )
                                 }
                             }
 
-                            Spacer(modifier = Modifier.height(10.dp))
+                            // Interactive Waveform Audio Scrubber
+                            WaveformScrubber(
+                                progress = progress,
+                                durationSec = song.durationSec,
+                                positionMs = positionMs,
+                                onSeek = onProgressChange
+                            )
 
-                            // Minimal Bottom Handle Bar (Swipe up or tap to open Playing Queue)
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(22.dp)
-                                    .clickable(enabled = p > 0.5f && qp < 0.1f) {
-                                        isQueueSheetOpen = true
-                                    },
-                                contentAlignment = Alignment.Center
+                            // Controls + Bottom Queue Handle Bar
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
+                                // Controls Row: Shuffle, Prev, Big Play/Pause, Next, Loop Mode
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    IconButton(onClick = onShuffleToggle, enabled = p > 0.5f && qp < 0.1f) {
+                                        Icon(
+                                            imageVector = Icons.Default.Shuffle,
+                                            contentDescription = "Shuffle",
+                                            tint = if (isShuffle) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                        )
+                                    }
+
+                                    IconButton(onClick = onPrevious, enabled = p > 0.5f && qp < 0.1f, modifier = Modifier.size(48.dp)) {
+                                        Icon(imageVector = Icons.Default.SkipPrevious, contentDescription = "Previous", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
+                                    }
+
+                                    // Main Big Circular Play/Pause Button
+                                    Surface(
+                                        modifier = Modifier
+                                            .size(74.dp)
+                                            .shadow(12.dp, CircleShape)
+                                            .clip(CircleShape)
+                                            .clickable(enabled = p > 0.5f && qp < 0.1f) { onPlayPause() },
+                                        shape = CircleShape,
+                                        color = if (isDark) Color.White else Color(0xFF14161D)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                                contentDescription = "Play/Pause",
+                                                tint = if (isDark) Color(0xFF0C0E12) else Color.White,
+                                                modifier = Modifier.size(36.dp)
+                                            )
+                                        }
+                                    }
+
+                                    IconButton(onClick = onNext, enabled = p > 0.5f && qp < 0.1f, modifier = Modifier.size(48.dp)) {
+                                        Icon(imageVector = Icons.Default.SkipNext, contentDescription = "Next", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
+                                    }
+
+                                    IconButton(onClick = onLoopModeToggle, enabled = p > 0.5f && qp < 0.1f) {
+                                        Icon(
+                                            imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                                            contentDescription = "Loop Mode",
+                                            tint = if (loopMode != LoopMode.OFF) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                // Minimal Bottom Handle Bar (Swipe up or tap to morph Now Playing into Top Mini-Player + Queue)
                                 Box(
                                     modifier = Modifier
-                                        .width(42.dp)
-                                        .height(4.5.dp)
-                                        .clip(RoundedCornerShape(50))
-                                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
-                                )
+                                        .fillMaxWidth()
+                                        .height(22.dp)
+                                        .clickable(enabled = p > 0.5f && qp < 0.1f) {
+                                            isQueueSheetOpen = true
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(42.dp)
+                                            .height(4.5.dp)
+                                            .clip(RoundedCornerShape(50))
+                                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+                                    )
+                                }
                             }
                         }
                     }
                 }
 
-                // 2. Collapsed Mini-Player Row inside the top of the same card
-                val miniAlpha = (1f - (p / 0.28f)).coerceIn(0f, 1f)
+                // 2. Collapsed Bottom Mini-Player Row (when p -> 0f) OR Connected Top Mini-Player Row (when p > 0.5f and qp -> 1f)
+                val bottomMiniAlpha = (1f - (p / 0.28f)).coerceIn(0f, 1f)
+                val topQueueMiniAlpha = if (p > 0.5f) ((qp - 0.18f) / 0.55f).coerceIn(0f, 1f) else 0f
+                val miniAlpha = maxOf(bottomMiniAlpha, topQueueMiniAlpha)
+                val isTopQueueMiniActive = p > 0.5f && qp > 0.18f
+
                 if (miniAlpha > 0.01f) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(66.dp)
+                            .height(if (isTopQueueMiniActive) topMiniHeight else collapsedHeight)
                             .align(Alignment.TopCenter)
                             .graphicsLayer { alpha = miniAlpha }
+                            .then(
+                                if (isTopQueueMiniActive) {
+                                    Modifier
+                                        .background(if (isDark) Color(0xFF14161D) else Color(0xFF14161D))
+                                        .pointerInput(sheetHeightPx) {
+                                            val touchSlop = viewConfiguration.touchSlop
+                                            awaitEachGesture {
+                                                val down = awaitFirstDown(requireUnconsumed = false)
+                                                if (down.isConsumed) return@awaitEachGesture
+                                                val startY = down.position.y
+                                                val startQ = queueProgress.value.coerceIn(0f, 1f)
+                                                val pointerId = down.id
+                                                var isDraggingTopMini = false
+
+                                                while (true) {
+                                                    val event = awaitPointerEvent()
+                                                    val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+                                                    if (!change.pressed) {
+                                                        if (isDraggingTopMini) {
+                                                            val shouldStayOpen = queueProgress.value > 0.78f
+                                                            isQueueSheetOpen = shouldStayOpen
+                                                            coroutineScope.launch {
+                                                                queueProgress.animateTo(
+                                                                    targetValue = if (shouldStayOpen) 1f else 0f,
+                                                                    animationSpec = spring(
+                                                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                                                        stiffness = Spring.StiffnessMediumLow
+                                                                    )
+                                                                )
+                                                            }
+                                                        } else if (!change.isConsumed && Math.abs(change.position.y - startY) <= touchSlop) {
+                                                            isQueueSheetOpen = false
+                                                        }
+                                                        break
+                                                    } else {
+                                                        if (!isDraggingTopMini && change.isConsumed) break
+                                                        val dy = change.position.y - startY
+                                                        if (!isDraggingTopMini && Math.abs(dy) > touchSlop) {
+                                                            isDraggingTopMini = true
+                                                            change.consume()
+                                                        } else if (isDraggingTopMini) {
+                                                            change.consume()
+                                                            val nextQ = (startQ - (dy / sheetHeightPx)).coerceIn(0f, 1f)
+                                                            coroutineScope.launch {
+                                                                queueProgress.snapTo(nextQ)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                } else Modifier
+                            )
                             .padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -10566,9 +10631,10 @@ fun UnifiedExpandablePlayerCard(
                             )
                         }
 
+                        val miniButtonsEnabled = p < 0.25f || (p > 0.5f && qp > 0.6f)
                         IconButton(
                             onClick = onFavoriteToggle,
-                            enabled = p < 0.25f,
+                            enabled = miniButtonsEnabled,
                             modifier = Modifier.size(36.dp)
                         ) {
                             Icon(
@@ -10584,7 +10650,7 @@ fun UnifiedExpandablePlayerCard(
                         Surface(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
-                                .clickable(enabled = p < 0.25f) { onPlayPause() },
+                                .clickable(enabled = miniButtonsEnabled) { onPlayPause() },
                             shape = RoundedCornerShape(10.dp),
                             color = Color.White
                         ) {
@@ -10603,20 +10669,8 @@ fun UnifiedExpandablePlayerCard(
                     }
                 }
 
-                // 3. Swipe-Up Playing Queue Sheet inside Expanded Player
+                // 3. Connected Playing Queue directly attached underneath the Top Mini-Player
                 if (p > 0.5f && qp > 0.01f) {
-                    // Scrim behind the Queue Sheet
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.55f * qp))
-                            .pointerInput(Unit) {
-                                detectTapGestures {
-                                    isQueueSheetOpen = false
-                                }
-                            }
-                    )
-
                     Surface(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
@@ -10625,7 +10679,7 @@ fun UnifiedExpandablePlayerCard(
                             .graphicsLayer {
                                 translationY = (1f - qp) * sheetHeightPx
                             }
-                            .shadow(24.dp, RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                            .shadow(16.dp, RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
                             .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)),
                         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
                         color = if (isDark) Color(0xFF14171F) else Color(0xFFF5F6F9),
@@ -10638,7 +10692,7 @@ fun UnifiedExpandablePlayerCard(
                                 .fillMaxSize()
                                 .padding(horizontal = 18.dp, vertical = 12.dp)
                         ) {
-                            // Queue Sheet Header (Tap or continuous swipe down to close)
+                            // Queue Sheet Header (Tap or continuous swipe down to morph back to full Now Playing)
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()

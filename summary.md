@@ -382,6 +382,14 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.69
+- Connected Now Playing -> Top Mini-Player + Attached Playing Queue Morphing Layout & Active Song Top-of-Queue Positioning:
+  - Connected Now Playing and Playing Queue into one unified morphing layout inside `UnifiedExpandablePlayerCard`: swiping up from Now Playing smoothly morphs Now Playing into a `68.dp` Mini-Player bar docked at the top of the screen while the Playing Queue rises directly attached underneath it (`height = fullScreenHeight - 68.dp`), with no separate floating overlay scrim.
+  - Swiping down on the top Mini-Player bar or the Queue header (or tapping the top Mini-Player bar / Queue handle) smoothly expands the top Mini-Player back into the full Now Playing screen while sliding the Playing Queue back down.
+  - Updated Playing Queue auto-scroll (`queueListState.scrollToItem(activeIdx, 0)`) so that while all songs in the active Playlist / Playback context remain in the queue, the list automatically positions the currently playing song right at the top of the visible list (`offset = 0`) rather than starting from index 0.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 69` and `versionName = "1.0.69"` in `app/build.gradle.kts`.
+
 ### Version 1.0.68
 - Fixed Playing Queue Crash, Connected Context-Strict Playing Queue, Added `=` Drag-and-Drop Reordering to Offline Music Lists, and Removed Redundant Artwork Style Card from Settings:
   - Fixed the `awaitEachGesture` non-suspending infinite loop crash in `UnifiedExpandablePlayerCard` when opening the Playing Queue sheet by always awaiting `awaitFirstDown` before checking `isQueueSheetOpen` and removing `isQueueSheetOpen` from `pointerInput` keys, plus added continuous finger-tracking morphing (`queueProgress`) between Now Playing and Playing Queue.
