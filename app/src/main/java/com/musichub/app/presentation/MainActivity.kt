@@ -9872,8 +9872,9 @@ fun UnifiedExpandablePlayerCard(
     val density = LocalDensity.current
 
     val expandProgress = remember { Animatable(if (isExpanded) 1f else 0f) }
-    var isQueueSheetOpen by remember { mutableStateOf(false) }
+    var queueStage by remember { mutableIntStateOf(0) } // 0 = Full Now Playing, 1 = Split Now Playing + Queue, 2 = Top Mini-Player + Full Queue
     val queueProgress = remember { Animatable(0f) }
+    val stage1Qp = 0.44f
 
     var queueOrderIds by remember { mutableStateOf(queueSongs.map { it.id }.distinct()) }
     var draggingQueueSongId by remember { mutableStateOf<String?>(null) }
@@ -9898,7 +9899,7 @@ fun UnifiedExpandablePlayerCard(
 
     LaunchedEffect(isExpanded) {
         if (!isExpanded) {
-            isQueueSheetOpen = false
+            queueStage = 0
             queueProgress.snapTo(0f)
         }
         val target = if (isExpanded) 1f else 0f
@@ -9913,9 +9914,9 @@ fun UnifiedExpandablePlayerCard(
         }
     }
 
-    val isQueueVisible = isQueueSheetOpen || queueProgress.value > 0.05f
-    LaunchedEffect(isQueueVisible, song.id, orderedQueueSongs.size) {
-        if (isQueueVisible && draggingQueueSongId == null) {
+    // Pre-scroll queue to currently playing song at index top before or when song changes so swipe has zero layout stutter
+    LaunchedEffect(isExpanded, song.id, orderedQueueSongs.size) {
+        if (draggingQueueSongId == null) {
             val activeIdx = orderedQueueSongs.indexOfFirst { it.id == song.id }
             if (activeIdx >= 0) {
                 queueListState.scrollToItem(activeIdx, 0)
@@ -9923,9 +9924,19 @@ fun UnifiedExpandablePlayerCard(
         }
     }
 
-    LaunchedEffect(isQueueSheetOpen) {
-        val targetQ = if (isQueueSheetOpen) 1f else 0f
-        if (Math.abs(queueProgress.value - targetQ) > 0.01f) {
+    LaunchedEffect(queueStage) {
+        if (queueStage == 1 && draggingQueueSongId == null && queueProgress.value < 0.05f) {
+            val activeIdx = orderedQueueSongs.indexOfFirst { it.id == song.id }
+            if (activeIdx >= 0) {
+                queueListState.scrollToItem(activeIdx, 0)
+            }
+        }
+        val targetQ = when (queueStage) {
+            1 -> stage1Qp
+            2 -> 1f
+            else -> 0f
+        }
+        if (Math.abs(queueProgress.value - targetQ) > 0.005f) {
             queueProgress.animateTo(
                 targetValue = targetQ,
                 animationSpec = spring(
@@ -9937,8 +9948,19 @@ fun UnifiedExpandablePlayerCard(
     }
 
     BackHandler(enabled = isExpanded || expandProgress.value > 0.5f) {
-        if (isQueueSheetOpen || queueProgress.value > 0.1f) {
-            isQueueSheetOpen = false
+        if (queueStage == 2 || queueProgress.value > 0.7f) {
+            queueStage = 1
+            coroutineScope.launch {
+                queueProgress.animateTo(
+                    targetValue = stage1Qp,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                )
+            }
+        } else if (queueStage == 1 || queueProgress.value > 0.05f) {
+            queueStage = 0
             coroutineScope.launch {
                 queueProgress.animateTo(
                     targetValue = 0f,
@@ -9997,6 +10019,8 @@ fun UnifiedExpandablePlayerCard(
         }
         val sheetHeight = (fullScreenHeight - topMiniHeight).coerceAtLeast(250.dp)
         val sheetHeightPx = with(density) { sheetHeight.toPx().coerceAtLeast(250f) }
+        val topMiniHeightPx = with(density) { topMiniHeight.toPx() }
+        val queueHeaderHeightPx = with(density) { 74.dp.toPx() }
 
         // Background dim scrim as the card expands toward full screen
         if (p > 0.01f) {
@@ -10037,10 +10061,19 @@ fun UnifiedExpandablePlayerCard(
 
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
-                        if (down.isConsumed || isQueueSheetOpen || queueProgress.value > 0.05f) {
+                        if (down.isConsumed) {
                             return@awaitEachGesture
                         }
                         val startP = expandProgress.value.coerceIn(0f, 1f)
+                        val startQ = queueProgress.value.coerceIn(0f, 1f)
+                        val queueTopY = size.height - (startQ * sheetHeightPx)
+                        val queueHeaderBottomY = queueTopY + queueHeaderHeightPx
+
+                        // If touch is inside the scrollable Queue LazyColumn body (below Queue Header), let LazyColumn handle it
+                        if (startP > 0.5f && startQ > 0.02f && down.position.y > queueHeaderBottomY) {
+                            return@awaitEachGesture
+                        }
+
                         val startFingerFromBottom = (collapsedBottomPx * (1f - startP)) + (size.height - down.position.y)
                         val startFingerFromLeft = (collapsedSidePx * (1f - startP)) + down.position.x
                         var isDraggingExpand = false
@@ -10067,23 +10100,71 @@ fun UnifiedExpandablePlayerCard(
                                     }
                                 } else if (isDraggingQueue) {
                                     val finalQ = queueProgress.value
-                                    val shouldOpenQ = finalQ > 0.12f
-                                    isQueueSheetOpen = shouldOpenQ
+                                    val dragDeltaQ = finalQ - startQ
+                                    val nextStage = when {
+                                        startQ < 0.2f -> when {
+                                            finalQ > 0.68f -> 2
+                                            finalQ > 0.08f -> 1
+                                            else -> 0
+                                        }
+                                        startQ < 0.75f -> when {
+                                            dragDeltaQ > 0.07f -> 2
+                                            dragDeltaQ < -0.07f -> 0
+                                            else -> 1
+                                        }
+                                        else -> when {
+                                            finalQ < 0.22f -> 0
+                                            finalQ < 0.88f -> 1
+                                            else -> 2
+                                        }
+                                    }
+                                    queueStage = nextStage
+                                    val targetQ = when (nextStage) {
+                                        1 -> stage1Qp
+                                        2 -> 1f
+                                        else -> 0f
+                                    }
                                     coroutineScope.launch {
                                         queueProgress.animateTo(
-                                            targetValue = if (shouldOpenQ) 1f else 0f,
+                                            targetValue = targetQ,
                                             animationSpec = spring(
                                                 dampingRatio = Spring.DampingRatioNoBouncy,
                                                 stiffness = Spring.StiffnessMediumLow
                                             )
                                         )
                                     }
-                                } else {
-                                    // Tap when collapsed -> smoothly expand the single card into Now Playing
-                                    if (!change.isConsumed && startP < 0.5f) {
+                                } else if (!change.isConsumed) {
+                                    if (startP < 0.5f) {
+                                        // Tap when collapsed -> smoothly expand the single card into Now Playing
                                         onExpandedChange(true)
                                         coroutineScope.launch {
                                             expandProgress.animateTo(
+                                                targetValue = 1f,
+                                                animationSpec = spring(
+                                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                                    stiffness = Spring.StiffnessMediumLow
+                                                )
+                                            )
+                                        }
+                                    } else if (startQ > 0.75f) {
+                                        // Tap on Top Mini-Player or Queue Header in Stage 2 -> step back smoothly
+                                        val nextStage = if (down.position.y <= topMiniHeightPx) 0 else 1
+                                        queueStage = nextStage
+                                        val targetQ = if (nextStage == 1) stage1Qp else 0f
+                                        coroutineScope.launch {
+                                            queueProgress.animateTo(
+                                                targetValue = targetQ,
+                                                animationSpec = spring(
+                                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                                    stiffness = Spring.StiffnessMediumLow
+                                                )
+                                            )
+                                        }
+                                    } else if (startQ > 0.2f && down.position.y in queueTopY..queueHeaderBottomY) {
+                                        // Tap on Queue Header in Stage 1 -> expand to Stage 2
+                                        queueStage = 2
+                                        coroutineScope.launch {
+                                            queueProgress.animateTo(
                                                 targetValue = 1f,
                                                 animationSpec = spring(
                                                     dampingRatio = Spring.DampingRatioNoBouncy,
@@ -10113,14 +10194,22 @@ fun UnifiedExpandablePlayerCard(
                                         } else if (Math.abs(totalDragX) > touchSlop * 1.5f || totalDragY > touchSlop * 1.5f) {
                                             break
                                         }
-                                    } else {
-                                        // Expanded Now Playing:
-                                        // Swipe DOWN (totalDragY > touchSlop) -> morphs card back into Mini-Player
-                                        // Swipe UP (totalDragY < -touchSlop) -> morphs Now Playing into Top Mini-Player + attached Playing Queue
+                                    } else if (startQ < 0.03f) {
+                                        // Stage 0 (Full Now Playing):
+                                        // Swipe DOWN -> morphs card back into bottom Mini-Player
+                                        // Swipe UP -> morphs Now Playing into Stage 1 (Split) & Stage 2 (Top Mini-Player + Queue)
                                         if (totalDragY > touchSlop && Math.abs(totalDragY) > Math.abs(totalDragX)) {
                                             isDraggingExpand = true
                                             change.consume()
                                         } else if (totalDragY < -touchSlop && Math.abs(totalDragY) > Math.abs(totalDragX) * 0.7f) {
+                                            isDraggingQueue = true
+                                            change.consume()
+                                        } else if (Math.abs(totalDragX) > touchSlop * 1.5f) {
+                                            break
+                                        }
+                                    } else {
+                                        // Stage 1 or Stage 2: vertical swipe smoothly adjusts queueProgress (0f <-> stage1Qp <-> 1f)
+                                        if (Math.abs(totalDragY) > touchSlop && Math.abs(totalDragY) > Math.abs(totalDragX) * 0.7f) {
                                             isDraggingQueue = true
                                             change.consume()
                                         } else if (Math.abs(totalDragX) > touchSlop * 1.5f) {
@@ -10135,7 +10224,7 @@ fun UnifiedExpandablePlayerCard(
                                     }
                                 } else if (isDraggingQueue) {
                                     change.consume()
-                                    val nextQ = (-totalDragY / sheetHeightPx).coerceIn(0f, 1f)
+                                    val nextQ = (startQ - (totalDragY / sheetHeightPx)).coerceIn(0f, 1f)
                                     coroutineScope.launch {
                                         queueProgress.snapTo(nextQ)
                                     }
@@ -10155,22 +10244,30 @@ fun UnifiedExpandablePlayerCard(
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
                 val qp = queueProgress.value.coerceIn(0f, 1f)
-                // 1. Expanded Now Playing Section (morphs into Top Mini-Player as qp goes 0f -> 1f)
+                val s1 = (qp / stage1Qp).coerceIn(0f, 1f) // 0f (Stage 0) -> 1f (Stage 1 Split View)
+                val s2 = ((qp - stage1Qp) / (1f - stage1Qp)).coerceIn(0f, 1f) // 0f (Stage 1) -> 1f (Stage 2 Top Mini-Player)
+                val playerAreaHeight = lerpDp(fullScreenHeight, topMiniHeight, qp)
+
+                // 1. Expanded Now Playing Section (Stage 0 Full -> Stage 1 Compact Split -> Stage 2 Top Mini-Player)
                 if (p > 0.02f) {
-                    val expandedAlpha = (((p - 0.05f) / 0.42f).coerceIn(0f, 1f)) * ((1f - qp * 1.85f).coerceIn(0f, 1f))
-                    val expandedScale = (0.92f + (0.08f * p)) * (1f - qp * 0.08f)
+                    val expandedAlpha = (((p - 0.05f) / 0.42f).coerceIn(0f, 1f)) * ((1f - s2 * 1.45f).coerceIn(0f, 1f))
+                    val expandedScale = (0.92f + (0.08f * p)) * (1f - s2 * 0.06f)
+                    val controlsEnabled = p > 0.5f && s2 < 0.35f
+                    val fullArtSize = (fullScreenHeight * 0.38f).coerceIn(220.dp, 326.dp)
+                    val stage1ArtSize = (fullScreenHeight * 0.165f).coerceIn(104.dp, 142.dp)
+                    val currentArtSize = lerpDp(fullArtSize, stage1ArtSize, s1)
 
                     if (expandedAlpha > 0.01f) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .wrapContentHeight(align = Alignment.Top, unbounded = true)
-                                .height(fullScreenHeight)
+                                .height(playerAreaHeight.coerceAtLeast(topMiniHeight))
                                 .graphicsLayer {
                                     alpha = expandedAlpha
                                     scaleX = expandedScale
                                     scaleY = expandedScale
-                                    translationY = -qp * sheetHeightPx * 0.35f
+                                    translationY = -s2 * with(density) { 48.dp.toPx() }
                                     transformOrigin = TransformOrigin(0.5f, 0f)
                                 }
                                 .then(
@@ -10186,40 +10283,58 @@ fun UnifiedExpandablePlayerCard(
                                         )
                                     } else Modifier
                                 )
-                                .padding(horizontal = 24.dp, vertical = 14.dp),
+                                .padding(
+                                    horizontal = 24.dp,
+                                    vertical = lerpDp(14.dp, 6.dp, s1)
+                                ),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.SpaceBetween
                         ) {
                             // Top Header Bar: Collapse (v) | Switch Player Artwork Style | Share | EQ
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(lerpDp(44.dp, 36.dp, s1)),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 IconButton(
                                     onClick = {
-                                        onExpandedChange(false)
-                                        coroutineScope.launch {
-                                            expandProgress.animateTo(
-                                                targetValue = 0f,
-                                                animationSpec = spring(
-                                                    dampingRatio = Spring.DampingRatioNoBouncy,
-                                                    stiffness = Spring.StiffnessMediumLow
+                                        if (queueStage > 0 || qp > 0.05f) {
+                                            queueStage = 0
+                                            coroutineScope.launch {
+                                                queueProgress.animateTo(
+                                                    targetValue = 0f,
+                                                    animationSpec = spring(
+                                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                                        stiffness = Spring.StiffnessMediumLow
+                                                    )
                                                 )
-                                            )
+                                            }
+                                        } else {
+                                            onExpandedChange(false)
+                                            coroutineScope.launch {
+                                                expandProgress.animateTo(
+                                                    targetValue = 0f,
+                                                    animationSpec = spring(
+                                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                                        stiffness = Spring.StiffnessMediumLow
+                                                    )
+                                                )
+                                            }
                                         }
                                     },
-                                    enabled = p > 0.5f && qp < 0.1f
+                                    enabled = controlsEnabled
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.KeyboardArrowDown,
                                         contentDescription = "Minimize",
                                         tint = MaterialTheme.colorScheme.onSurface,
-                                        modifier = Modifier.size(28.dp)
+                                        modifier = Modifier.size(lerpDp(28.dp, 24.dp, s1))
                                     )
                                 }
 
-                                IconButton(onClick = onVinylStyleToggle, enabled = p > 0.5f && qp < 0.1f) {
+                                IconButton(onClick = onVinylStyleToggle, enabled = controlsEnabled) {
                                     Icon(
                                         imageVector = if (isVinylStyle) Icons.Default.Album else Icons.Default.CropSquare,
                                         contentDescription = "Switch Player Artwork Style",
@@ -10227,7 +10342,7 @@ fun UnifiedExpandablePlayerCard(
                                     )
                                 }
 
-                                IconButton(onClick = onShareClick, enabled = p > 0.5f && qp < 0.1f) {
+                                IconButton(onClick = onShareClick, enabled = controlsEnabled) {
                                     Icon(
                                         imageVector = Icons.Default.Share,
                                         contentDescription = "Share",
@@ -10235,7 +10350,7 @@ fun UnifiedExpandablePlayerCard(
                                     )
                                 }
 
-                                IconButton(onClick = onEqualizerClick, enabled = p > 0.5f && qp < 0.1f) {
+                                IconButton(onClick = onEqualizerClick, enabled = controlsEnabled) {
                                     Icon(
                                         imageVector = Icons.Default.Tune,
                                         contentDescription = "EQ",
@@ -10245,12 +10360,12 @@ fun UnifiedExpandablePlayerCard(
                             }
 
                             if (isVinylStyle) {
-                                // Enlarged Rotating Picture Disc (326.dp) with full-bleed artwork and center spindle hub
+                                // Rotating Picture Disc that smoothly scales between Stage 0 (fullArtSize) and Stage 1 (stage1ArtSize)
                                 Box(
                                     modifier = Modifier
-                                        .size(326.dp)
+                                        .size(currentArtSize)
                                         .scale(artScale)
-                                        .shadow(24.dp, CircleShape)
+                                        .shadow(lerpDp(24.dp, 12.dp, s1), CircleShape)
                                         .clip(CircleShape)
                                         .background(Color(0xFF1E212D))
                                         .graphicsLayer { rotationZ = discRotation },
@@ -10276,7 +10391,7 @@ fun UnifiedExpandablePlayerCard(
                                                 imageVector = Icons.Default.MusicNote,
                                                 contentDescription = null,
                                                 tint = Color.White,
-                                                modifier = Modifier.size(76.dp)
+                                                modifier = Modifier.size(lerpDp(76.dp, 36.dp, s1))
                                             )
                                         }
                                     }
@@ -10307,16 +10422,16 @@ fun UnifiedExpandablePlayerCard(
 
                                     Box(
                                         modifier = Modifier
-                                            .size(76.dp)
+                                            .size(lerpDp(76.dp, 34.dp, s1))
                                             .shadow(8.dp, CircleShape)
                                             .clip(CircleShape)
                                             .background(Color(0xFF14161D))
-                                            .border(3.5.dp, Color(0xFFE2E8F0), CircleShape),
+                                            .border(lerpDp(3.5.dp, 2.dp, s1), Color(0xFFE2E8F0), CircleShape),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Box(
                                             modifier = Modifier
-                                                .size(34.dp)
+                                                .size(lerpDp(34.dp, 15.dp, s1))
                                                 .clip(CircleShape)
                                                 .background(Color(0xFF0B0D12))
                                                 .border(1.2.dp, Color(0x70FFFFFF), CircleShape)
@@ -10324,14 +10439,15 @@ fun UnifiedExpandablePlayerCard(
                                     }
                                 }
                             } else {
-                                // Enlarged Static Square Card (326.dp) with Reduced Rounded Corners
+                                // Static Square Card that smoothly scales between Stage 0 (fullArtSize) and Stage 1 (stage1ArtSize)
+                                val artCorner = lerpDp(12.dp, 8.dp, s1)
                                 Box(
                                     modifier = Modifier
-                                        .size(326.dp)
-                                        .shadow(24.dp, RoundedCornerShape(12.dp))
-                                        .clip(RoundedCornerShape(12.dp))
+                                        .size(currentArtSize)
+                                        .shadow(lerpDp(24.dp, 12.dp, s1), RoundedCornerShape(artCorner))
+                                        .clip(RoundedCornerShape(artCorner))
                                         .background(Color(0xFF1E212D))
-                                        .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(12.dp)),
+                                        .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(artCorner)),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     if (song.artworkUrl.isNotBlank()) {
@@ -10352,7 +10468,7 @@ fun UnifiedExpandablePlayerCard(
                                                 imageVector = Icons.Default.MusicNote,
                                                 contentDescription = null,
                                                 tint = Color.White,
-                                                modifier = Modifier.size(76.dp)
+                                                modifier = Modifier.size(lerpDp(76.dp, 36.dp, s1))
                                             )
                                         }
                                     }
@@ -10365,12 +10481,16 @@ fun UnifiedExpandablePlayerCard(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                IconButton(onClick = onFavoriteToggle, enabled = p > 0.5f && qp < 0.1f) {
+                                IconButton(
+                                    onClick = onFavoriteToggle,
+                                    enabled = controlsEnabled,
+                                    modifier = Modifier.size(lerpDp(44.dp, 36.dp, s1))
+                                ) {
                                     Icon(
                                         imageVector = if (song.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                                         contentDescription = "Favorite",
                                         tint = if (song.isFavorite) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(24.dp)
+                                        modifier = Modifier.size(lerpDp(24.dp, 20.dp, s1))
                                     )
                                 }
 
@@ -10380,7 +10500,7 @@ fun UnifiedExpandablePlayerCard(
                                 ) {
                                     Text(
                                         text = song.title,
-                                        fontSize = 20.sp,
+                                        fontSize = (20f - (4f * s1)).sp,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onSurface,
                                         textAlign = TextAlign.Center,
@@ -10395,7 +10515,7 @@ fun UnifiedExpandablePlayerCard(
                                     Spacer(modifier = Modifier.height(2.dp))
                                     Text(
                                         text = song.artist,
-                                        fontSize = 14.sp,
+                                        fontSize = (14f - (2f * s1)).sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         textAlign = TextAlign.Center,
                                         maxLines = 1,
@@ -10408,12 +10528,16 @@ fun UnifiedExpandablePlayerCard(
                                     )
                                 }
 
-                                IconButton(onClick = onEditClick, enabled = p > 0.5f && qp < 0.1f) {
+                                IconButton(
+                                    onClick = onEditClick,
+                                    enabled = controlsEnabled,
+                                    modifier = Modifier.size(lerpDp(44.dp, 36.dp, s1))
+                                ) {
                                     Icon(
                                         imageVector = Icons.Default.MoreHoriz,
                                         contentDescription = "Options",
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(24.dp)
+                                        modifier = Modifier.size(lerpDp(24.dp, 20.dp, s1))
                                     )
                                 }
                             }
@@ -10432,12 +10556,17 @@ fun UnifiedExpandablePlayerCard(
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 // Controls Row: Shuffle, Prev, Big Play/Pause, Next, Loop Mode
+                                val mainPlayBtnSize = lerpDp(74.dp, 52.dp, s1)
+                                val mainPlayIconSize = lerpDp(36.dp, 26.dp, s1)
+                                val skipBtnSize = lerpDp(48.dp, 38.dp, s1)
+                                val skipIconSize = lerpDp(28.dp, 24.dp, s1)
+
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    IconButton(onClick = onShuffleToggle, enabled = p > 0.5f && qp < 0.1f) {
+                                    IconButton(onClick = onShuffleToggle, enabled = controlsEnabled) {
                                         Icon(
                                             imageVector = Icons.Default.Shuffle,
                                             contentDescription = "Shuffle",
@@ -10445,17 +10574,17 @@ fun UnifiedExpandablePlayerCard(
                                         )
                                     }
 
-                                    IconButton(onClick = onPrevious, enabled = p > 0.5f && qp < 0.1f, modifier = Modifier.size(48.dp)) {
-                                        Icon(imageVector = Icons.Default.SkipPrevious, contentDescription = "Previous", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
+                                    IconButton(onClick = onPrevious, enabled = controlsEnabled, modifier = Modifier.size(skipBtnSize)) {
+                                        Icon(imageVector = Icons.Default.SkipPrevious, contentDescription = "Previous", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(skipIconSize))
                                     }
 
                                     // Main Big Circular Play/Pause Button
                                     Surface(
                                         modifier = Modifier
-                                            .size(74.dp)
-                                            .shadow(12.dp, CircleShape)
+                                            .size(mainPlayBtnSize)
+                                            .shadow(lerpDp(12.dp, 6.dp, s1), CircleShape)
                                             .clip(CircleShape)
-                                            .clickable(enabled = p > 0.5f && qp < 0.1f) { onPlayPause() },
+                                            .clickable(enabled = controlsEnabled) { onPlayPause() },
                                         shape = CircleShape,
                                         color = if (isDark) Color.White else Color(0xFF14161D)
                                     ) {
@@ -10464,16 +10593,16 @@ fun UnifiedExpandablePlayerCard(
                                                 imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                                 contentDescription = "Play/Pause",
                                                 tint = if (isDark) Color(0xFF0C0E12) else Color.White,
-                                                modifier = Modifier.size(36.dp)
+                                                modifier = Modifier.size(mainPlayIconSize)
                                             )
                                         }
                                     }
 
-                                    IconButton(onClick = onNext, enabled = p > 0.5f && qp < 0.1f, modifier = Modifier.size(48.dp)) {
-                                        Icon(imageVector = Icons.Default.SkipNext, contentDescription = "Next", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(28.dp))
+                                    IconButton(onClick = onNext, enabled = controlsEnabled, modifier = Modifier.size(skipBtnSize)) {
+                                        Icon(imageVector = Icons.Default.SkipNext, contentDescription = "Next", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(skipIconSize))
                                     }
 
-                                    IconButton(onClick = onLoopModeToggle, enabled = p > 0.5f && qp < 0.1f) {
+                                    IconButton(onClick = onLoopModeToggle, enabled = controlsEnabled) {
                                         Icon(
                                             imageVector = if (loopMode == LoopMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
                                             contentDescription = "Loop Mode",
@@ -10483,36 +10612,42 @@ fun UnifiedExpandablePlayerCard(
                                     }
                                 }
 
-                                Spacer(modifier = Modifier.height(10.dp))
+                                val handleBarSpacer = lerpDp(10.dp, 0.dp, s1)
+                                val handleBarHeight = lerpDp(22.dp, 0.dp, s1)
+                                val handleBarAlpha = (1f - s1 * 2f).coerceIn(0f, 1f)
+                                if (handleBarHeight > 0.5.dp) {
+                                    Spacer(modifier = Modifier.height(handleBarSpacer))
 
-                                // Minimal Bottom Handle Bar (Swipe up or tap to morph Now Playing into Top Mini-Player + Queue)
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(22.dp)
-                                        .clickable(enabled = p > 0.5f && qp < 0.1f) {
-                                            isQueueSheetOpen = true
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
+                                    // Minimal Bottom Handle Bar (Swipe up or tap to open Stage 1 Split Queue)
                                     Box(
                                         modifier = Modifier
-                                            .width(42.dp)
-                                            .height(4.5.dp)
-                                            .clip(RoundedCornerShape(50))
-                                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
-                                    )
+                                            .fillMaxWidth()
+                                            .height(handleBarHeight)
+                                            .graphicsLayer { alpha = handleBarAlpha }
+                                            .clickable(enabled = p > 0.5f && qp < 0.05f) {
+                                                queueStage = 1
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .width(42.dp)
+                                                .height(4.5.dp)
+                                                .clip(RoundedCornerShape(50))
+                                                .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f))
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                // 2. Collapsed Bottom Mini-Player Row (when p -> 0f) OR Connected Top Mini-Player Row (when p > 0.5f and qp -> 1f)
+                // 2. Collapsed Bottom Mini-Player Row (when p -> 0f) OR Connected Stage 2 Top Mini-Player Row (when s2 -> 1f)
                 val bottomMiniAlpha = (1f - (p / 0.28f)).coerceIn(0f, 1f)
-                val topQueueMiniAlpha = if (p > 0.5f) ((qp - 0.18f) / 0.55f).coerceIn(0f, 1f) else 0f
+                val topQueueMiniAlpha = if (p > 0.5f) ((s2 - 0.22f) / 0.68f).coerceIn(0f, 1f) else 0f
                 val miniAlpha = maxOf(bottomMiniAlpha, topQueueMiniAlpha)
-                val isTopQueueMiniActive = p > 0.5f && qp > 0.18f
+                val isTopQueueMiniActive = p > 0.5f && s2 > 0.22f
 
                 if (miniAlpha > 0.01f) {
                     Row(
@@ -10523,55 +10658,7 @@ fun UnifiedExpandablePlayerCard(
                             .graphicsLayer { alpha = miniAlpha }
                             .then(
                                 if (isTopQueueMiniActive) {
-                                    Modifier
-                                        .background(if (isDark) Color(0xFF14161D) else Color(0xFF14161D))
-                                        .pointerInput(sheetHeightPx) {
-                                            val touchSlop = viewConfiguration.touchSlop
-                                            awaitEachGesture {
-                                                val down = awaitFirstDown(requireUnconsumed = false)
-                                                if (down.isConsumed) return@awaitEachGesture
-                                                val startY = down.position.y
-                                                val startQ = queueProgress.value.coerceIn(0f, 1f)
-                                                val pointerId = down.id
-                                                var isDraggingTopMini = false
-
-                                                while (true) {
-                                                    val event = awaitPointerEvent()
-                                                    val change = event.changes.firstOrNull { it.id == pointerId } ?: break
-                                                    if (!change.pressed) {
-                                                        if (isDraggingTopMini) {
-                                                            val shouldStayOpen = queueProgress.value > 0.78f
-                                                            isQueueSheetOpen = shouldStayOpen
-                                                            coroutineScope.launch {
-                                                                queueProgress.animateTo(
-                                                                    targetValue = if (shouldStayOpen) 1f else 0f,
-                                                                    animationSpec = spring(
-                                                                        dampingRatio = Spring.DampingRatioNoBouncy,
-                                                                        stiffness = Spring.StiffnessMediumLow
-                                                                    )
-                                                                )
-                                                            }
-                                                        } else if (!change.isConsumed && Math.abs(change.position.y - startY) <= touchSlop) {
-                                                            isQueueSheetOpen = false
-                                                        }
-                                                        break
-                                                    } else {
-                                                        if (!isDraggingTopMini && change.isConsumed) break
-                                                        val dy = change.position.y - startY
-                                                        if (!isDraggingTopMini && Math.abs(dy) > touchSlop) {
-                                                            isDraggingTopMini = true
-                                                            change.consume()
-                                                        } else if (isDraggingTopMini) {
-                                                            change.consume()
-                                                            val nextQ = (startQ - (dy / sheetHeightPx)).coerceIn(0f, 1f)
-                                                            coroutineScope.launch {
-                                                                queueProgress.snapTo(nextQ)
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
+                                    Modifier.background(if (isDark) Color(0xFF0C0E12) else Color(0xFF14161D))
                                 } else Modifier
                             )
                             .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -10631,7 +10718,7 @@ fun UnifiedExpandablePlayerCard(
                             )
                         }
 
-                        val miniButtonsEnabled = p < 0.25f || (p > 0.5f && qp > 0.6f)
+                        val miniButtonsEnabled = p < 0.25f || (p > 0.5f && s2 > 0.55f)
                         IconButton(
                             onClick = onFavoriteToggle,
                             enabled = miniButtonsEnabled,
@@ -10669,8 +10756,8 @@ fun UnifiedExpandablePlayerCard(
                     }
                 }
 
-                // 3. Connected Playing Queue directly attached underneath the Top Mini-Player
-                if (p > 0.5f && qp > 0.01f) {
+                // 3. Pre-mounted Connected Playing Queue directly attached beneath Now Playing (Stage 1) and Top Mini-Player (Stage 2)
+                if (p > 0.5f) {
                     Surface(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
@@ -10678,6 +10765,7 @@ fun UnifiedExpandablePlayerCard(
                             .height(sheetHeight)
                             .graphicsLayer {
                                 translationY = (1f - qp) * sheetHeightPx
+                                alpha = (qp * 14f).coerceIn(0f, 1f)
                             }
                             .shadow(16.dp, RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
                             .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)),
@@ -10692,55 +10780,9 @@ fun UnifiedExpandablePlayerCard(
                                 .fillMaxSize()
                                 .padding(horizontal = 18.dp, vertical = 12.dp)
                         ) {
-                            // Queue Sheet Header (Tap or continuous swipe down to morph back to full Now Playing)
+                            // Queue Sheet Header (Smoothly dragged via unified stationary parent gesture)
                             Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .pointerInput(sheetHeightPx) {
-                                        val touchSlop = viewConfiguration.touchSlop
-                                        awaitEachGesture {
-                                            val down = awaitFirstDown(requireUnconsumed = false)
-                                            val startY = down.position.y
-                                            val startQ = queueProgress.value.coerceIn(0f, 1f)
-                                            val pointerId = down.id
-                                            var isDraggingHeader = false
-
-                                            while (true) {
-                                                val event = awaitPointerEvent()
-                                                val change = event.changes.firstOrNull { it.id == pointerId } ?: break
-                                                if (!change.pressed) {
-                                                    if (isDraggingHeader) {
-                                                        val shouldStayOpen = queueProgress.value > 0.78f
-                                                        isQueueSheetOpen = shouldStayOpen
-                                                        coroutineScope.launch {
-                                                            queueProgress.animateTo(
-                                                                targetValue = if (shouldStayOpen) 1f else 0f,
-                                                                animationSpec = spring(
-                                                                    dampingRatio = Spring.DampingRatioNoBouncy,
-                                                                    stiffness = Spring.StiffnessMediumLow
-                                                                )
-                                                            )
-                                                        }
-                                                    } else if (!change.isConsumed && Math.abs(change.position.y - startY) <= touchSlop) {
-                                                        isQueueSheetOpen = false
-                                                    }
-                                                    break
-                                                } else {
-                                                    val dy = change.position.y - startY
-                                                    if (!isDraggingHeader && Math.abs(dy) > touchSlop) {
-                                                        isDraggingHeader = true
-                                                        change.consume()
-                                                    } else if (isDraggingHeader) {
-                                                        change.consume()
-                                                        val nextQ = (startQ - (dy / sheetHeightPx)).coerceIn(0f, 1f)
-                                                        coroutineScope.launch {
-                                                            queueProgress.snapTo(nextQ)
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    },
+                                modifier = Modifier.fillMaxWidth(),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Box(
@@ -10751,22 +10793,28 @@ fun UnifiedExpandablePlayerCard(
                                         .background(if (isDark) Color(0xFF475569) else Color(0xFFCBD5E1))
                                 )
 
-                                Spacer(modifier = Modifier.height(12.dp))
+                                Spacer(modifier = Modifier.height(10.dp))
 
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(
-                                        text = queueTitle.ifBlank { if (isKhmer) "បញ្ជីបទកំពុងចាក់" else "Playing Queue" },
-                                        fontSize = 16.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f)
-                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = if (isKhmer) "កំពុងចាក់ពី" else "Playing from",
+                                            fontSize = 11.sp,
+                                            color = if (isDark) Color(0xFF94A3B8) else Color(0xFF64748B)
+                                        )
+                                        Text(
+                                            text = queueTitle.ifBlank { if (isKhmer) "បញ្ជីបទកំពុងចាក់" else "Playing Queue" },
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF14161D),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
                                         text = if (isKhmer) "${orderedQueueSongs.size} បទ" else "${orderedQueueSongs.size} tracks",
@@ -10776,7 +10824,7 @@ fun UnifiedExpandablePlayerCard(
                                     )
                                 }
 
-                                Spacer(modifier = Modifier.height(12.dp))
+                                Spacer(modifier = Modifier.height(10.dp))
                             }
 
                             // Queue Songs List with Press-and-Hold (=) Drag-and-Drop Reordering (No ... button)

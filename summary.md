@@ -382,6 +382,15 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.70
+- YouTube Music-Style 2-Stage Smooth Queue Transition & Stationary Finger-Locked Physics:
+  - Upgraded `UnifiedExpandablePlayerCard` to a 2-stage connected transition (`queueStage`: `0` = Full Now Playing, `1` = Split Compact Now Playing + Half Queue, `2` = Top Mini-Player + Full Queue):
+    - **Stage 1 (`queueStage = 1`, `qp = 0.44f`)**: Swiping up once smoothly compresses Now Playing into the top `56%` of the screen (scaling the Vinyl/Square artwork, title, waveform scrubber, and playback controls proportionally while keeping all controls active) and attaches the Playing Queue in the bottom `44%` of the screen.
+    - **Stage 2 (`queueStage = 2`, `qp = 1.0f`)**: Swiping up a second time smoothly morphs the upper Now Playing section into the `68.dp` Top Mini-Player bar while expanding the attached Playing Queue to fill the rest of the screen (`fullScreenHeight - 68.dp`).
+  - Replaced separate moving-coordinate child `pointerInput` handlers with a single unified stationary gesture loop on the parent `Surface` and pre-mounted/pre-scrolled the Queue `LazyColumn` (`scrollToItem(activeIdx, 0)`) prior to gesture start, eliminating coordinate feedback jitter and mid-swipe composition stutter so transitions are as smooth as Mini-Player -> Now Playing.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 70` and `versionName = "1.0.70"` in `app/build.gradle.kts`.
+
 ### Version 1.0.69
 - Connected Now Playing -> Top Mini-Player + Attached Playing Queue Morphing Layout & Active Song Top-of-Queue Positioning:
   - Connected Now Playing and Playing Queue into one unified morphing layout inside `UnifiedExpandablePlayerCard`: swiping up from Now Playing smoothly morphs Now Playing into a `68.dp` Mini-Player bar docked at the top of the screen while the Playing Queue rises directly attached underneath it (`height = fullScreenHeight - 68.dp`), with no separate floating overlay scrim.
