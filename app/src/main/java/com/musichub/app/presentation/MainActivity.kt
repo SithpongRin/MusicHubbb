@@ -8322,28 +8322,33 @@ fun NowPlayingDialog(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // Clean Minimal Top Header (Swipe-down anywhere minimizes, no down-arrow or pill clutter)
-                Box(
-                    modifier = Modifier.fillMaxWidth()
+                // Balanced Symmetrical Top Header: Share on left, Now Playing centered, EQ on right
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    IconButton(onClick = onShareClick) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = "Share",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
                     Text(
                         text = if (isKhmer) "កំពុងចាក់" else "Now Playing",
-                        fontSize = 15.sp,
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.align(Alignment.Center)
+                        color = MaterialTheme.colorScheme.onSurface
                     )
 
-                    Row(
-                        modifier = Modifier.align(Alignment.CenterEnd),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(onClick = onShareClick) {
-                            Icon(imageVector = Icons.Default.Share, contentDescription = "Share", tint = MaterialTheme.colorScheme.onSurface)
-                        }
-                        IconButton(onClick = onEqualizerClick) {
-                            Icon(imageVector = Icons.Default.Tune, contentDescription = "EQ", tint = MaterialTheme.colorScheme.onSurface)
-                        }
+                    IconButton(onClick = onEqualizerClick) {
+                        Icon(
+                            imageVector = Icons.Default.Tune,
+                            contentDescription = "EQ",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
                     }
                 }
 

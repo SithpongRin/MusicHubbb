@@ -382,6 +382,12 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.59
+- Symmetrical Top Header layout in `NowPlayingDialog`:
+  - Arranged the 3 top header elements evenly across the full width (`Arrangement.SpaceBetween`) with Share icon on the left, "Now Playing" title centered (`16.sp`), and Equalizer icon on the right, matching the left-center-right symmetry of the song info and playback control rows below.
+- Maintained strict zero-emoji policy across all strings, labels, and UI elements.
+- Bumped `versionCode = 59` and `versionName = "1.0.59"` in `app/build.gradle.kts`.
+
 ### Version 1.0.58
 - Ultra-clean `NowPlayingDialog` header and `NavigationBar` Dark Mode color harmony:
   - Removed the top-left down-arrow button and the top drag-pill indicator from `NowPlayingDialog` so the header displays a clean centered "Now Playing" title with Share and EQ icons on the right while relying on natural swipe-down-to-minimize anywhere on the screen.
