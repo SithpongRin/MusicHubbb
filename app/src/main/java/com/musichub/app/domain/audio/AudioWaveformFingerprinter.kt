@@ -654,7 +654,7 @@ object AiAudioMoodEngine {
      * - My Mix: User listening behavior + Pure Audio Taste similarity
      * - Artist Mix: Top artist's songs + Pure Audio similarity for companion tracks
      */
-    fun buildAiMoodMixes(
+    suspend fun buildAiMoodMixes(
         context: Context,
         songs: List<SongItem>,
         isKhmer: Boolean
@@ -664,7 +664,7 @@ object AiAudioMoodEngine {
         // 1. Fetch real AI Deep Learning Model predictions from Room DB
         val aiPredictions = runCatching {
             AppDatabase.getDatabase(context).moodPredictionDao()
-                .getAllForModelSync(OnDeviceMusicMoodClassifier.MODEL_VERSION)
+                .getAllForModel(OnDeviceMusicMoodClassifier.MODEL_VERSION)
                 .associateBy { it.songId }
         }.getOrDefault(emptyMap())
 
@@ -672,9 +672,7 @@ object AiAudioMoodEngine {
         val profiles = songs.associateWith { song ->
             val aiPred = aiPredictions[song.id]
             if (aiPred != null) {
-                with(OnDeviceMusicMoodClassifier) {
-                    aiPred.asSongMoodProfile(song.id)
-                }
+                OnDeviceMusicMoodClassifier.asSongMoodProfile(aiPred, song.id)
             } else {
                 getSongMoodProfile(context, song)
             }

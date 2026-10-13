@@ -54,8 +54,8 @@ object OnDeviceMusicMoodClassifier {
         val confidence: Float
     )
 
-    fun MoodPredictionEntity.asSongMoodProfile(songId: String): SongMoodProfile {
-        val scores = scores()
+    fun asSongMoodProfile(entity: MoodPredictionEntity, songId: String): SongMoodProfile {
+        val scores = entity.scores()
         val primaryIndex = scores.indices.maxByOrNull { scores[it] } ?: 0
         val secondaryIndex = scores.indices.filter { it != primaryIndex }
             .maxByOrNull { scores[it] } ?: primaryIndex
@@ -64,10 +64,10 @@ object OnDeviceMusicMoodClassifier {
             probabilities = scores.copyOf(),
             primaryMood = SongMoodCategory.entries[primaryIndex],
             secondaryMood = SongMoodCategory.entries[secondaryIndex],
-            energyScore = arousal,
-            tempoScore = arousal,
-            valenceScore = valence * 2f - 1f,
-            confidenceScore = confidence
+            energyScore = entity.arousal,
+            tempoScore = entity.arousal,
+            valenceScore = entity.valence * 2f - 1f,
+            confidenceScore = entity.confidence
         )
     }
 
@@ -105,7 +105,7 @@ object OnDeviceMusicMoodClassifier {
     suspend fun processUnanalyzedSongs(
         context: Context,
         songs: List<SongItem>,
-        onSongAnalyzed: ((SongItem) -> Unit)? = null
+        onSongAnalyzed: (suspend (SongItem) -> Unit)? = null
     ) = withContext(Dispatchers.IO) {
         if (isBatchRunning || songs.isEmpty()) return@withContext
         isBatchRunning = true

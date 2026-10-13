@@ -382,6 +382,11 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.79
+- Cleaned and stabilized coroutine signatures across MoodPredictionDao, OnDeviceMusicMoodClassifier, and buildAiMoodMixes.
+- Fully operational on-device MERT AI model background auto-worker with seamless live mix updates and zero build errors.
+- Bumped `versionCode = 79` and `versionName = "1.0.79"` in `app/build.gradle.kts`.
+
 ### Version 1.0.78
 - 100% On-Device AI Deep Learning Auto-Pilot: Integrated bundled MERT-v1-95M INT8 ONNX emotion model with cached OrtSession, background auto-worker (processUnanalyzedSongs) processing songs in low-priority background IO, Room DB prediction persistence, and seamless automatic live mix refresh.
 - Bumped `versionCode = 78` and `versionName = "1.0.78"` in `app/build.gradle.kts`.
