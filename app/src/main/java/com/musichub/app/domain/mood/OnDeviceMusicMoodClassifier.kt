@@ -10,7 +10,7 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import com.musichub.app.data.database.AppDatabase
 import com.musichub.app.data.database.MoodPredictionEntity
-import com.musichub.app.domain.audio.AudioWaveformFingerprinter
+import com.musichub.app.domain.audio.AiAudioMoodEngine
 import com.musichub.app.domain.audio.SongMoodCategory
 import com.musichub.app.domain.audio.SongMoodProfile
 import com.musichub.app.presentation.SongItem
@@ -202,7 +202,7 @@ object OnDeviceMusicMoodClassifier {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
-            val resolvedFile = AudioWaveformFingerprinter.resolveLocalAudioFile(song)
+            val resolvedFile = AiAudioMoodEngine.resolveLocalAudioFile(song)
             if (resolvedFile != null && resolvedFile.exists()) {
                 extractor.setDataSource(resolvedFile.absolutePath)
             } else if (song.uriString.startsWith("content://")) {
