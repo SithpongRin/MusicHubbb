@@ -101,4 +101,8 @@ dependencies {
     // OkHttp & Coroutines
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)
+    // Genuine offline music-emotion inference for Your Mix.
+    implementation(libs.onnxruntime.android)
+
+    testImplementation("junit:junit:4.13.2")
 }

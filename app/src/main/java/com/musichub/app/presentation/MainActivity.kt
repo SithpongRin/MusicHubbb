@@ -6887,16 +6887,20 @@ fun HomeScreen(
 
     // 100% On-Device AI Mood & Activity Mixes (My Mix, Artist Mix, Workout & Sport, Party & Remix, Chill, Sad, Romantic, Focus, Driving)
     var aiMoodMixes by remember { mutableStateOf<List<AiMoodMix>>(emptyList()) }
+    var isAiMoodMixLoading by remember { mutableStateOf(false) }
     LaunchedEffect(songs, playCountVersion, isKhmer) {
         if (songs.isNotEmpty()) {
+            isAiMoodMixLoading = true
             withContext(Dispatchers.IO) {
                 val built = AiAudioMoodEngine.buildAiMoodMixes(context, songs, isKhmer)
                 withContext(Dispatchers.Main) {
                     aiMoodMixes = built
+                    isAiMoodMixLoading = false
                 }
             }
         } else {
             aiMoodMixes = emptyList()
+            isAiMoodMixLoading = false
         }
     }
 
@@ -7144,7 +7148,16 @@ fun HomeScreen(
         }
 
         // 1. Your Mix (100% On-Device AI Mood, Sport & Activity Mixes — no emojis)
-        if (aiMoodMixes.isNotEmpty()) {
+        if (isAiMoodMixLoading) {
+            item {
+                Text(
+                    text = if (isKhmer) "កំពុងវិភាគតន្ត្រីក្នុងឧបករណ៍..." else "Analyzing music on this device...",
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp
+                )
+            }
+        } else if (aiMoodMixes.isNotEmpty()) {
             item {
                 Column {
                     Row(

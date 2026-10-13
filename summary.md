@@ -646,3 +646,45 @@ The app requests only required permissions:
 4. Maintain zero emojis across all strings, labels, and documentation.
 5. Verify changes with `./gradlew compileDebugKotlin` before completing turns.
 
+# Your Mix: On-device Music Mood AI (2026-10-13)
+
+## Model and license
+
+- **Model:** `mert-v1-95m-music-emotion-int8` (`mert_emotion_int8.onnx`), a dynamically INT8-quantized MERT-v1-95M music-emotion regression model.
+- **Source:** https://huggingface.co/huyleit/mert-v1-95m-music-emotion-int8
+- **License:** Apache-2.0, as declared in the model card. The card identifies MERT-v1-95M as the base model and reports fine-tuning on DEAM (1,802 tracks) and PMEmo (767 tracks).
+- **Artifact:** `app/src/main/assets/mood/mert_emotion_int8.onnx`, SHA-256 `B05EF3FBE904F1121B32632DA9AD4907AFB676A11E348FE01484A71412C42E01`; 95,552,890 bytes (about 95.6 MB APK-size impact before APK compression).
+- **Runtime:** ONNX Runtime Android 1.18.0. The model is copied into private app storage on first use, then loaded locally. It needs no network, account, or API key after installation.
+
+## How Your Mix classification works
+
+`OnDeviceMusicMoodClassifier` decodes a center 15-second local-audio segment, mixes it to mono, linearly resamples it to the model's documented 24 kHz / 360,000-float input, and invokes the bundled ONNX model off the main thread. The learned output is continuous valence/arousal. MusicHub converts that output to normalized proximity scores for Calm, Energetic, Sad, and Romantic in the Russell valence/arousal space. This is an explicit app taxonomy mapping, not metadata or genre inference. Corrupt, unavailable, or unsupported audio is excluded from Your Mix rather than being given an invented result.
+
+The model natively supports music-affect valence/arousal, not a direct “romantic” class. Romantic is therefore a documented positive-valence / moderate-arousal target in the same trained affect space; it should be presented as a recommendation label, not as a claim that the pretrained model emits a literal romantic tag.
+
+## Personalization and storage
+
+Your Mix keeps the existing local signals—completion versus early skip, replays, favorites, and 1–5 mix ratings—and ranks the **model-derived** mood vectors with those learned local preference weights. Explicit favorites and star ratings retain their stronger existing rewards; an early skip remains a weak negative reward. The existing diversity limits prevent a few songs or artists from dominating a mix.
+
+Room schema v2 adds `mood_predictions`, keyed by stable song ID plus model version. It stores only valence, arousal, four derived scores, confidence, and analysis time—never raw audio. Migration `1 -> 2` creates this table and index without clearing existing data. Changing `MODEL_VERSION` invalidates old predictions naturally.
+
+## Files changed
+
+- Added `app/src/main/assets/mood/mert_emotion_int8.onnx`.
+- Added `app/src/main/java/com/musichub/app/domain/mood/OnDeviceMusicMoodClassifier.kt`.
+- Updated `AudioWaveformFingerprinter.kt` only at the Your Mix integration boundary; other recommendation paths retain their existing behavior.
+- Updated `MainActivity.kt` only to display an on-device analysis loading state for Your Mix.
+- Updated `RoomSchema.kt` with the minimal cache entity/DAO and migration.
+- Updated Gradle dependencies for ONNX Runtime Android and added focused classifier mapping tests in `app/src/test/java/com/musichub/app/domain/mood/OnDeviceMusicMoodClassifierTest.kt`.
+
+## Verification
+
+- Verified the bundled artifact exists and SHA-256 matches the value above.
+- Ran `git diff --check` successfully.
+- Attempted `:app:compileDebugKotlin` multiple times. Gradle could not start its required single-use daemon because this execution environment blocks its loopback connection (`java.io.IOException: Unable to establish loopback connection`), so no successful build or test run is claimed.
+
+## Known limitations
+
+- First-time analysis can be CPU- and memory-intensive because the model is approximately 95.6 MB; subsequent runs use the Room cache.
+- The model card reports self-reported evaluation metrics. Its model artifact and documented input/output were verified, but this repository does not include a representative licensed audio test corpus for end-to-end accuracy validation.
+

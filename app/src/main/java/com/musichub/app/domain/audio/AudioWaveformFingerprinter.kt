@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Environment
 import com.musichub.app.presentation.PlayCountTracker
 import com.musichub.app.presentation.SongItem
+import com.musichub.app.domain.mood.OnDeviceMusicMoodClassifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -105,6 +106,22 @@ data class SongMoodProfile(
     val hasExplicitSemanticSignal: Boolean = false,
     val confidenceScore: Float = 0.75f
 )
+
+private fun OnDeviceMusicMoodClassifier.Prediction.asSongMoodProfile(songId: String): SongMoodProfile {
+    val primaryIndex = moodScores.indices.maxByOrNull { moodScores[it] } ?: 0
+    val secondaryIndex = moodScores.indices.filter { it != primaryIndex }
+        .maxByOrNull { moodScores[it] } ?: primaryIndex
+    return SongMoodProfile(
+        songId = songId,
+        probabilities = moodScores.copyOf(),
+        primaryMood = SongMoodCategory.entries[primaryIndex],
+        secondaryMood = SongMoodCategory.entries[secondaryIndex],
+        energyScore = arousal,
+        tempoScore = arousal,
+        valenceScore = valence * 2f - 1f,
+        confidenceScore = confidence
+    )
+}
 
 /**
  * 100% On-Device, Self-Learning AI Audio Mood & Acoustic Classifier.
@@ -652,23 +669,28 @@ object AiAudioMoodEngine {
      * - My Mix: User listening behavior + Pure Audio Taste similarity
      * - Artist Mix: Top artist's songs + Pure Audio similarity for companion tracks
      */
-    fun buildAiMoodMixes(
+    suspend fun buildAiMoodMixes(
         context: Context,
         songs: List<SongItem>,
         isKhmer: Boolean
     ): List<AiMoodMix> {
         if (songs.isEmpty()) return emptyList()
 
-        // 1. Calibrate Library-Wide Acoustic Distribution (Z-Score Standardization)
-        calibrateLibraryAcousticSpace(context, songs)
-
-        // 2. Compute 100% Pure Audio profiles for all local songs
-        val profiles = songs.associateWith { getSongMoodProfile(context, it) }
+        // Your Mix deliberately uses only the bundled, trained music-emotion model.
+        // Songs with an unreadable/corrupt source are omitted instead of being assigned a heuristic mood.
+        val modelProfiles = songs.mapNotNull { song ->
+            OnDeviceMusicMoodClassifier.classify(context, song)?.let { prediction ->
+                song to prediction.asSongMoodProfile(song.id)
+            }
+        }
+        if (modelProfiles.isEmpty()) return emptyList()
+        val analyzedSongs = modelProfiles.map { it.first }
+        val profiles = modelProfiles.toMap()
 
         // 3. Bootstrap historical learning from existing PlayCountTracker & Favorites if needed
-        bootstrapHistoricalLearningIfNeeded(context, songs, profiles)
+        bootstrapHistoricalLearningIfNeeded(context, analyzedSongs, profiles)
 
-        val userTasteVec = computeUserTasteVector(context, songs, profiles)
+        val userTasteVec = computeUserTasteVector(context, analyzedSongs, profiles)
         val result = mutableListOf<AiMoodMix>()
         val usedCoverUrls = mutableSetOf<String>()
 
@@ -681,7 +703,7 @@ object AiAudioMoodEngine {
         }
 
         // 1. My Mix (User listening history + Favorites + Learned Rewards + Pure Audio Taste Vector)
-        val myMixTracks = songs
+        val myMixTracks = analyzedSongs
             .sortedByDescending { song ->
                 val prof = profiles[song]!!
                 val playCount = PlayCountTracker.getPlayCount(context, song.id)
@@ -712,7 +734,7 @@ object AiAudioMoodEngine {
         }
 
         // 2. Top Artist Mix (Groups top artist's tracks, blends companion songs by 100% Pure Audio similarity)
-        val validArtistGroups = songs
+        val validArtistGroups = analyzedSongs
             .filter { it.artist.isNotBlank() && it.artist != "MusicHub" && it.artist != "<unknown>" }
             .groupBy { it.artist.trim() }
         val topArtistEntry = validArtistGroups.maxByOrNull { entry ->
@@ -739,7 +761,7 @@ object AiAudioMoodEngine {
             normalizeInPlace(artistTasteVec)
 
             // Blend other tracks ONLY if their pure audio signal (mood vector, energy, tempo) closely matches
-            val similarOtherSongs = songs
+            val similarOtherSongs = analyzedSongs
                 .filter { cand ->
                     val p = profiles[cand] ?: return@filter false
                     cand.artist.trim() != artistName &&
@@ -778,7 +800,7 @@ object AiAudioMoodEngine {
         for (cat in moodCategories) {
             val catIdx = cat.ordinal
 
-            val strictMatches = songs.filter { song ->
+            val strictMatches = analyzedSongs.filter { song ->
                 val prof = profiles[song]!!
                 // Exclude any song the user explicitly down-rated (1..3 stars) in this category
                 val userBias = lPrefs.getFloat("song_mood_bias_${song.id}_$catIdx", 0f)
@@ -801,19 +823,19 @@ object AiAudioMoodEngine {
             val verifiedMatches = if (strictMatches.isNotEmpty()) {
                 strictMatches
             } else {
-                songs.filter { song ->
+                analyzedSongs.filter { song ->
                     val userBias = lPrefs.getFloat("song_mood_bias_${song.id}_$catIdx", 0f)
                     if (userBias <= -0.35f) return@filter false
                     val prof = profiles[song]!!
                     when (cat) {
-                        SongMoodCategory.ENERGETIC -> prof.primaryMood != SongMoodCategory.SAD || songs.size < 4
-                        SongMoodCategory.SAD -> prof.primaryMood != SongMoodCategory.ENERGETIC || songs.size < 4
-                        SongMoodCategory.CALM -> prof.primaryMood != SongMoodCategory.ENERGETIC || songs.size < 4
+                        SongMoodCategory.ENERGETIC -> prof.primaryMood != SongMoodCategory.SAD || analyzedSongs.size < 4
+                        SongMoodCategory.SAD -> prof.primaryMood != SongMoodCategory.ENERGETIC || analyzedSongs.size < 4
+                        SongMoodCategory.CALM -> prof.primaryMood != SongMoodCategory.ENERGETIC || analyzedSongs.size < 4
                         SongMoodCategory.ROMANTIC -> true
                     }
                 }.sortedByDescending { song ->
                     profiles[song]!!.probabilities[catIdx]
-                }.take(minOf(maxMixSize, (songs.size / 2).coerceAtLeast(1)))
+                }.take(minOf(maxMixSize, (analyzedSongs.size / 2).coerceAtLeast(1)))
             }
 
             if (verifiedMatches.isNotEmpty()) {

@@ -2,6 +2,8 @@ package com.musichub.app.data.database
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 // --- Room Entities ---
@@ -70,6 +72,27 @@ data class DownloadTaskEntity(
     val downloadedBytes: Long,
     val errorMessage: String?
 )
+
+/** Cached output from a versioned bundled model; no raw audio leaves the device. */
+@Entity(
+    tableName = "mood_predictions",
+    primaryKeys = ["songId", "modelVersion"],
+    indices = [Index(value = ["modelVersion"])]
+)
+data class MoodPredictionEntity(
+    val songId: String,
+    val modelVersion: String,
+    val valence: Float,
+    val arousal: Float,
+    val calm: Float,
+    val energetic: Float,
+    val sad: Float,
+    val romantic: Float,
+    val confidence: Float,
+    val analyzedAt: Long
+) {
+    fun scores() = floatArrayOf(calm, energetic, sad, romantic)
+}
 
 // --- Room DAOs ---
 
@@ -156,6 +179,15 @@ interface DownloadDao {
     suspend fun deleteById(id: String)
 }
 
+@Dao
+interface MoodPredictionDao {
+    @Query("SELECT * FROM mood_predictions WHERE songId = :songId AND modelVersion = :modelVersion LIMIT 1")
+    suspend fun get(songId: String, modelVersion: String): MoodPredictionEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(prediction: MoodPredictionEntity)
+}
+
 // --- Room Database ---
 
 @Database(
@@ -163,15 +195,17 @@ interface DownloadDao {
         SongEntity::class,
         PlaylistEntity::class,
         PlaylistSongCrossRef::class,
-        DownloadTaskEntity::class
+        DownloadTaskEntity::class,
+        MoodPredictionEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun songDao(): SongDao
     abstract fun playlistDao(): PlaylistDao
     abstract fun downloadDao(): DownloadDao
+    abstract fun moodPredictionDao(): MoodPredictionDao
 
     companion object {
         @Volatile
@@ -184,9 +218,31 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "musichub_database"
                 )
+                    .addMigrations(MIGRATION_1_2)
                     .build()
                 INSTANCE = instance
                 instance
+            }
+        }
+
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("""
+                    CREATE TABLE IF NOT EXISTS mood_predictions (
+                        songId TEXT NOT NULL,
+                        modelVersion TEXT NOT NULL,
+                        valence REAL NOT NULL,
+                        arousal REAL NOT NULL,
+                        calm REAL NOT NULL,
+                        energetic REAL NOT NULL,
+                        sad REAL NOT NULL,
+                        romantic REAL NOT NULL,
+                        confidence REAL NOT NULL,
+                        analyzedAt INTEGER NOT NULL,
+                        PRIMARY KEY(songId, modelVersion)
+                    )
+                """.trimIndent())
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_mood_predictions_modelVersion ON mood_predictions(modelVersion)")
             }
         }
     }
