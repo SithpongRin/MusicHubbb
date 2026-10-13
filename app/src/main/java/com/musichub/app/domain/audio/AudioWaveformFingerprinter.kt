@@ -4,6 +4,8 @@ import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Environment
+import com.musichub.app.data.database.AppDatabase
+import com.musichub.app.domain.mood.OnDeviceMusicMoodClassifier
 import com.musichub.app.presentation.PlayCountTracker
 import com.musichub.app.presentation.SongItem
 import kotlinx.coroutines.Dispatchers
@@ -659,11 +661,24 @@ object AiAudioMoodEngine {
     ): List<AiMoodMix> {
         if (songs.isEmpty()) return emptyList()
 
-        // 1. Calibrate Library-Wide Acoustic Distribution (Z-Score Standardization)
-        calibrateLibraryAcousticSpace(context, songs)
+        // 1. Fetch real AI Deep Learning Model predictions from Room DB
+        val aiPredictions = runCatching {
+            AppDatabase.getDatabase(context).moodPredictionDao()
+                .getAllForModelSync(OnDeviceMusicMoodClassifier.MODEL_VERSION)
+                .associateBy { it.songId }
+        }.getOrDefault(emptyMap())
 
-        // 2. Compute 100% Pure Audio profiles for all local songs
-        val profiles = songs.associateWith { getSongMoodProfile(context, it) }
+        // 2. Build SongMoodProfiles prioritizing real AI model predictions
+        val profiles = songs.associateWith { song ->
+            val aiPred = aiPredictions[song.id]
+            if (aiPred != null) {
+                with(OnDeviceMusicMoodClassifier) {
+                    aiPred.asSongMoodProfile(song.id)
+                }
+            } else {
+                getSongMoodProfile(context, song)
+            }
+        }
 
         // 3. Bootstrap historical learning from existing PlayCountTracker & Favorites if needed
         bootstrapHistoricalLearningIfNeeded(context, songs, profiles)
@@ -1893,7 +1908,7 @@ object AiAudioMoodEngine {
     /**
      * Resolves the local audio File on disk from `song.uriString` or MusicHub's storage directories.
      */
-    internal fun resolveLocalAudioFile(song: SongItem): File? {
+    fun resolveLocalAudioFile(song: SongItem): File? {
         try {
             val uriStr = song.uriString
             if (uriStr.isNotBlank() && !uriStr.startsWith("content://") && !uriStr.startsWith("http")) {

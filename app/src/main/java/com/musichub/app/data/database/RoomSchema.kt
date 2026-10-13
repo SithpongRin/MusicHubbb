@@ -184,8 +184,17 @@ interface MoodPredictionDao {
     @Query("SELECT * FROM mood_predictions WHERE songId = :songId AND modelVersion = :modelVersion LIMIT 1")
     suspend fun get(songId: String, modelVersion: String): MoodPredictionEntity?
 
+    @Query("SELECT * FROM mood_predictions WHERE modelVersion = :modelVersion")
+    suspend fun getAllForModel(modelVersion: String): List<MoodPredictionEntity>
+
+    @Query("SELECT * FROM mood_predictions WHERE modelVersion = :modelVersion")
+    fun getAllForModelSync(modelVersion: String): List<MoodPredictionEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(prediction: MoodPredictionEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun upsertSync(prediction: MoodPredictionEntity)
 }
 
 // --- Room Database ---

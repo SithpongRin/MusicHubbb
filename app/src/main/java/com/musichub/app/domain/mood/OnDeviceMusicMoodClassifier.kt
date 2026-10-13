@@ -4,14 +4,19 @@ import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import com.musichub.app.data.database.AppDatabase
 import com.musichub.app.data.database.MoodPredictionEntity
+import com.musichub.app.domain.audio.AudioWaveformFingerprinter
+import com.musichub.app.domain.audio.SongMoodCategory
+import com.musichub.app.domain.audio.SongMoodProfile
 import com.musichub.app.presentation.SongItem
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
@@ -35,6 +40,13 @@ object OnDeviceMusicMoodClassifier {
     private const val WINDOW_SECONDS = 15
     private const val SAMPLE_COUNT = SAMPLE_RATE * WINDOW_SECONDS
 
+    @Volatile
+    private var ortEnv: OrtEnvironment? = null
+    @Volatile
+    private var ortSession: OrtSession? = null
+    @Volatile
+    private var isBatchRunning = false
+
     data class Prediction(
         val valence: Float,
         val arousal: Float,
@@ -42,16 +54,33 @@ object OnDeviceMusicMoodClassifier {
         val confidence: Float
     )
 
-    suspend fun classify(context: Context, song: SongItem): Prediction? {
-        return try {
-            val songId = song.id.takeIf { it.isNotBlank() } ?: return null
+    fun MoodPredictionEntity.asSongMoodProfile(songId: String): SongMoodProfile {
+        val scores = scores()
+        val primaryIndex = scores.indices.maxByOrNull { scores[it] } ?: 0
+        val secondaryIndex = scores.indices.filter { it != primaryIndex }
+            .maxByOrNull { scores[it] } ?: primaryIndex
+        return SongMoodProfile(
+            songId = songId,
+            probabilities = scores.copyOf(),
+            primaryMood = SongMoodCategory.entries[primaryIndex],
+            secondaryMood = SongMoodCategory.entries[secondaryIndex],
+            energyScore = arousal,
+            tempoScore = arousal,
+            valenceScore = valence * 2f - 1f,
+            confidenceScore = confidence
+        )
+    }
+
+    suspend fun classify(context: Context, song: SongItem): Prediction? = withContext(Dispatchers.IO) {
+        return@withContext try {
+            val songId = song.id.takeIf { it.isNotBlank() } ?: return@withContext null
             val dao = AppDatabase.getDatabase(context).moodPredictionDao()
             dao.get(songId, MODEL_VERSION)?.let { cached ->
-                return Prediction(cached.valence, cached.arousal, cached.scores(), cached.confidence)
+                return@withContext Prediction(cached.valence, cached.arousal, cached.scores(), cached.confidence)
             }
 
-            val waveform = decodeCenterWindow(context, song) ?: return null
-            val raw = runCatching { infer(context, waveform) }.getOrNull() ?: return null
+            val waveform = decodeCenterWindow(context, song) ?: return@withContext null
+            val raw = runCatching { infer(context, waveform) }.getOrNull() ?: return@withContext null
             val prediction = fromModelOutput(raw[0], raw[1])
             dao.upsert(
                 MoodPredictionEntity(
@@ -73,11 +102,34 @@ object OnDeviceMusicMoodClassifier {
         }
     }
 
+    suspend fun processUnanalyzedSongs(
+        context: Context,
+        songs: List<SongItem>,
+        onSongAnalyzed: ((SongItem) -> Unit)? = null
+    ) = withContext(Dispatchers.IO) {
+        if (isBatchRunning || songs.isEmpty()) return@withContext
+        isBatchRunning = true
+        try {
+            val dao = AppDatabase.getDatabase(context).moodPredictionDao()
+            val cachedMap = dao.getAllForModel(MODEL_VERSION).associateBy { it.songId }
+            val unanalyzed = songs.filter { it.id.isNotBlank() && !cachedMap.containsKey(it.id) }
+
+            for (song in unanalyzed) {
+                val prediction = classify(context, song)
+                if (prediction != null) {
+                    onSongAnalyzed?.invoke(song)
+                }
+                delay(120)
+            }
+        } catch (_: Throwable) {
+        } finally {
+            isBatchRunning = false
+        }
+    }
+
     internal fun fromModelOutput(rawValence: Float, rawArousal: Float): Prediction {
         val valence = rawValence.coerceIn(0f, 1f)
         val arousal = rawArousal.coerceIn(0f, 1f)
-        // Prototypes are app labels in Russell's published valence/arousal space:
-        // Calm (+V/-A), Energetic (+V/+A), Sad (-V/-A), Romantic (+V/moderate A).
         val prototypes = arrayOf(
             floatArrayOf(.72f, .25f), floatArrayOf(.78f, .80f),
             floatArrayOf(.22f, .30f), floatArrayOf(.76f, .48f)
@@ -96,22 +148,35 @@ object OnDeviceMusicMoodClassifier {
         return Prediction(valence, arousal, expScores, (0.5f + margin * 0.5f).coerceIn(0f, 1f))
     }
 
-    private fun infer(context: Context, waveform: FloatArray): FloatArray {
-        val modelFile = materializeModel(context)
-        val environment = OrtEnvironment.getEnvironment()
-        OrtSession.SessionOptions().use { options ->
-            options.setIntraOpNumThreads(2)
-            options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-            environment.createSession(modelFile.absolutePath, options).use { session ->
-                OnnxTensor.createTensor(
-                    environment,
-                    FloatBuffer.wrap(waveform),
-                    longArrayOf(1, SAMPLE_COUNT.toLong())
-                ).use { input ->
-                    session.run(mapOf("audio_waveform" to input)).use { result ->
-                        @Suppress("UNCHECKED_CAST")
-                        return ((result[0].value as Array<FloatArray>)[0]).copyOf()
-                    }
+    @Synchronized
+    private fun getOrCreateSession(context: Context): Pair<OrtEnvironment, OrtSession>? {
+        return try {
+            val env = ortEnv ?: OrtEnvironment.getEnvironment().also { ortEnv = it }
+            val session = ortSession ?: run {
+                val modelFile = materializeModel(context)
+                val options = OrtSession.SessionOptions().apply {
+                    setIntraOpNumThreads(2)
+                    setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                }
+                env.createSession(modelFile.absolutePath, options).also { ortSession = it }
+            }
+            Pair(env, session)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun infer(context: Context, waveform: FloatArray): FloatArray? {
+        val (environment, session) = getOrCreateSession(context) ?: return null
+        return synchronized(session) {
+            OnnxTensor.createTensor(
+                environment,
+                FloatBuffer.wrap(waveform),
+                longArrayOf(1, SAMPLE_COUNT.toLong())
+            ).use { input ->
+                session.run(mapOf("audio_waveform" to input)).use { result ->
+                    @Suppress("UNCHECKED_CAST")
+                    ((result[0].value as Array<FloatArray>)[0]).copyOf()
                 }
             }
         }
@@ -122,19 +187,32 @@ object OnDeviceMusicMoodClassifier {
         val output = File(directory, "mert_emotion_int8.onnx")
         if (output.length() > 90_000_000L) return output
         context.assets.open(MODEL_ASSET).use { input ->
-            FileOutputStream(output).use { input.copyTo(it) }
+            FileOutputStream(output).use { outputStream ->
+                val buffer = ByteArray(65536)
+                var bytesRead: Int
+                while (input.read(buffer).also { bytesRead = it } != -1) {
+                    outputStream.write(buffer, 0, bytesRead)
+                }
+            }
         }
         return output
     }
 
-    /** Decodes a center 15-second window to mono PCM and linearly resamples it to 24 kHz. */
     private fun decodeCenterWindow(context: Context, song: SongItem): FloatArray? {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
-            val uri = Uri.parse(song.uriString)
-            if (song.uriString.startsWith("content://")) extractor.setDataSource(context, uri, null)
-            else extractor.setDataSource(song.uriString)
+            val resolvedFile = AudioWaveformFingerprinter.resolveLocalAudioFile(song)
+            if (resolvedFile != null && resolvedFile.exists()) {
+                extractor.setDataSource(resolvedFile.absolutePath)
+            } else if (song.uriString.startsWith("content://")) {
+                extractor.setDataSource(context, Uri.parse(song.uriString), null)
+            } else if (song.uriString.isNotBlank()) {
+                extractor.setDataSource(song.uriString)
+            } else {
+                return null
+            }
+
             val track = (0 until extractor.trackCount).firstOrNull {
                 extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
             } ?: return null

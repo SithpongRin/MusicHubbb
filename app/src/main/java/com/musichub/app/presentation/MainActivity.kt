@@ -6885,9 +6885,22 @@ fun HomeScreen(
             .sortedByDescending { it.second.size }
     }
 
-    // 100% On-Device AI Mood & Activity Mixes (My Mix, Artist Mix, Workout & Sport, Party & Remix, Chill, Sad, Romantic, Focus, Driving)
+    // 100% On-Device AI Deep Learning Model & Activity Mixes (Auto-Pilot Background Processing)
+    var aiModelVersion by remember { mutableIntStateOf(0) }
+    LaunchedEffect(songs) {
+        if (songs.isNotEmpty()) {
+            withContext(Dispatchers.IO) {
+                com.musichub.app.domain.mood.OnDeviceMusicMoodClassifier.processUnanalyzedSongs(context, songs) {
+                    withContext(Dispatchers.Main) {
+                        aiModelVersion++
+                    }
+                }
+            }
+        }
+    }
+
     var aiMoodMixes by remember { mutableStateOf<List<AiMoodMix>>(emptyList()) }
-    LaunchedEffect(songs, playCountVersion, isKhmer) {
+    LaunchedEffect(songs, playCountVersion, aiModelVersion, isKhmer) {
         if (songs.isNotEmpty()) {
             withContext(Dispatchers.IO) {
                 val built = AiAudioMoodEngine.buildAiMoodMixes(context, songs, isKhmer)
