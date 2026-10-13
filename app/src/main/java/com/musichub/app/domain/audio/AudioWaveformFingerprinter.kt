@@ -6,7 +6,6 @@ import android.net.Uri
 import android.os.Environment
 import com.musichub.app.presentation.PlayCountTracker
 import com.musichub.app.presentation.SongItem
-import com.musichub.app.domain.mood.OnDeviceMusicMoodClassifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -106,22 +105,6 @@ data class SongMoodProfile(
     val hasExplicitSemanticSignal: Boolean = false,
     val confidenceScore: Float = 0.75f
 )
-
-private fun OnDeviceMusicMoodClassifier.Prediction.asSongMoodProfile(songId: String): SongMoodProfile {
-    val primaryIndex = moodScores.indices.maxByOrNull { moodScores[it] } ?: 0
-    val secondaryIndex = moodScores.indices.filter { it != primaryIndex }
-        .maxByOrNull { moodScores[it] } ?: primaryIndex
-    return SongMoodProfile(
-        songId = songId,
-        probabilities = moodScores.copyOf(),
-        primaryMood = SongMoodCategory.entries[primaryIndex],
-        secondaryMood = SongMoodCategory.entries[secondaryIndex],
-        energyScore = arousal,
-        tempoScore = arousal,
-        valenceScore = valence * 2f - 1f,
-        confidenceScore = confidence
-    )
-}
 
 /**
  * 100% On-Device, Self-Learning AI Audio Mood & Acoustic Classifier.
@@ -680,22 +663,7 @@ object AiAudioMoodEngine {
         calibrateLibraryAcousticSpace(context, songs)
 
         // 2. Compute 100% Pure Audio profiles for all local songs
-        val profiles = songs.associateWith { song ->
-            val cachedModel = runCatching {
-                AppDatabase.getDatabase(context).moodPredictionDao()
-                    .get(song.id, OnDeviceMusicMoodClassifier.MODEL_VERSION)
-            }.getOrNull()
-            if (cachedModel != null) {
-                OnDeviceMusicMoodClassifier.Prediction(
-                    cachedModel.valence,
-                    cachedModel.arousal,
-                    cachedModel.scores(),
-                    cachedModel.confidence
-                ).asSongMoodProfile(song.id)
-            } else {
-                getSongMoodProfile(context, song)
-            }
-        }
+        val profiles = songs.associateWith { getSongMoodProfile(context, it) }
 
         // 3. Bootstrap historical learning from existing PlayCountTracker & Favorites if needed
         bootstrapHistoricalLearningIfNeeded(context, songs, profiles)

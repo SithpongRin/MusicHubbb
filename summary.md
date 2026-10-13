@@ -382,6 +382,11 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.77
+- Fixed compilation issue by restoring clean synchronous pure audio feature profile extraction.
+- Fully restored instant Your Mix with 4 Core Mood Mixes (Calm, Energetic, Sad, Romantic), My Mix, and Top Artist Mix.
+- Bumped `versionCode = 77` and `versionName = "1.0.77"` in `app/build.gradle.kts`.
+
 ### Version 1.0.76
 - Fixed Your Mix restoration: Restored high-speed, 100% on-device pure audio acoustic classification engine and library Z-score calibration for instant, reliable display of all 4 Core Mood Mixes (Calm, Energetic, Sad, Romantic), My Mix, and Top Artist Mix without empty-state dropouts.
 - Bumped `versionCode = 76` and `versionName = "1.0.76"` in `app/build.gradle.kts`.
