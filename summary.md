@@ -382,6 +382,10 @@ The app requests only required permissions:
 - Strict zero-emoji policy maintained across all strings, labels, and UI elements.
 - Bumped `versionCode = 51` and `versionName = "1.0.51"` in `app/build.gradle.kts`.
 
+### Version 1.0.75
+- Offline music mood recommendations.
+- Bumped `versionCode = 75` and `versionName = "1.0.75"` in `app/build.gradle.kts`.
+
 ### Version 1.0.74
 - 4 Core Moods in `Your Mix` (`Calm`, `Energetic`, `Sad`, `Romantic` alongside `My Mix` & `Artist Mix`), 3-Stage Precision Acoustic Engine (`MP4 stsz`, Exact MP3 Frame-Stepping, Ogg/WebM Packet Lacing, Autocorrelation BPM), Library-Wide Z-Score Self-Calibration, Self-Learning 4x6 Neural Weight Matrix (`Delta-W`), and Unified `140.dp` `Your Mix` Card Size:
   - **Unified `Your Mix` Card Dimensions (`140.dp x 120.dp`)**:
