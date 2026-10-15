@@ -35,7 +35,10 @@ class LyricsRepository(
         allowOnline: Boolean = true
     ): LyricsEntity = withContext(Dispatchers.IO) {
         // 1. Check local Room database cache
-        lyricsDao.getLyrics(song.id)?.let { return@withContext it }
+        val cached = lyricsDao.getLyrics(song.id)
+        if (cached != null && (!cached.plainLyrics.isNullOrBlank() || cached.isInstrumental)) {
+            return@withContext cached
+        }
 
         // 2. Try to extract embedded lyrics from local audio file
         val embeddedLyrics = extractEmbeddedLyrics(song.uriString)
@@ -58,7 +61,7 @@ class LyricsRepository(
             return@withContext entity
         }
 
-        // 3. Optional open online fetch via LRCLIB if enabled
+        // 3. Download lyrics from LRCLIB if missing and allowOnline is true
         if (allowOnline) {
             val remoteLyrics = fetchFromLrclib(song.title, song.artist, song.durationSec)
             if (remoteLyrics != null) {
@@ -90,8 +93,8 @@ class LyricsRepository(
             }
         }
 
-        // 4. Fallback if not found: record as NOT_FOUND to avoid repeated wasted network requests
-        val emptyEntity = LyricsEntity(
+        // 4. Return cached if present, or temporarily record NOT_FOUND if fetch failed
+        val emptyEntity = cached ?: LyricsEntity(
             songId = song.id,
             plainLyrics = null,
             syncedLyrics = null,
@@ -103,9 +106,29 @@ class LyricsRepository(
             lyricsConfidence = 0f,
             dissonanceScore = null,
             updatedAt = System.currentTimeMillis()
-        )
-        lyricsDao.upsertLyrics(emptyEntity)
+        ).also { lyricsDao.upsertLyrics(it) }
+
         emptyEntity
+    }
+
+    /**
+     * Batch downloads missing lyrics for library songs in the background and saves them permanently in Room.
+     */
+    suspend fun downloadMissingLyricsForSongs(
+        songs: List<SongItem>,
+        onProgress: ((Int, Int) -> Unit)? = null
+    ) = withContext(Dispatchers.IO) {
+        val existingIds = lyricsDao.getSongIdsWithLyrics().toSet()
+        val missing = songs.filter { it.id.isNotBlank() && it.id !in existingIds }
+        var completed = 0
+        val total = missing.size
+
+        for (song in missing) {
+            getOrFetchLyrics(song, allowOnline = true)
+            completed++
+            onProgress?.invoke(completed, total)
+            kotlinx.coroutines.delay(120)
+        }
     }
 
     private fun extractEmbeddedLyrics(uriString: String): String? {

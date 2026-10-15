@@ -80,8 +80,45 @@ object OnDeviceMusicMoodClassifier {
                 return@withContext Prediction(cached.valence, cached.arousal, cached.scores(), cached.confidence)
             }
 
-            val waveform = decodeCenterWindow(context, song) ?: return@withContext null
-            val raw = runCatching { infer(context, waveform) }.getOrNull() ?: return@withContext null
+            val waveform = decodeCenterWindow(context, song)
+            if (waveform == null) {
+                // Persist neutral fallback so unreadable files are not repeatedly re-analyzed on every app start
+                dao.upsert(
+                    MoodPredictionEntity(
+                        songId = songId,
+                        modelVersion = MODEL_VERSION,
+                        valence = 0.5f,
+                        arousal = 0.5f,
+                        calm = 0.25f,
+                        energetic = 0.25f,
+                        sad = 0.25f,
+                        romantic = 0.25f,
+                        confidence = 0.15f,
+                        analyzedAt = System.currentTimeMillis()
+                    )
+                )
+                return@withContext null
+            }
+
+            val raw = runCatching { infer(context, waveform) }.getOrNull()
+            if (raw == null) {
+                dao.upsert(
+                    MoodPredictionEntity(
+                        songId = songId,
+                        modelVersion = MODEL_VERSION,
+                        valence = 0.5f,
+                        arousal = 0.5f,
+                        calm = 0.25f,
+                        energetic = 0.25f,
+                        sad = 0.25f,
+                        romantic = 0.25f,
+                        confidence = 0.15f,
+                        analyzedAt = System.currentTimeMillis()
+                    )
+                )
+                return@withContext null
+            }
+
             val prediction = fromModelOutput(raw[0], raw[1])
             dao.upsert(
                 MoodPredictionEntity(
@@ -114,6 +151,10 @@ object OnDeviceMusicMoodClassifier {
             val dao = AppDatabase.getDatabase(context).moodPredictionDao()
             val cachedMap = dao.getAllForModel(MODEL_VERSION).associateBy { it.songId }
             val unanalyzed = songs.filter { it.id.isNotBlank() && !cachedMap.containsKey(it.id) }
+            if (unanalyzed.isEmpty()) {
+                // All songs already analyzed and persisted! Zero work needed on launch.
+                return@withContext
+            }
 
             for (song in unanalyzed) {
                 val prediction = classify(context, song)

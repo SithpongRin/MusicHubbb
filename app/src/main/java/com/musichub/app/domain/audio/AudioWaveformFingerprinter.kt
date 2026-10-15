@@ -285,47 +285,7 @@ object AiAudioMoodEngine {
         mixTitle: String,
         mixSongs: List<SongItem>
     ): Boolean {
-        if (mixSongs.isEmpty()) return false
-        return try {
-            val lPrefs = context.getSharedPreferences(LEARNING_PREFS_NAME, Context.MODE_PRIVATE)
-            val category = resolveCategoryFromMixTitle(mixTitle)
-            val mixSignatureKey = buildMixSignatureKey(mixTitle, mixSongs)
-            if (lPrefs.getInt("mix_rated_sig_$mixSignatureKey", 0) > 0) {
-                return false
-            }
-
-            if (category != null) {
-                val catIdx = category.ordinal
-                var unverifiedBorderlineCount = 0
-                for (song in mixSongs) {
-                    if (song.id.isBlank()) continue
-                    val verifiedStars = lPrefs.getInt("song_verified_${song.id}_$catIdx", 0)
-                    if (verifiedStars > 0) continue
-
-                    val prof = getSongMoodProfile(context, song)
-                    val isSecondaryMatch = prof.primaryMood != category
-                    val isLowConfidence = prof.confidenceScore < 0.46f || prof.probabilities[catIdx] < 0.36f
-                    if (isSecondaryMatch || isLowConfidence) {
-                        unverifiedBorderlineCount++
-                    }
-                }
-                unverifiedBorderlineCount > 0
-            } else {
-                // For My Mix / Artist Mix: only ask if there are multiple unverified low-confidence tracks
-                var unverifiedLowConf = 0
-                for (song in mixSongs) {
-                    if (song.id.isBlank()) continue
-                    if (lPrefs.getInt("song_verified_general_${song.id}", 0) > 0) continue
-                    val prof = getSongMoodProfile(context, song)
-                    if (prof.confidenceScore < 0.40f) {
-                        unverifiedLowConf++
-                    }
-                }
-                unverifiedLowConf >= 2
-            }
-        } catch (_: Throwable) {
-            false
-        }
+        return false
     }
 
     /**
