@@ -10581,8 +10581,8 @@ fun UnifiedExpandablePlayerCard(
                                             .size(currentArtSize)
                                             .shadow(lerpDp(24.dp, 12.dp, s1), RoundedCornerShape(artCorner))
                                             .clip(RoundedCornerShape(artCorner))
-                                            .background(dynamicColors.bottomGradientColor)
-                                            .border(1.dp, lerpColor(Color(0x22FFFFFF), dynamicColors.accentColor.copy(alpha = 0.28f), p), RoundedCornerShape(artCorner)),
+                                            .background(Color(0xFF1E212D))
+                                            .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(artCorner)),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         if (song.artworkUrl.isNotBlank()) {
@@ -10683,8 +10683,7 @@ fun UnifiedExpandablePlayerCard(
                                 progress = progress,
                                 durationSec = song.durationSec,
                                 positionMs = positionMs,
-                                onSeek = onProgressChange,
-                                activeColor = dynamicColors.accentColor
+                                onSeek = onProgressChange
                             )
 
                             // Controls + Bottom Queue Handle Bar
