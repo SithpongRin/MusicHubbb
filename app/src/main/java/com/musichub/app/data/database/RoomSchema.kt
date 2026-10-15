@@ -234,6 +234,9 @@ interface LyricsDao {
     @Query("SELECT songId FROM lyrics WHERE plainLyrics IS NOT NULL OR isInstrumental = 1")
     suspend fun getSongIdsWithLyrics(): List<String>
 
+    @Query("SELECT * FROM lyrics")
+    suspend fun getAllLyrics(): List<LyricsEntity>
+
     @Query("DELETE FROM lyrics WHERE songId = :songId")
     suspend fun deleteLyrics(songId: String)
 }

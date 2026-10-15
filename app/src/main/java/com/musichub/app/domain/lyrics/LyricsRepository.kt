@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.URLEncoder
@@ -157,14 +158,39 @@ class LyricsRepository(
         durationSec: Int
     ): Triple<String?, String?, Boolean>? {
         return try {
-            val cleanTitle = title.replace(Regex("\\(.*?\\)|\\[.*?\\]"), "").trim()
-            val cleanArtist = artist.replace(Regex("\\(.*?\\)|\\[.*?\\]"), "").trim()
+            val cleanTitle = title
+                .replace(Regex("\\.(mp3|m4a|flac|wav|ogg|aac)$", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("^\\d+[\\s.-]+"), "")
+                .replace(Regex("\\(.*?\\)|\\[.*?\\]"), "")
+                .trim()
+            val cleanArtist = if (artist.equals("<unknown>", ignoreCase = true) || artist.equals("MusicHub", ignoreCase = true)) ""
+                else artist.replace(Regex("\\(.*?\\)|\\[.*?\\]"), "").trim()
             if (cleanTitle.isBlank()) return null
 
             val encTitle = URLEncoder.encode(cleanTitle, "UTF-8")
-            val encArtist = URLEncoder.encode(cleanArtist, "UTF-8")
-            val url = "https://lrclib.net/api/get?track_name=$encTitle&artist_name=$encArtist&duration=$durationSec"
+            val encArtist = if (cleanArtist.isNotBlank()) URLEncoder.encode(cleanArtist, "UTF-8") else ""
 
+            // 1. Try exact match first
+            if (cleanArtist.isNotBlank() && durationSec > 0) {
+                val getUrl = "https://lrclib.net/api/get?track_name=$encTitle&artist_name=$encArtist&duration=$durationSec"
+                val parsed = executeLrclibGet(getUrl)
+                if (parsed != null) return parsed
+            }
+
+            // 2. Fallback to fuzzy search query for high hit rate
+            val searchUrl = if (cleanArtist.isNotBlank()) {
+                "https://lrclib.net/api/search?track_name=$encTitle&artist_name=$encArtist"
+            } else {
+                "https://lrclib.net/api/search?q=$encTitle"
+            }
+            executeLrclibSearch(searchUrl)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun executeLrclibGet(url: String): Triple<String?, String?, Boolean>? {
+        return try {
             val request = Request.Builder()
                 .url(url)
                 .header("User-Agent", "MusicHub-Android/1.0 (https://github.com/MusicHub)")
@@ -178,14 +204,57 @@ class LyricsRepository(
             }
 
             val body = response.body?.string() ?: return null
-            val json = JSONObject(body)
-            val isInstrumental = json.optBoolean("instrumental", false)
-            val plainLyrics = if (json.isNull("plainLyrics")) null else json.optString("plainLyrics").takeIf { it.isNotBlank() }
-            val syncedLyrics = if (json.isNull("syncedLyrics")) null else json.optString("syncedLyrics").takeIf { it.isNotBlank() }
-
-            Triple(plainLyrics, syncedLyrics, isInstrumental)
+            parseLyricsJson(JSONObject(body))
         } catch (_: Throwable) {
             null
         }
+    }
+
+    private fun executeLrclibSearch(url: String): Triple<String?, String?, Boolean>? {
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "MusicHub-Android/1.0 (https://github.com/MusicHub)")
+                .get()
+                .build()
+
+            val response = okHttpClient.newCall(request).execute()
+            if (!response.isSuccessful) {
+                response.close()
+                return null
+            }
+
+            val body = response.body?.string() ?: return null
+            val array = JSONArray(body)
+            if (array.length() == 0) return null
+
+            // Pick the first result that has plainLyrics or syncedLyrics
+            for (i in 0 until array.length()) {
+                val item = array.getJSONObject(i)
+                val parsed = parseLyricsJson(item)
+                if (parsed != null && (parsed.first != null || parsed.third)) {
+                    return parsed
+                }
+            }
+            null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun parseLyricsJson(json: JSONObject): Triple<String?, String?, Boolean>? {
+        val isInstrumental = json.optBoolean("instrumental", false)
+        val rawPlain = if (json.isNull("plainLyrics")) null else json.optString("plainLyrics").takeIf { it.isNotBlank() }
+        val rawSynced = if (json.isNull("syncedLyrics")) null else json.optString("syncedLyrics").takeIf { it.isNotBlank() }
+
+        // If plainLyrics is missing but syncedLyrics exists, extract plain lyrics by removing timestamps
+        val plainLyrics = rawPlain ?: rawSynced?.replace(Regex("\\[\\d+:\\d+(\\.\\d+)?\\]"), "")
+            ?.lines()
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            ?.joinToString("\n")
+
+        if (plainLyrics == null && !isInstrumental) return null
+        return Triple(plainLyrics, rawSynced, isInstrumental)
     }
 }

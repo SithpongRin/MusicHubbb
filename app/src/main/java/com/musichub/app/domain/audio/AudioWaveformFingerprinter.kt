@@ -621,18 +621,42 @@ object AiAudioMoodEngine {
     ): List<AiMoodMix> {
         if (songs.isEmpty()) return emptyList()
 
-        // 1. Fetch real AI Deep Learning Model predictions from Room DB
+        // 1. Fetch real AI Deep Learning Model predictions and cached Lyrics from Room DB
+        val db = AppDatabase.getDatabase(context)
         val aiPredictions = runCatching {
-            AppDatabase.getDatabase(context).moodPredictionDao()
+            db.moodPredictionDao()
                 .getAllForModel(OnDeviceMusicMoodClassifier.MODEL_VERSION)
                 .associateBy { it.songId }
         }.getOrDefault(emptyMap())
 
-        // 2. Build SongMoodProfiles prioritizing real AI model predictions
+        val lyricsMap = runCatching {
+            db.lyricsDao()
+                .getAllLyrics()
+                .associateBy { it.songId }
+        }.getOrDefault(emptyMap())
+
+        // 2. Build SongMoodProfiles using late-fusion of continuous audio and lyrics sentiment
         val profiles = songs.associateWith { song ->
             val aiPred = aiPredictions[song.id]
+            val lyrics = lyricsMap[song.id]
             if (aiPred != null) {
-                OnDeviceMusicMoodClassifier.asSongMoodProfile(aiPred, song.id)
+                val fused = com.musichub.app.domain.mood.HybridMoodFusionEngine.fuse(aiPred, lyrics)
+                val baseProf = OnDeviceMusicMoodClassifier.asSongMoodProfile(aiPred, song.id)
+                val primaryCat = when (fused.primaryMood) {
+                    "CALM" -> SongMoodCategory.CALM
+                    "ENERGETIC" -> SongMoodCategory.ENERGETIC
+                    "SAD" -> SongMoodCategory.SAD
+                    "HAPPY" -> SongMoodCategory.ENERGETIC // or calm/energetic mapping
+                    "ROMANTIC" -> SongMoodCategory.ROMANTIC
+                    else -> baseProf.primaryMood
+                }
+                baseProf.copy(
+                    primaryMood = primaryCat,
+                    valenceScore = fused.valence,
+                    energyScore = (fused.arousal + 1f) / 2f,
+                    tempoScore = (fused.arousal + 1f) / 2f,
+                    confidenceScore = fused.confidence
+                )
             } else {
                 getSongMoodProfile(context, song)
             }
