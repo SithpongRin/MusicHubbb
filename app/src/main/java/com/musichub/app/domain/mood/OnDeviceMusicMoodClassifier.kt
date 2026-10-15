@@ -55,6 +55,19 @@ object OnDeviceMusicMoodClassifier {
         val confidence: Float
     )
 
+    data class FullAudioAnalysis(
+        val prediction: Prediction,
+        val dspFeatures: com.musichub.app.domain.audio.AudioDspFeatureExtractor.DspFeatures
+    )
+
+    @Synchronized
+    fun closeSession() {
+        try {
+            ortSession?.close()
+            ortSession = null
+        } catch (_: Throwable) {}
+    }
+
     fun asSongMoodProfile(entity: MoodPredictionEntity, songId: String): SongMoodProfile {
         val scores = entity.scores()
         val primaryIndex = scores.indices.maxByOrNull { scores[it] } ?: 0
@@ -120,6 +133,17 @@ object OnDeviceMusicMoodClassifier {
             }
 
             val prediction = fromModelOutput(raw[0], raw[1])
+            val dsp = com.musichub.app.domain.audio.AudioDspFeatureExtractor.extractFeatures(
+                waveform = waveform,
+                sampleRate = SAMPLE_RATE,
+                valence = prediction.valence,
+                arousal = prediction.arousal
+            )
+            val topIndex = prediction.moodScores.indices.maxByOrNull { prediction.moodScores[it] } ?: 0
+            val secondIndex = prediction.moodScores.indices.filter { it != topIndex }
+                .maxByOrNull { prediction.moodScores[it] } ?: topIndex
+            val secondaryMoodStr = SongMoodCategory.entries[secondIndex].name
+
             dao.upsert(
                 MoodPredictionEntity(
                     songId = songId,
@@ -131,13 +155,46 @@ object OnDeviceMusicMoodClassifier {
                     sad = prediction.moodScores[2],
                     romantic = prediction.moodScores[3],
                     confidence = prediction.confidence,
-                    analyzedAt = System.currentTimeMillis()
+                    analyzedAt = System.currentTimeMillis(),
+                    genre = dsp.genre,
+                    bpm = dsp.bpm,
+                    energy = dsp.energy,
+                    danceability = dsp.danceability,
+                    audioEmbedding = com.musichub.app.domain.audio.AudioDspFeatureExtractor.serializeEmbedding(dsp.audioEmbedding),
+                    secondaryMood = secondaryMoodStr
                 )
             )
             prediction
         } catch (_: Throwable) {
             null
         }
+    }
+
+    suspend fun analyzeFull(context: Context, song: SongItem): FullAudioAnalysis? = withContext(Dispatchers.IO) {
+        val songId = song.id.takeIf { it.isNotBlank() } ?: return@withContext null
+        val waveform = decodeCenterWindow(context, song)
+        val prediction = classify(context, song) ?: Prediction(
+            valence = 0.5f,
+            arousal = 0.5f,
+            moodScores = floatArrayOf(0.25f, 0.25f, 0.25f, 0.25f),
+            confidence = 0.20f
+        )
+        val dspFeatures = if (waveform != null) {
+            com.musichub.app.domain.audio.AudioDspFeatureExtractor.extractFeatures(
+                waveform = waveform,
+                sampleRate = SAMPLE_RATE,
+                valence = prediction.valence,
+                arousal = prediction.arousal
+            )
+        } else {
+            com.musichub.app.domain.audio.AudioDspFeatureExtractor.extractFeatures(
+                waveform = FloatArray(0),
+                sampleRate = SAMPLE_RATE,
+                valence = prediction.valence,
+                arousal = prediction.arousal
+            )
+        }
+        FullAudioAnalysis(prediction, dspFeatures)
     }
 
     suspend fun processUnanalyzedSongs(
@@ -166,6 +223,7 @@ object OnDeviceMusicMoodClassifier {
         } catch (_: Throwable) {
         } finally {
             isBatchRunning = false
+            closeSession()
         }
     }
 
@@ -254,7 +312,7 @@ object OnDeviceMusicMoodClassifier {
         return output
     }
 
-    private fun decodeCenterWindow(context: Context, song: SongItem): FloatArray? {
+    internal fun decodeCenterWindow(context: Context, song: SongItem): FloatArray? {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {

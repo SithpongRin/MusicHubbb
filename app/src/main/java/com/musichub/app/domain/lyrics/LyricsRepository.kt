@@ -41,22 +41,34 @@ class LyricsRepository(
             return@withContext cached
         }
 
-        // 2. Try to extract embedded lyrics from local audio file
-        val embeddedLyrics = extractEmbeddedLyrics(song.uriString)
-        if (!embeddedLyrics.isNullOrBlank()) {
-            val analysis = LyricsSentimentEngine.analyze(embeddedLyrics)
+        // 2. Try to extract local lyrics (.lrc, .txt, or embedded ID3 USLT)
+        val localLyrics = LocalLyricsScanner.findLocalLyrics(context, song.uriString)
+        if (localLyrics != null && localLyrics.lyricsText.isNotBlank()) {
+            val plainText = if (localLyrics.isSynced) {
+                localLyrics.lyricsText.replace(Regex("\\[\\d+:\\d+(\\.\\d+)?\\]"), "")
+                    .lines()
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .joinToString("\n")
+            } else localLyrics.lyricsText
+
+            val analysis = LyricsSentimentEngine.analyze(plainText)
+            val themesStr = analysis.themes.takeIf { it.isNotEmpty() }?.joinToString(",")
+            val lyricEmbedStr = analysis.lyricEmbedding?.let { LyricsSentimentEngine.serializeEmbedding(it) }
             val entity = LyricsEntity(
                 songId = song.id,
-                plainLyrics = embeddedLyrics,
-                syncedLyrics = null,
-                source = "EMBEDDED",
+                plainLyrics = plainText,
+                syncedLyrics = if (localLyrics.isSynced) localLyrics.lyricsText else null,
+                source = localLyrics.source,
                 language = analysis.language,
                 isInstrumental = analysis.isInstrumental,
                 lyricsValence = analysis.valence,
                 lyricsArousal = analysis.arousal,
                 lyricsConfidence = analysis.confidence,
                 dissonanceScore = null,
-                updatedAt = System.currentTimeMillis()
+                updatedAt = System.currentTimeMillis(),
+                themes = themesStr,
+                lyricEmbedding = lyricEmbedStr
             )
             lyricsDao.upsertLyrics(entity)
             return@withContext entity
@@ -75,6 +87,8 @@ class LyricsRepository(
                 } else {
                     LyricsSentimentEngine.analyze(plainText ?: "")
                 }
+                val themesStr = analysis.themes.takeIf { it.isNotEmpty() }?.joinToString(",")
+                val lyricEmbedStr = analysis.lyricEmbedding?.let { LyricsSentimentEngine.serializeEmbedding(it) }
 
                 val entity = LyricsEntity(
                     songId = song.id,
@@ -87,7 +101,9 @@ class LyricsRepository(
                     lyricsArousal = analysis.arousal,
                     lyricsConfidence = analysis.confidence,
                     dissonanceScore = null,
-                    updatedAt = System.currentTimeMillis()
+                    updatedAt = System.currentTimeMillis(),
+                    themes = themesStr,
+                    lyricEmbedding = lyricEmbedStr
                 )
                 lyricsDao.upsertLyrics(entity)
                 return@withContext entity

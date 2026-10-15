@@ -1,10 +1,14 @@
 package com.musichub.app.domain.recommendation
 
 import android.content.Context
+import com.musichub.app.data.database.AppDatabase
 import com.musichub.app.domain.audio.AiAudioMoodEngine
+import com.musichub.app.domain.audio.AudioDspFeatureExtractor
 import com.musichub.app.domain.audio.SongMoodCategory
 import com.musichub.app.domain.downloader.LocalMediaExtractor
 import com.musichub.app.domain.downloader.OnlineSearchResult
+import com.musichub.app.domain.lyrics.LyricsSentimentEngine
+import com.musichub.app.domain.mood.OnDeviceMusicMoodClassifier
 import com.musichub.app.presentation.PlayCountTracker
 import com.musichub.app.presentation.SongItem
 import kotlinx.coroutines.Dispatchers
@@ -507,6 +511,153 @@ object RecommendationEngine {
             }
         } catch (_: Throwable) {}
         return list
+    }
+
+    /**
+     * Recommends locally similar songs to a seed track using multi-modal AI intelligence:
+     * - 64-D Audio embedding cosine similarity & acoustic compatibility (BPM, Energy)
+     * - 32-D Lyrics semantic embedding similarity (when lyrics exist)
+     * - Genre and multi-label mood affinity
+     * - User behavioral affinity (completed plays, favorites, early skip penalty)
+     * - Maximal Marginal Relevance (MMR) & artist capping (max 2 per artist) for diversity
+     */
+    suspend fun getSimilarLocalTracks(
+        context: Context,
+        targetSong: SongItem,
+        candidates: List<SongItem>,
+        limit: Int = 10
+    ): List<SongItem> = withContext(Dispatchers.IO) {
+        val pool = candidates.filter { it.id.isNotBlank() && it.id != targetSong.id }
+        if (pool.isEmpty()) return@withContext emptyList()
+
+        val db = AppDatabase.getDatabase(context)
+        val moodDao = db.moodPredictionDao()
+        val lyricsDao = db.lyricsDao()
+
+        val allMoods = runCatching {
+            moodDao.getAllForModel(OnDeviceMusicMoodClassifier.MODEL_VERSION).associateBy { it.songId }
+        }.getOrDefault(emptyMap())
+
+        val allLyrics = runCatching {
+            lyricsDao.getAllLyrics().associateBy { it.songId }
+        }.getOrDefault(emptyMap())
+
+        val targetMood = allMoods[targetSong.id]
+        val targetLyrics = allLyrics[targetSong.id]
+        val targetAudioEmbed = targetMood?.audioEmbedding?.let { AudioDspFeatureExtractor.deserializeEmbedding(it) }
+        val targetLyricEmbed = targetLyrics?.lyricEmbedding?.let { LyricsSentimentEngine.deserializeEmbedding(it) }
+
+        val targetBpm = targetMood?.bpm ?: 120
+        val targetEnergy = targetMood?.energy ?: 0.5f
+        val targetGenre = targetMood?.genre ?: "Unknown"
+
+        data class ScoredCandidate(
+            val song: SongItem,
+            val relevance: Float,
+            val audioEmbed: FloatArray?
+        )
+
+        val scoredList = mutableListOf<ScoredCandidate>()
+
+        for (cand in pool) {
+            val candMood = allMoods[cand.id]
+            val candLyrics = allLyrics[cand.id]
+            val candAudioEmbed = candMood?.audioEmbedding?.let { AudioDspFeatureExtractor.deserializeEmbedding(it) }
+            val candLyricEmbed = candLyrics?.lyricEmbedding?.let { LyricsSentimentEngine.deserializeEmbedding(it) }
+
+            // 1. Audio Embedding Similarity (0.0 .. 1.0)
+            val audioSim = if (targetAudioEmbed != null && candAudioEmbed != null) {
+                AudioDspFeatureExtractor.cosineSimilarity(targetAudioEmbed, candAudioEmbed)
+            } else {
+                val vecA = targetMood?.scores() ?: floatArrayOf(0.25f, 0.25f, 0.25f, 0.25f)
+                val vecB = candMood?.scores() ?: floatArrayOf(0.25f, 0.25f, 0.25f, 0.25f)
+                AudioDspFeatureExtractor.cosineSimilarity(vecA, vecB)
+            }
+
+            // 2. Acoustic Compatibility (BPM & Energy)
+            val candBpm = candMood?.bpm ?: 120
+            val candEnergy = candMood?.energy ?: 0.5f
+            val bpmComp = (1.0f - abs(targetBpm - candBpm) / 75.0f).coerceIn(0.0f, 1.0f)
+            val energyComp = (1.0f - abs(targetEnergy - candEnergy)).coerceIn(0.0f, 1.0f)
+
+            // 3. Lyrics Semantic Similarity (when lyrics exist on both)
+            val lyricsSim = if (targetLyricEmbed != null && candLyricEmbed != null) {
+                LyricsSentimentEngine.cosineSimilarity(targetLyricEmbed, candLyricEmbed)
+            } else {
+                0.50f
+            }
+
+            // 4. Genre Affinity
+            val genreAff = if (targetGenre != "Unknown" && candMood?.genre == targetGenre) 1.0f else 0.25f
+
+            // 5. User Behavioral Feedback
+            val userAffinity = PlaybackTracker.computeSongAffinity(context, cand.id, cand.isFavorite)
+            val normUserAff = ((userAffinity + 3.0f) / 13.0f).coerceIn(0.0f, 1.0f)
+
+            // Transparent scoring formula
+            val totalRelevance = (0.35f * audioSim) +
+                    (0.15f * bpmComp) +
+                    (0.15f * energyComp) +
+                    (0.15f * lyricsSim) +
+                    (0.10f * genreAff) +
+                    (0.10f * normUserAff)
+
+            scoredList.add(ScoredCandidate(cand, totalRelevance, candAudioEmbed))
+        }
+
+        // Apply Maximal Marginal Relevance (MMR) & Artist Capping (max 2 songs per artist)
+        val selected = mutableListOf<SongItem>()
+        val artistCounts = mutableMapOf<String, Int>()
+        val remaining = scoredList.sortedByDescending { it.relevance }.toMutableList()
+        val lambda = 0.72f // Balance relevance vs diversity
+
+        while (remaining.isNotEmpty() && selected.size < limit) {
+            var bestIdx = -1
+            var bestMmrScore = Float.NEGATIVE_INFINITY
+
+            for (i in remaining.indices) {
+                val candidate = remaining[i]
+                val cleanArtist = candidate.song.artist.trim().lowercase()
+                val currentArtistCount = artistCounts[cleanArtist] ?: 0
+
+                if (currentArtistCount >= 2 && pool.size > limit * 2) {
+                    continue
+                }
+
+                var maxSimToSelected = 0.0f
+                if (selected.isNotEmpty() && candidate.audioEmbed != null) {
+                    for (selSong in selected) {
+                        val selEmbed = allMoods[selSong.id]?.audioEmbedding?.let { AudioDspFeatureExtractor.deserializeEmbedding(it) }
+                        if (selEmbed != null) {
+                            val sim = AudioDspFeatureExtractor.cosineSimilarity(candidate.audioEmbed, selEmbed)
+                            if (sim > maxSimToSelected) maxSimToSelected = sim
+                        }
+                    }
+                }
+
+                val mmrScore = (lambda * candidate.relevance) - ((1f - lambda) * maxSimToSelected)
+                if (mmrScore > bestMmrScore) {
+                    bestMmrScore = mmrScore
+                    bestIdx = i
+                }
+            }
+
+            if (bestIdx >= 0) {
+                val chosen = remaining.removeAt(bestIdx)
+                selected.add(chosen.song)
+                val cleanArtist = chosen.song.artist.trim().lowercase()
+                artistCounts[cleanArtist] = (artistCounts[cleanArtist] ?: 0) + 1
+            } else {
+                if (remaining.isNotEmpty() && selected.size < limit / 2) {
+                    val fallbackChosen = remaining.removeAt(0)
+                    selected.add(fallbackChosen.song)
+                } else {
+                    break
+                }
+            }
+        }
+
+        selected
     }
 }
 

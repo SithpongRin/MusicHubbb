@@ -89,7 +89,13 @@ data class MoodPredictionEntity(
     val sad: Float,
     val romantic: Float,
     val confidence: Float,
-    val analyzedAt: Long
+    val analyzedAt: Long,
+    val genre: String = "Unknown",
+    val bpm: Int = 0,
+    val energy: Float = 0.5f,
+    val danceability: Float = 0.5f,
+    val audioEmbedding: String? = null,
+    val secondaryMood: String? = null
 ) {
     fun scores() = floatArrayOf(calm, energetic, sad, romantic)
 }
@@ -106,7 +112,9 @@ data class LyricsEntity(
     val lyricsArousal: Float? = null,
     val lyricsConfidence: Float? = null,
     val dissonanceScore: Float? = null,
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val themes: String? = null,
+    val lyricEmbedding: String? = null
 )
 
 @Entity(
@@ -218,6 +226,12 @@ interface MoodPredictionDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(prediction: MoodPredictionEntity)
+
+    @Query("SELECT songId FROM mood_predictions WHERE modelVersion = :modelVersion")
+    suspend fun getAnalyzedSongIds(modelVersion: String): List<String>
+
+    @Query("SELECT * FROM mood_predictions WHERE genre = :genre")
+    suspend fun getSongsByGenre(genre: String): List<MoodPredictionEntity>
 }
 
 @Dao
@@ -274,7 +288,7 @@ interface PlaybackEventDao {
         LyricsEntity::class,
         PlaybackEventEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -296,7 +310,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "musichub_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                 INSTANCE = instance
                 instance
@@ -354,6 +368,20 @@ abstract class AppDatabase : RoomDatabase() {
                 """.trimIndent())
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_playback_events_songId ON playback_events(songId)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_playback_events_timestamp ON playback_events(timestamp)")
+            }
+        }
+
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE mood_predictions ADD COLUMN genre TEXT NOT NULL DEFAULT 'Unknown'")
+                db.execSQL("ALTER TABLE mood_predictions ADD COLUMN bpm INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE mood_predictions ADD COLUMN energy REAL NOT NULL DEFAULT 0.5")
+                db.execSQL("ALTER TABLE mood_predictions ADD COLUMN danceability REAL NOT NULL DEFAULT 0.5")
+                db.execSQL("ALTER TABLE mood_predictions ADD COLUMN audioEmbedding TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE mood_predictions ADD COLUMN secondaryMood TEXT DEFAULT NULL")
+
+                db.execSQL("ALTER TABLE lyrics ADD COLUMN themes TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE lyrics ADD COLUMN lyricEmbedding TEXT DEFAULT NULL")
             }
         }
     }

@@ -126,7 +126,7 @@ object SmartMixGenerator {
             Pair(song, score)
         }.sortedByDescending { it.second }.map { it.first }
 
-        val flowTracks = applyEnergyPacing(scoredTracks.take(35), songMoodMap)
+        val flowTracks = applyEnergyPacing(applyArtistCap(scoredTracks.take(35)), songMoodMap)
         if (flowTracks.isNotEmpty()) {
             mixes.add(
                 0, // Place Your Daily Mix at the top!
@@ -140,6 +140,23 @@ object SmartMixGenerator {
         }
 
         mixes
+    }
+
+    /**
+     * Prevents artist repetition: Limits any artist to at most maxPerArtist tracks per mix.
+     */
+    private fun applyArtistCap(tracks: List<SongItem>, maxPerArtist: Int = 2): List<SongItem> {
+        val counts = mutableMapOf<String, Int>()
+        val result = mutableListOf<SongItem>()
+        for (song in tracks) {
+            val artistKey = song.artist.trim().lowercase()
+            val c = counts[artistKey] ?: 0
+            if (c < maxPerArtist || tracks.size <= 4) {
+                result.add(song)
+                counts[artistKey] = c + 1
+            }
+        }
+        return result
     }
 
     /**

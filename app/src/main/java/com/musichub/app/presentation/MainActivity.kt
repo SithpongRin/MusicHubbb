@@ -6770,6 +6770,8 @@ fun HomeScreen(
     LaunchedEffect(songs) {
         if (songs.isNotEmpty()) {
             withContext(Dispatchers.IO) {
+                // Enqueue low-priority background worker for pure DSP features, embeddings & lyrics scan
+                com.musichub.app.domain.audio.MusicIntelligenceWorker.enqueue(context)
                 com.musichub.app.domain.mood.OnDeviceMusicMoodClassifier.processUnanalyzedSongs(context, songs) {
                     withContext(Dispatchers.Main) {
                         aiModelVersion++
@@ -9978,6 +9980,24 @@ fun UnifiedExpandablePlayerCard(
     val isDark = LocalDarkMode.current
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
+    val context = LocalContext.current
+
+    var songMoodInfo by remember(song.id) { mutableStateOf<com.musichub.app.data.database.MoodPredictionEntity?>(null) }
+    var songLyricsInfo by remember(song.id) { mutableStateOf<com.musichub.app.data.database.LyricsEntity?>(null) }
+
+    LaunchedEffect(song.id) {
+        withContext(Dispatchers.IO) {
+            try {
+                val db = com.musichub.app.data.database.AppDatabase.getDatabase(context)
+                val mood = db.moodPredictionDao().get(song.id, com.musichub.app.domain.mood.OnDeviceMusicMoodClassifier.MODEL_VERSION)
+                val lyrics = db.lyricsDao().getLyrics(song.id)
+                withContext(Dispatchers.Main) {
+                    songMoodInfo = mood
+                    songLyricsInfo = lyrics
+                }
+            } catch (_: Exception) {}
+        }
+    }
 
     val dynamicColors = rememberAnimatedDynamicColors(
         artworkUrl = song.artworkUrl,
@@ -10662,6 +10682,113 @@ fun UnifiedExpandablePlayerCard(
                                             velocity = 35.dp
                                         )
                                     )
+                                    if (s1 < 0.7f && (songMoodInfo != null || songLyricsInfo != null)) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Row(
+                                            horizontalArrangement = Arrangement.Center,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+                                        ) {
+                                            val primaryMood = songMoodInfo?.let { m ->
+                                                listOf(
+                                                    "Calm" to m.calm,
+                                                    "Energetic" to m.energetic,
+                                                    "Sad" to m.sad,
+                                                    "Romantic" to m.romantic
+                                                ).maxByOrNull { it.second }?.first
+                                            }
+                                            val moodLabel = when (primaryMood) {
+                                                "Calm" -> if (isKhmer) "ស្ងប់ស្ងាត់" else "Calm"
+                                                "Energetic" -> if (isKhmer) "ស្វាហាប់" else "Energetic"
+                                                "Sad" -> if (isKhmer) "កំសត់" else "Melancholic"
+                                                "Romantic" -> if (isKhmer) "រ៉ូមែនទិក" else "Romantic"
+                                                else -> null
+                                            }
+                                            if (moodLabel != null) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                                                    modifier = Modifier.padding(horizontal = 2.dp)
+                                                ) {
+                                                    Text(
+                                                        text = moodLabel,
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Medium,
+                                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+
+                                            val genre = songMoodInfo?.genre
+                                            if (!genre.isNullOrBlank() && genre != "Unknown") {
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                                                    modifier = Modifier.padding(horizontal = 2.dp)
+                                                ) {
+                                                    Text(
+                                                        text = genre,
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Medium,
+                                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+
+                                            val bpm = songMoodInfo?.bpm ?: 0
+                                            if (bpm > 0) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                                    modifier = Modifier.padding(horizontal = 2.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "$bpm BPM",
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Medium,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            }
+
+                                            val dissonance = songLyricsInfo?.dissonanceScore ?: 0f
+                                            if (dissonance >= 0.5f) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = Color(0xFFF59E0B).copy(alpha = 0.25f),
+                                                    modifier = Modifier.padding(horizontal = 2.dp)
+                                                ) {
+                                                    Text(
+                                                        text = if (isKhmer) "ភ្លេងនិងទំនុកផ្ទុយគ្នា" else "Contrast",
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = Color(0xFFF59E0B),
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                    )
+                                                }
+                                            } else {
+                                                val theme = songLyricsInfo?.themes?.split(",")?.firstOrNull()?.trim()
+                                                if (!theme.isNullOrBlank()) {
+                                                    Surface(
+                                                        shape = RoundedCornerShape(6.dp),
+                                                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f),
+                                                        modifier = Modifier.padding(horizontal = 2.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = theme,
+                                                            fontSize = 10.sp,
+                                                            fontWeight = FontWeight.Medium,
+                                                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
 
                                 IconButton(
