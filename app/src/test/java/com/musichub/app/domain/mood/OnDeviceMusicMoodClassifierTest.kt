@@ -25,4 +25,16 @@ class OnDeviceMusicMoodClassifierTest {
         val output = OnDeviceMusicMoodClassifier.fromModelOutput(.15f, .25f)
         assertEquals(2, output.moodScores.indices.maxBy { output.moodScores[it] })
     }
+
+    @Test
+    fun gentleHighValenceLowArousalFavorsCalm() {
+        val output = OnDeviceMusicMoodClassifier.fromModelOutput(.58f, .30f)
+        assertEquals(0, output.moodScores.indices.maxBy { output.moodScores[it] })
+    }
+
+    @Test
+    fun warmModerateValenceAndArousalFavorsRomantic() {
+        val output = OnDeviceMusicMoodClassifier.fromModelOutput(.62f, .48f)
+        assertEquals(3, output.moodScores.indices.maxBy { output.moodScores[it] })
+    }
 }
