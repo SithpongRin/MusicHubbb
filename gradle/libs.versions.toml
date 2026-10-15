@@ -14,6 +14,7 @@ workManager = "2.9.0"
 okhttp = "4.12.0"
 coroutines = "1.8.0"
 onnxRuntime = "1.18.0"
+palette = "1.0.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -25,6 +26,7 @@ androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
 androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
 androidx-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
+androidx-palette = { group = "androidx.palette", name = "palette-ktx", version.ref = "palette" }
 
 # Media3 ExoPlayer
 androidx-media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }

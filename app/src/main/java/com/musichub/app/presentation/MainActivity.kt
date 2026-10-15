@@ -3781,7 +3781,8 @@ fun WaveformScrubber(
     durationSec: Int,
     positionMs: Long = 0L,
     onSeek: (Float) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    activeColor: Color? = null
 ) {
     val barCount = 38
     val heights = remember {
@@ -3851,7 +3852,7 @@ fun WaveformScrubber(
                             .clip(RoundedCornerShape(3.dp))
                             .background(
                                 if (isPlayed) {
-                                    if (LocalDarkMode.current) Color.White else Color(0xFF14161D)
+                                    activeColor ?: if (LocalDarkMode.current) Color.White else Color(0xFF14161D)
                                 } else {
                                     if (LocalDarkMode.current) Color(0xFF2E3344) else Color(0xFFDCE0E8)
                                 }
@@ -3869,7 +3870,7 @@ fun WaveformScrubber(
                     .height(48.dp)
                     .shadow(3.dp, RoundedCornerShape(2.dp))
                     .clip(RoundedCornerShape(2.dp))
-                    .background(if (LocalDarkMode.current) Color.White else Color(0xFF14161D))
+                    .background(activeColor ?: if (LocalDarkMode.current) Color.White else Color(0xFF14161D))
             )
         }
 
@@ -10096,6 +10097,11 @@ fun UnifiedExpandablePlayerCard(
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
 
+    val dynamicColors = rememberAnimatedDynamicColors(
+        artworkUrl = song.artworkUrl,
+        isDark = isDark
+    )
+
     val expandProgress = remember { Animatable(if (isExpanded) 1f else 0f) }
     var queueStage by remember { mutableIntStateOf(0) } // 0 = Full Now Playing, 1 = Split Now Playing + Queue, 2 = Top Mini-Player + Full Queue
     val queueProgress = remember { Animatable(0f) }
@@ -10266,9 +10272,9 @@ fun UnifiedExpandablePlayerCard(
         }
 
         val cardBaseColor = if (isDark) {
-            lerpColor(Color(0xFF20232B), Color(0xFF0C0E12), p)
+            lerpColor(Color(0xFF20232B), dynamicColors.bottomGradientColor, p)
         } else {
-            lerpColor(Color(0xFF14161D), MaterialTheme.colorScheme.background, (p * 1.25f).coerceIn(0f, 1f))
+            lerpColor(Color(0xFF14161D), dynamicColors.bottomGradientColor, (p * 1.25f).coerceIn(0f, 1f))
         }
 
         Surface(
@@ -10496,17 +10502,15 @@ fun UnifiedExpandablePlayerCard(
                                     transformOrigin = TransformOrigin(0.5f, 0f)
                                 }
                                 .then(
-                                    if (isDark) {
-                                        Modifier.background(
-                                            Brush.verticalGradient(
-                                                colorStops = arrayOf(
-                                                    0.0f to Color(0xFF17232C).copy(alpha = p),
-                                                    0.32f to Color(0xFF10141A).copy(alpha = p),
-                                                    1.0f to Color(0xFF0C0E12).copy(alpha = p)
-                                                )
+                                    Modifier.background(
+                                        Brush.verticalGradient(
+                                            colorStops = arrayOf(
+                                                0.0f to dynamicColors.topGradientColor.copy(alpha = p),
+                                                0.35f to dynamicColors.midGradientColor.copy(alpha = p),
+                                                1.0f to dynamicColors.bottomGradientColor.copy(alpha = p)
                                             )
                                         )
-                                    } else Modifier
+                                    )
                                 )
                                 .padding(
                                     horizontal = 24.dp,
@@ -10584,117 +10588,142 @@ fun UnifiedExpandablePlayerCard(
                                 }
                             }
 
-                            if (isVinylStyle) {
-                                // Rotating Picture Disc that smoothly scales between Stage 0 (fullArtSize) and Stage 1 (stage1ArtSize)
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.wrapContentSize()
+                            ) {
+                                // Subtle dynamic ambient glow around artwork
                                 Box(
                                     modifier = Modifier
-                                        .size(currentArtSize)
+                                        .size(currentArtSize + lerpDp(52.dp, 22.dp, s1))
                                         .scale(artScale)
-                                        .shadow(lerpDp(24.dp, 12.dp, s1), CircleShape)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF1E212D))
-                                        .graphicsLayer { rotationZ = discRotation },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (song.artworkUrl.isNotBlank()) {
-                                        SmartArtworkImage(
-                                            artworkUrl = song.artworkUrl,
-                                            contentDescription = song.title,
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .scale(1.05f)
+                                        .graphicsLayer {
+                                            alpha = (p * (1f - s1 * 0.7f)).coerceIn(0f, 1f)
+                                        }
+                                        .background(
+                                            Brush.radialGradient(
+                                                colors = listOf(
+                                                    dynamicColors.ambientGlowColor,
+                                                    dynamicColors.ambientGlowColor.copy(alpha = dynamicColors.ambientGlowColor.alpha * 0.35f),
+                                                    Color.Transparent
+                                                )
+                                            ),
+                                            CircleShape
                                         )
-                                    } else {
+                                )
+
+                                if (isVinylStyle) {
+                                    // Rotating Picture Disc that smoothly scales between Stage 0 (fullArtSize) and Stage 1 (stage1ArtSize)
+                                    Box(
+                                        modifier = Modifier
+                                            .size(currentArtSize)
+                                            .scale(artScale)
+                                            .shadow(lerpDp(24.dp, 12.dp, s1), CircleShape)
+                                            .clip(CircleShape)
+                                            .background(dynamicColors.bottomGradientColor)
+                                            .graphicsLayer { rotationZ = discRotation },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (song.artworkUrl.isNotBlank()) {
+                                            SmartArtworkImage(
+                                                artworkUrl = song.artworkUrl,
+                                                contentDescription = song.title,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .scale(1.05f)
+                                            )
+                                        } else {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(dynamicColors.bottomGradientColor),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.MusicNote,
+                                                    contentDescription = null,
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(lerpDp(76.dp, 36.dp, s1))
+                                                )
+                                            }
+                                        }
+
                                         Box(
                                             modifier = Modifier
                                                 .fillMaxSize()
-                                                .background(Color(0xFF1E212D)),
+                                                .background(
+                                                    Brush.sweepGradient(
+                                                        listOf(
+                                                            Color.Transparent,
+                                                            Color.White.copy(alpha = 0.08f),
+                                                            Color.Transparent,
+                                                            Color.White.copy(alpha = 0.04f),
+                                                            Color.Transparent,
+                                                            Color.White.copy(alpha = 0.08f),
+                                                            Color.Transparent
+                                                        )
+                                                    )
+                                                )
+                                        )
+
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .border(1.5.dp, Color(0x35000000), CircleShape)
+                                        )
+
+                                        Box(
+                                            modifier = Modifier
+                                                .size(lerpDp(76.dp, 34.dp, s1))
+                                                .shadow(8.dp, CircleShape)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFF14161D))
+                                                .border(lerpDp(3.5.dp, 2.dp, s1), Color(0xFFE2E8F0), CircleShape),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Default.MusicNote,
-                                                contentDescription = null,
-                                                tint = Color.White,
-                                                modifier = Modifier.size(lerpDp(76.dp, 36.dp, s1))
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(lerpDp(34.dp, 15.dp, s1))
+                                                    .clip(CircleShape)
+                                                    .background(Color(0xFF0B0D12))
+                                                    .border(1.2.dp, Color(0x70FFFFFF), CircleShape)
                                             )
                                         }
                                     }
-
+                                } else {
+                                    // Static Square Card that smoothly scales between Stage 0 (fullArtSize) and Stage 1 (stage1ArtSize)
+                                    val artCorner = lerpDp(12.dp, 8.dp, s1)
                                     Box(
                                         modifier = Modifier
-                                            .fillMaxSize()
-                                            .background(
-                                                Brush.sweepGradient(
-                                                    listOf(
-                                                        Color.Transparent,
-                                                        Color.White.copy(alpha = 0.08f),
-                                                        Color.Transparent,
-                                                        Color.White.copy(alpha = 0.04f),
-                                                        Color.Transparent,
-                                                        Color.White.copy(alpha = 0.08f),
-                                                        Color.Transparent
-                                                    )
-                                                )
-                                            )
-                                    )
-
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .border(1.5.dp, Color(0x35000000), CircleShape)
-                                    )
-
-                                    Box(
-                                        modifier = Modifier
-                                            .size(lerpDp(76.dp, 34.dp, s1))
-                                            .shadow(8.dp, CircleShape)
-                                            .clip(CircleShape)
-                                            .background(Color(0xFF14161D))
-                                            .border(lerpDp(3.5.dp, 2.dp, s1), Color(0xFFE2E8F0), CircleShape),
+                                            .size(currentArtSize)
+                                            .shadow(lerpDp(24.dp, 12.dp, s1), RoundedCornerShape(artCorner))
+                                            .clip(RoundedCornerShape(artCorner))
+                                            .background(dynamicColors.bottomGradientColor)
+                                            .border(1.dp, lerpColor(Color(0x22FFFFFF), dynamicColors.accentColor.copy(alpha = 0.28f), p), RoundedCornerShape(artCorner)),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(lerpDp(34.dp, 15.dp, s1))
-                                                .clip(CircleShape)
-                                                .background(Color(0xFF0B0D12))
-                                                .border(1.2.dp, Color(0x70FFFFFF), CircleShape)
-                                        )
-                                    }
-                                }
-                            } else {
-                                // Static Square Card that smoothly scales between Stage 0 (fullArtSize) and Stage 1 (stage1ArtSize)
-                                val artCorner = lerpDp(12.dp, 8.dp, s1)
-                                Box(
-                                    modifier = Modifier
-                                        .size(currentArtSize)
-                                        .shadow(lerpDp(24.dp, 12.dp, s1), RoundedCornerShape(artCorner))
-                                        .clip(RoundedCornerShape(artCorner))
-                                        .background(Color(0xFF1E212D))
-                                        .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(artCorner)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (song.artworkUrl.isNotBlank()) {
-                                        SmartArtworkImage(
-                                            artworkUrl = song.artworkUrl,
-                                            contentDescription = song.title,
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxSize()
-                                        )
-                                    } else {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .background(Color(0xFF1E212D)),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.MusicNote,
-                                                contentDescription = null,
-                                                tint = Color.White,
-                                                modifier = Modifier.size(lerpDp(76.dp, 36.dp, s1))
+                                        if (song.artworkUrl.isNotBlank()) {
+                                            SmartArtworkImage(
+                                                artworkUrl = song.artworkUrl,
+                                                contentDescription = song.title,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
                                             )
+                                        } else {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .background(dynamicColors.bottomGradientColor),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.MusicNote,
+                                                    contentDescription = null,
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(lerpDp(76.dp, 36.dp, s1))
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -10772,7 +10801,8 @@ fun UnifiedExpandablePlayerCard(
                                 progress = progress,
                                 durationSec = song.durationSec,
                                 positionMs = positionMs,
-                                onSeek = onProgressChange
+                                onSeek = onProgressChange,
+                                activeColor = dynamicColors.accentColor
                             )
 
                             // Controls + Bottom Queue Handle Bar
