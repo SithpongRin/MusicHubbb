@@ -94,6 +94,35 @@ data class MoodPredictionEntity(
     fun scores() = floatArrayOf(calm, energetic, sad, romantic)
 }
 
+@Entity(tableName = "lyrics")
+data class LyricsEntity(
+    @PrimaryKey val songId: String,
+    val plainLyrics: String?,
+    val syncedLyrics: String?,
+    val source: String,       // "EMBEDDED", "LRCLIB", "LOCAL", "INSTRUMENTAL", "NOT_FOUND"
+    val language: String,     // "km", "en", "unknown"
+    val isInstrumental: Boolean = false,
+    val lyricsValence: Float? = null,
+    val lyricsArousal: Float? = null,
+    val lyricsConfidence: Float? = null,
+    val dissonanceScore: Float? = null,
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+@Entity(
+    tableName = "playback_events",
+    indices = [Index(value = ["songId"]), Index(value = ["timestamp"])]
+)
+data class PlaybackEventEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val songId: String,
+    val timestamp: Long,
+    val durationListenedMs: Long,
+    val completionRatio: Float,
+    val wasSkippedEarly: Boolean,
+    val isFavorite: Boolean
+)
+
 // --- Room DAOs ---
 
 @Dao
@@ -191,6 +220,42 @@ interface MoodPredictionDao {
     suspend fun upsert(prediction: MoodPredictionEntity)
 }
 
+@Dao
+interface LyricsDao {
+    @Query("SELECT * FROM lyrics WHERE songId = :songId LIMIT 1")
+    suspend fun getLyrics(songId: String): LyricsEntity?
+
+    @Query("SELECT * FROM lyrics WHERE songId = :songId LIMIT 1")
+    fun observeLyrics(songId: String): Flow<LyricsEntity?>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertLyrics(lyrics: LyricsEntity)
+
+    @Query("DELETE FROM lyrics WHERE songId = :songId")
+    suspend fun deleteLyrics(songId: String)
+}
+
+@Dao
+interface PlaybackEventDao {
+    @Insert
+    suspend fun insertEvent(event: PlaybackEventEntity)
+
+    @Query("SELECT * FROM playback_events WHERE songId = :songId ORDER BY timestamp DESC")
+    suspend fun getEventsForSong(songId: String): List<PlaybackEventEntity>
+
+    @Query("SELECT * FROM playback_events ORDER BY timestamp DESC LIMIT :limit")
+    suspend fun getRecentEvents(limit: Int = 100): List<PlaybackEventEntity>
+
+    @Query("SELECT COUNT(*) FROM playback_events WHERE songId = :songId AND completionRatio >= 0.80")
+    suspend fun getCompletedPlayCount(songId: String): Int
+
+    @Query("SELECT COUNT(*) FROM playback_events WHERE songId = :songId AND wasSkippedEarly = 1")
+    suspend fun getEarlySkipCount(songId: String): Int
+
+    @Query("DELETE FROM playback_events")
+    suspend fun clearHistory()
+}
+
 // --- Room Database ---
 
 @Database(
@@ -199,9 +264,11 @@ interface MoodPredictionDao {
         PlaylistEntity::class,
         PlaylistSongCrossRef::class,
         DownloadTaskEntity::class,
-        MoodPredictionEntity::class
+        MoodPredictionEntity::class,
+        LyricsEntity::class,
+        PlaybackEventEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -209,6 +276,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun playlistDao(): PlaylistDao
     abstract fun downloadDao(): DownloadDao
     abstract fun moodPredictionDao(): MoodPredictionDao
+    abstract fun lyricsDao(): LyricsDao
+    abstract fun playbackEventDao(): PlaybackEventDao
 
     companion object {
         @Volatile
@@ -221,7 +290,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "musichub_database"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                 INSTANCE = instance
                 instance
@@ -229,8 +298,8 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
-            override fun migrate(database: SupportSQLiteDatabase) {
-                database.execSQL("""
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
                     CREATE TABLE IF NOT EXISTS mood_predictions (
                         songId TEXT NOT NULL,
                         modelVersion TEXT NOT NULL,
@@ -245,7 +314,40 @@ abstract class AppDatabase : RoomDatabase() {
                         PRIMARY KEY(songId, modelVersion)
                     )
                 """.trimIndent())
-                database.execSQL("CREATE INDEX IF NOT EXISTS index_mood_predictions_modelVersion ON mood_predictions(modelVersion)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_mood_predictions_modelVersion ON mood_predictions(modelVersion)")
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS lyrics (
+                        songId TEXT NOT NULL PRIMARY KEY,
+                        plainLyrics TEXT,
+                        syncedLyrics TEXT,
+                        source TEXT NOT NULL,
+                        language TEXT NOT NULL,
+                        isInstrumental INTEGER NOT NULL DEFAULT 0,
+                        lyricsValence REAL,
+                        lyricsArousal REAL,
+                        lyricsConfidence REAL,
+                        dissonanceScore REAL,
+                        updatedAt INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS playback_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        songId TEXT NOT NULL,
+                        timestamp INTEGER NOT NULL,
+                        durationListenedMs INTEGER NOT NULL,
+                        completionRatio REAL NOT NULL,
+                        wasSkippedEarly INTEGER NOT NULL,
+                        isFavorite INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_playback_events_songId ON playback_events(songId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_playback_events_timestamp ON playback_events(timestamp)")
             }
         }
     }
